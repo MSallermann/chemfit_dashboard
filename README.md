@@ -31,3 +31,28 @@ Requires Python 3.10 or newer.
 git clone https://github.com/MSallermann/chemfit_dashboard.git
 cd chemfit_dashboard
 pip install -e .
+```
+
+## Usage
+
+Start the dashboard with:
+
+```bash
+chemfit-dashboard
+```
+
+You can also open a JSON evaluation context or an entire directory directly:
+
+```bash
+chemfit-dashboard path/to/context.json
+chemfit-dashboard path/to/results/
+```
+
+To explore the included examples:
+
+```bash
+chemfit-dashboard examples/step_0_ctx_0.json
+chemfit-dashboard examples/context_collection/
+```
+
+Multiple files and directories can be passed at once. Directories are scanned recursively, and additional files can be opened from within the application.
