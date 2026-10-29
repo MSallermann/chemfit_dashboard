@@ -30,6 +30,86 @@ class GraphLayout:
     edges: tuple[RoutedEdge, ...]
 
 
+def hierarchy_outline_layout(
+    nodes: Iterable[LayoutNode],
+    hierarchy_edges: Iterable[tuple[NodePath, NodePath]],
+    dependency_edges: Iterable[tuple[NodePath, NodePath]],
+    *,
+    node_width: float = 260.0,
+    node_height: float = 76.0,
+    indent: float = 52.0,
+    vertical_gap: float = 24.0,
+) -> GraphLayout:
+    """
+    Lay out a hierarchy as a readable vertical outline.
+
+    The outline deliberately trades a compact all-at-once overview for stable,
+    full-size rows that remain legible in a narrow inspector column.
+    """
+    node_list = sorted(nodes, key=lambda node: node.path)
+    paths = {node.path for node in node_list}
+    positions = {
+        node.path: (
+            len(node.path) * indent,
+            row * (node_height + vertical_gap),
+        )
+        for row, node in enumerate(node_list)
+    }
+    hierarchy = sorted(
+        (
+            (source, target)
+            for source, target in hierarchy_edges
+            if source in paths and target in paths
+        ),
+        key=lambda edge: (edge[0], edge[1]),
+    )
+    dependencies = sorted(
+        (
+            (source, target)
+            for source, target in dependency_edges
+            if source in paths and target in paths and source != target
+        ),
+        key=lambda edge: (edge[0], edge[1]),
+    )
+    routed: list[RoutedEdge] = []
+    for source, target in hierarchy:
+        sx, sy = positions[source]
+        tx, ty = positions[target]
+        target_y = ty + node_height / 2
+        trunk_x = tx - indent / 2
+        routed.append(
+            RoutedEdge(
+                source,
+                target,
+                "hierarchy",
+                (
+                    (sx + 18, sy + node_height),
+                    (sx + 18, target_y),
+                    (trunk_x, target_y),
+                    (tx, target_y),
+                ),
+            )
+        )
+    for lane, (source, target) in enumerate(dependencies):
+        sx, sy = positions[source]
+        tx, ty = positions[target]
+        route_x = max(sx, tx) + node_width + 28 + lane * 8
+        routed.append(
+            RoutedEdge(
+                source,
+                target,
+                "dependency",
+                (
+                    (sx + node_width, sy + node_height / 2),
+                    (route_x, sy + node_height / 2),
+                    (route_x, ty + node_height / 2),
+                    (tx + node_width, ty + node_height / 2),
+                ),
+            )
+        )
+    return GraphLayout(positions, tuple(routed))
+
+
 def dependency_layered_layout(  # noqa: PLR0912
     nodes: Iterable[LayoutNode],
     hierarchy_edges: Iterable[tuple[NodePath, NodePath]],

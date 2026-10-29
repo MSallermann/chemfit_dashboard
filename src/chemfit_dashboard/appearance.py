@@ -304,6 +304,10 @@ QListView, QTreeView, QTableView {{
 }}
 QListView::item {{ padding: 9px 7px; border-bottom: 1px solid {scheme.border}; }}
 QTreeView::item, QTableView::item {{ padding: 4px; }}
+QTableWidget#extractionSelections QLineEdit {{
+    background: {scheme.input}; border: 1px solid {scheme.accent}; border-radius: 2px;
+    padding: 1px 4px; margin: 0;
+}}
 QHeaderView::section {{
     background: {scheme.input}; color: {scheme.muted}; border: none;
     border-right: 1px solid {scheme.border}; border-bottom: 1px solid {scheme.border};

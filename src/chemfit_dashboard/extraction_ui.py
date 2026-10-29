@@ -2,8 +2,11 @@ from __future__ import annotations
 
 # ruff: noqa: FBT003
 import json
-from dataclasses import replace
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,12 +35,23 @@ from chemfit_dashboard.extraction import (
     ExtractionConfig,
     ExtractionRow,
     ExtractionStatus,
+    ExtractionValue,
     FieldSelector,
+    JsonPath,
+    format_json_path,
     load_config,
     save_config,
 )
 
 PREVIEW_LIMIT = 200
+_PREVIEW_MISSING = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _PreviewColumn:
+    selector_index: int
+    nested_path: JsonPath | None
+    label: str
 
 
 class ExtractionPreviewModel(QAbstractTableModel):
@@ -45,15 +60,16 @@ class ExtractionPreviewModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None):
         """Initialize an empty preview model."""
         super().__init__(parent)
-        self._selectors: tuple[FieldSelector, ...] = ()
+        self._columns: tuple[_PreviewColumn, ...] = ()
         self._rows: tuple[ExtractionRow, ...] = ()
 
     def set_data(
         self, selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
     ) -> None:
         self.beginResetModel()
-        self._selectors = selectors
-        self._rows = rows[:PREVIEW_LIMIT]
+        expanded_rows = _expanded_preview_rows(rows, selectors)
+        self._rows = expanded_rows[:PREVIEW_LIMIT]
+        self._columns = _preview_columns(selectors, self._rows)
         self.endResetModel()
 
     def rowCount(  # noqa: N802
@@ -66,7 +82,7 @@ class ExtractionPreviewModel(QAbstractTableModel):
         self,
         parent: QModelIndex | QPersistentModelIndex = QModelIndex(),  # noqa: B008
     ) -> int:
-        return 0 if parent.isValid() else 3 + len(self._selectors)
+        return 0 if parent.isValid() else 3 + len(self._columns)
 
     def headerData(  # noqa: N802
         self,
@@ -79,7 +95,7 @@ class ExtractionPreviewModel(QAbstractTableModel):
         if orientation == Qt.Orientation.Vertical:
             return section + 1
         fixed = ("Index", "Filename", "Record ID")
-        return fixed[section] if section < 3 else self._selectors[section - 3].column
+        return fixed[section] if section < 3 else self._columns[section - 3].label
 
     def data(  # noqa: PLR0911
         self,
@@ -98,7 +114,16 @@ class ExtractionPreviewModel(QAbstractTableModel):
             return row.filename
         if index.column() == 2:
             return row.record_id
-        extracted = row.values[index.column() - 3]
+        column = self._columns[index.column() - 3]
+        extracted = row.values[column.selector_index]
+        if column.nested_path is not None:
+            nested = _nested_preview_value(extracted.value, column.nested_path)
+            extracted = ExtractionValue(
+                None if nested is _PREVIEW_MISSING else nested,
+                ExtractionStatus.MISSING_FIELD
+                if nested is _PREVIEW_MISSING
+                else extracted.status,
+            )
         if role == Qt.ItemDataRole.ToolTipRole:
             return (
                 f"Status: {extracted.status.value}\n{_compact(extracted.value, 1000)}"
@@ -133,14 +158,20 @@ class DataExtractionPanel(QWidget):
         heading.addWidget(self.status)
         layout.addLayout(heading)
 
-        self.selections = QTableWidget(0, 2)
-        self.selections.setHorizontalHeaderLabels(("Column", "Field path"))
+        self.selections = QTableWidget(0, 3)
+        self.selections.setObjectName("extractionSelections")
+        self.selections.setHorizontalHeaderLabels(("Column", "Field path", ""))
         self.selections.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Interactive
         )
         self.selections.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
+        self.selections.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Fixed
+        )
+        self.selections.horizontalHeader().resizeSection(2, 34)
+        self.selections.verticalHeader().setDefaultSectionSize(36)
         self.selections.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -150,10 +181,10 @@ class DataExtractionPanel(QWidget):
         layout.addWidget(self.selections)
 
         controls = QHBoxLayout()
-        self.remove_button = QPushButton("Remove")
+        self.remove_button = QPushButton("Remove selected")
         self.up_button = QPushButton("Move up")
         self.down_button = QPushButton("Move down")
-        self.clear_button = QPushButton("Clear")
+        self.clear_button = QPushButton("Clear all")
         self.flatten = QCheckBox("Flatten dictionary")
         self.expand = QCheckBox("Expand array into rows")
         self.remove_button.clicked.connect(self._remove)
@@ -242,8 +273,11 @@ class DataExtractionPanel(QWidget):
 
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
         self.preview_model.set_data(self.selectors, rows)
-        suffix = f" (first {len(rows):,} shown)" if total > len(rows) else ""
-        self.status.setText(f"Preview: {total:,} evaluations{suffix}")
+        shown = self.preview_model.rowCount()
+        suffix = " (limited)" if total > len(rows) or shown >= PREVIEW_LIMIT else ""
+        self.status.setText(
+            f"Preview: {shown:,} rows from {total:,} evaluations{suffix}"
+        )
 
     def show_error(self, message: str) -> None:
         self.status.setText(message)
@@ -256,6 +290,15 @@ class DataExtractionPanel(QWidget):
             path_item = QTableWidgetItem(selector.path_label)
             path_item.setFlags(path_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.selections.setItem(row, 1, path_item)
+            remove = QToolButton()
+            remove.setText("\N{MULTIPLICATION SIGN}")
+            remove.setToolTip(f"Remove {selector.column} from extraction")
+            remove.setAccessibleName(f"Remove {selector.column}")
+            remove.setAutoRaise(True)
+            remove.clicked.connect(
+                lambda _checked=False, target=row: self._remove_row(target)
+            )
+            self.selections.setCellWidget(row, 2, remove)
         self.selections.blockSignals(False)
         if 0 <= selected_row < len(self._selectors):
             self.selections.setCurrentCell(selected_row, 0)
@@ -300,7 +343,9 @@ class DataExtractionPanel(QWidget):
             self._emit_changed()
 
     def _remove(self) -> None:
-        row = self.selections.currentRow()
+        self._remove_row(self.selections.currentRow())
+
+    def _remove_row(self, row: int) -> None:
         if 0 <= row < len(self._selectors):
             del self._selectors[row]
             self._rebuild_selection_table(min(row, len(self._selectors) - 1))
@@ -371,3 +416,91 @@ def _compact(value: Any, limit: int = 160) -> str:
     else:
         text = str(value)
     return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
+def _expanded_preview_rows(
+    rows: tuple[ExtractionRow, ...], selectors: tuple[FieldSelector, ...]
+) -> tuple[ExtractionRow, ...]:
+    expanded_index = next(
+        (index for index, selector in enumerate(selectors) if selector.expand_array),
+        None,
+    )
+    if expanded_index is None:
+        return rows
+    result: list[ExtractionRow] = []
+    for row in rows:
+        selected = row.values[expanded_index]
+        if not isinstance(selected.value, list):
+            result.append(row)
+            continue
+        for item in selected.value:
+            values = list(row.values)
+            values[expanded_index] = ExtractionValue(item, selected.status)
+            result.append(replace(row, values=tuple(values)))
+            if len(result) >= PREVIEW_LIMIT:
+                return tuple(result)
+    return tuple(result)
+
+
+def _preview_columns(
+    selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
+) -> tuple[_PreviewColumn, ...]:
+    result: list[_PreviewColumn] = []
+    for selector_index, selector in enumerate(selectors):
+        paths: set[JsonPath] = set()
+        if selector.flatten:
+            for row in rows:
+                value = row.values[selector_index].value
+                if isinstance(value, dict):
+                    paths.update(_mapping_leaf_paths(value))
+        if paths:
+            result.extend(
+                _PreviewColumn(
+                    selector_index,
+                    path,
+                    f"{selector.column}.{format_json_path(path)}",
+                )
+                for path in sorted(paths, key=lambda item: tuple(map(str, item)))
+            )
+        else:
+            result.append(_PreviewColumn(selector_index, None, selector.column))
+    return tuple(result)
+
+
+def _mapping_leaf_paths(
+    value: Mapping[str, Any], path: JsonPath = ()
+) -> tuple[JsonPath, ...]:
+    if not value:
+        return (path,)
+    result: list[JsonPath] = []
+    for key in sorted(value, key=str):
+        child_path = (*path, str(key))
+        child = value[key]
+        if isinstance(child, dict):
+            result.extend(_mapping_leaf_paths(child, child_path))
+        else:
+            result.append(child_path)
+    return tuple(result)
+
+
+def _nested_preview_value(value: Any, path: JsonPath) -> Any:
+    current = value
+    for part in path:
+        mapping_entry = (
+            isinstance(part, str) and isinstance(current, dict) and part in current
+        )
+        sequence_entry = (
+            isinstance(part, int)
+            and isinstance(current, list)
+            and 0 <= part < len(current)
+        )
+        if not (mapping_entry or sequence_entry):
+            return _PREVIEW_MISSING
+        current = _index_preview_value(current, part)
+    return current
+
+
+def _index_preview_value(value: Any, part: str | int) -> Any:
+    if isinstance(part, str):
+        return cast("dict[str, Any]", value)[part]
+    return cast("list[Any]", value)[part]

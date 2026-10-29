@@ -91,6 +91,19 @@ def test_search_panel_ranks_repeated_fields_with_context_labels(chemfit_document
     assert "best match first" in panel.status.text()
 
 
+def test_search_rows_reserve_height_for_context_detail_text(chemfit_document):
+    panel = ContextSearchPanel()
+    panel.set_index(ContextSearchIndex(chemfit_document))
+
+    panel.search("output", include_values=False)
+
+    item = panel.results.topLevelItem(0)
+    field_label = panel.results.itemWidget(item, 0)
+    assert isinstance(field_label, QLabel)
+    assert item.sizeHint(0).height() >= field_label.sizeHint().height() + 10
+    assert item.sizeHint(1).height() == item.sizeHint(0).height()
+
+
 def test_search_panel_shows_and_highlights_matching_section(chemfit_document):
     panel = ContextSearchPanel()
     panel.set_index(ContextSearchIndex(chemfit_document))

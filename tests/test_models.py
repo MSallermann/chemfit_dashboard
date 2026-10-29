@@ -6,7 +6,7 @@ from contextlib import suppress
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
 from PySide6.QtCore import QModelIndex, Qt
-from PySide6.QtWidgets import QGraphicsSimpleTextItem
+from PySide6.QtWidgets import QGraphicsSimpleTextItem, QHeaderView
 
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
@@ -15,6 +15,7 @@ from chemfit_dashboard.appearance import (
     application_settings,
     color_scheme,
 )
+from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.graph_view import ContextGraphPanel
 from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.models import (
@@ -149,7 +150,8 @@ def test_graph_node_shows_static_name_beside_structural_name(tmp_path):
         if isinstance(item, QGraphicsSimpleTextItem)
     }
     assert "WrappedComponent" in labels
-    assert "name: density observable" in labels
+    assert any("name: density observable" in label for label in labels)
+    assert not any("STRUCTURE" in label or "ATOMIC NODE" in label for label in labels)
 
 
 def test_active_graph_rebuilds_when_evaluation_changes(tmp_path, chemfit_document):
@@ -368,6 +370,33 @@ def test_collection_overview_is_a_top_level_workspace():
     ]
     assert window.collection_analysis not in hierarchy_widgets
     assert window.workspace_tabs.indexOf(window.collection_analysis) >= 0
+
+
+def test_adding_extraction_field_keeps_workspace_and_updates_tab_counter():
+    window = MainWindow()
+    window.workspace_tabs.setCurrentWidget(window.context_workspace)
+
+    window._add_extraction_selector(  # noqa: SLF001
+        FieldSelector((), "fields", ("energy",), "energy")
+    )
+
+    assert window.workspace_tabs.currentWidget() is window.context_workspace
+    assert window.workspace_tabs.tabText(window._extraction_tab_index) == (  # noqa: SLF001
+        "Data Extraction (1)"
+    )
+    window.extraction.clear()
+    assert window.workspace_tabs.tabText(window._extraction_tab_index) == (  # noqa: SLF001
+        "Data Extraction"
+    )
+
+
+def test_context_tree_component_column_stretches_to_fill_panel_width():
+    window = MainWindow()
+    header = window.tree.header()
+
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.ResizeToContents
 
 
 def test_header_controls_scale_application_fonts(qapp, tmp_path):

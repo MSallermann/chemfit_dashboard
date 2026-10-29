@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -254,8 +255,12 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.addTab(self.collection_analysis, "Collection overview")
         self.extraction = DataExtractionPanel()
         self.extraction.selectors_changed.connect(self._refresh_extraction_preview)
+        self.extraction.selectors_changed.connect(self._update_extraction_tab_badge)
         self.extraction.export_requested.connect(self._export_extraction)
-        self.workspace_tabs.addTab(self.extraction, "Data Extraction")
+        self._extraction_tab_index = self.workspace_tabs.addTab(
+            self.extraction, "Data Extraction"
+        )
+        self._update_extraction_tab_badge()
         outer.addWidget(self.workspace_tabs, 1)
         self.setCentralWidget(container)
         self.statusBar().showMessage("Ready")
@@ -391,9 +396,14 @@ class MainWindow(QMainWindow):
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.setAnimated(False)
         self.tree.header().setStretchLastSection(False)
-        self.tree.header().resizeSection(0, 225)
-        self.tree.header().resizeSection(1, 95)
-        self.tree.header().resizeSection(2, 120)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setMinimumSectionSize(72)
         self.tree.selectionModel().selectionChanged.connect(self._context_selected)
 
         self.graph = ContextGraphPanel()
@@ -1244,7 +1254,18 @@ class MainWindow(QMainWindow):
                 self._current_document, selector
             )
         self.extraction.add_selector(selector)
-        self.workspace_tabs.setCurrentWidget(self.extraction)
+
+    def _update_extraction_tab_badge(self, _selectors: object = None) -> None:
+        count = len(self.extraction.selectors)
+        count_label = "20+" if count > 20 else str(count)
+        label = f"Data Extraction ({count_label})" if count else "Data Extraction"
+        self.workspace_tabs.setTabText(self._extraction_tab_index, label)
+        tooltip = (
+            f"{count:,} fields queued for extraction"
+            if count
+            else "No fields queued for extraction"
+        )
+        self.workspace_tabs.setTabToolTip(self._extraction_tab_index, tooltip)
 
     def _refresh_extraction_preview(
         self, selectors: tuple[FieldSelector, ...] | object

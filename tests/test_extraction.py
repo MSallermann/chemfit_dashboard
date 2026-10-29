@@ -4,10 +4,14 @@ import csv
 import json
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLineEdit, QToolButton
 
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
+    ExtractionRow,
     ExtractionStatus,
+    ExtractionValue,
     FieldSelector,
     export_csv,
     export_jsonl,
@@ -206,3 +210,65 @@ def test_inspector_and_workspace_manage_arbitrary_field_selection(chemfit_docume
     ]
     panel.remove_button.click()
     assert len(panel.selectors) == 1
+
+
+def test_extraction_options_immediately_rebuild_preview_shape():
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "fields", column="payload"))
+    rows = (
+        ExtractionRow(
+            0,
+            "record",
+            "record.json",
+            (
+                ExtractionValue(
+                    [{"energy": 1}, {"energy": 2}], ExtractionStatus.AVAILABLE
+                ),
+            ),
+        ),
+    )
+    panel.set_preview(rows, 1)
+    panel.selectors_changed.connect(lambda _selectors: panel.set_preview(rows, 1))
+
+    panel.expand.click()
+
+    assert panel.preview_model.rowCount() == 2
+    assert panel.preview_model.data(panel.preview_model.index(0, 3)) == '{"energy":1}'
+    assert panel.preview_model.data(panel.preview_model.index(1, 3)) == '{"energy":2}'
+
+    panel.flatten.click()
+
+    assert panel.preview_model.columnCount() == 4
+    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == (
+        "payload.energy"
+    )
+    assert panel.preview_model.data(panel.preview_model.index(0, 3)) == "1"
+    assert panel.preview_model.data(panel.preview_model.index(1, 3)) == "2"
+
+
+def test_each_extraction_field_has_an_inline_remove_control():
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
+    panel.add_selector(FieldSelector((), "fields", ("force",), "force"))
+    remove_force = panel.selections.cellWidget(1, 2)
+
+    assert isinstance(remove_force, QToolButton)
+    remove_force.click()
+
+    assert [selector.column for selector in panel.selectors] == ["energy"]
+    assert panel.selections.rowCount() == 1
+
+
+def test_extraction_column_editor_fits_inside_table_row():
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
+    panel.show()
+    item = panel.selections.item(0, 0)
+
+    panel.selections.editItem(item)
+    QApplication.processEvents()
+
+    editor = panel.selections.findChild(QLineEdit)
+    assert editor is not None
+    assert editor.height() >= editor.fontMetrics().height() + 4
+    assert editor.height() <= panel.selections.rowHeight(0)

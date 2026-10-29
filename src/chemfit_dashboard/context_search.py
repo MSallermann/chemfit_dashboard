@@ -291,7 +291,6 @@ class ContextSearchPanel(QWidget):
             location = hit.section.title() if hit.section is not None else "Context"
             score_label = f"{hit.score:.1%}"
             item = QTreeWidgetItem([hit.field_label, hit.preview, score_label])
-            item.setSizeHint(0, QSize(0, 42))
             item.setData(0, HIT_ROLE, hit)
             item.setToolTip(
                 0,
@@ -300,8 +299,15 @@ class ContextSearchPanel(QWidget):
             item.setToolTip(1, hit.preview)
             item.setToolTip(2, f"Relevance score: {hit.score:.1%}")
             self.results.addTopLevelItem(item)
-            self._set_result_label(item, hit, location, query, mode)
-            self._highlight_cell(item, 1, hit.preview, query, mode)
+            field_label = self._set_result_label(item, hit, location, query, mode)
+            value_label = self._highlight_cell(item, 1, hit.preview, query, mode)
+            row_height = max(
+                42,
+                field_label.sizeHint().height() + 10,
+                value_label.sizeHint().height() + 10,
+            )
+            for column in range(self.results.columnCount()):
+                item.setSizeHint(column, QSize(0, row_height))
         dimensions = ["hierarchy"]
         if include_keys:
             dimensions.append("keys")
@@ -330,7 +336,7 @@ class ContextSearchPanel(QWidget):
         location: str,
         query: str,
         mode: SearchMode,
-    ) -> None:
+    ) -> QLabel:
         field = _highlighted_html(hit.field_label, query, mode=mode, bold=True)
         record = f"{hit.record_name} · " if hit.record_name else ""
         context = f"{location} · {record}{_compact_breadcrumb(hit.breadcrumb)}"
@@ -338,10 +344,10 @@ class ContextSearchPanel(QWidget):
         muted = active_color_scheme().muted
         html = (
             f"{field}<br>"
-            f'<span style="color: {muted}; font-size: 11px;">'
+            f'<span style="color: {muted}; font-size: 85%;">'
             f"{contextual_html}</span>"
         )
-        self._install_label(item, 0, html)
+        return self._install_label(item, 0, html)
 
     def _highlight_cell(
         self,
@@ -352,11 +358,11 @@ class ContextSearchPanel(QWidget):
         mode: SearchMode,
         *,
         bold: bool = False,
-    ) -> None:
+    ) -> QLabel:
         html = _highlighted_html(value, query, mode=mode, bold=bold)
-        self._install_label(item, column, html)
+        return self._install_label(item, column, html)
 
-    def _install_label(self, item: QTreeWidgetItem, column: int, html: str) -> None:
+    def _install_label(self, item: QTreeWidgetItem, column: int, html: str) -> QLabel:
         label = QLabel(html, self.results)
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -364,6 +370,7 @@ class ContextSearchPanel(QWidget):
         label.setToolTip(item.toolTip(column))
         self.results.setItemWidget(item, column, label)
         item.setText(column, "")
+        return label
 
     def _current_item_changed(
         self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None
