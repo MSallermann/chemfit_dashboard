@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.collection_plot import NumberSelector
+from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.models import JsonValueModel
 from chemfit_dashboard.source import NodeDetails
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
 class JsonView(QTreeView):
     numeric_selected = Signal(object)
+    value_selected = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         """Initialize a generic expandable value view."""
@@ -57,8 +59,10 @@ class JsonView(QTreeView):
 
     def _current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         value = self._json_model.value(current)
+        path = self._json_model.value_path(current)
+        self.value_selected.emit((path, value) if current.isValid() else None)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            self.numeric_selected.emit((self._json_model.value_path(current), value))
+            self.numeric_selected.emit((path, value))
         else:
             self.numeric_selected.emit(None)
 
@@ -149,8 +153,10 @@ class Inspector(QWidget):
     plot_requested = Signal(object)
     plot_add_requested = Signal(object)
     order_requested = Signal(object)
+    extraction_requested = Signal(object)
+    component_extraction_requested = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
         """Initialize the tabbed context inspector."""
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -190,6 +196,16 @@ class Inspector(QWidget):
         self.order_button.setEnabled(False)
         self.order_button.clicked.connect(self._request_order)
         layout.addWidget(self.order_button)
+        self.extract_button = QPushButton("Add selected field to extraction")
+        self.extract_button.setEnabled(False)
+        self.extract_button.clicked.connect(self._request_extraction)
+        layout.addWidget(self.extract_button)
+        self.extract_component_button = QPushButton("Add component to extraction")
+        self.extract_component_button.setEnabled(False)
+        self.extract_component_button.clicked.connect(
+            self._request_component_extraction
+        )
+        layout.addWidget(self.extract_component_button)
 
         self.tabs = QTabWidget()
         self.summary = JsonView()
@@ -203,6 +219,7 @@ class Inspector(QWidget):
         layout.addWidget(self.tabs, 1)
         self._details: NodeDetails | None = None
         self._number_selector: NumberSelector | None = None
+        self._field_selector: FieldSelector | None = None
         self.summary.numeric_selected.connect(
             lambda selection: self._numeric_selected("fields", selection)
         )
@@ -215,10 +232,24 @@ class Inspector(QWidget):
         self.raw.numeric_selected.connect(
             lambda selection: self._numeric_selected("raw", selection)
         )
+        self.summary.value_selected.connect(
+            lambda selection: self._value_selected("fields", selection)
+        )
+        self.metadata.value_selected.connect(
+            lambda selection: self._value_selected("metadata", selection)
+        )
+        self.structure.raw.value_selected.connect(
+            lambda selection: self._value_selected("structure", selection)
+        )
+        self.raw.value_selected.connect(
+            lambda selection: self._value_selected("raw", selection)
+        )
 
     def clear(self) -> None:
         self._details = None
         self._set_number_selector(None)
+        self._set_field_selector(None)
+        self.extract_component_button.setEnabled(False)
         self.eyebrow.setText("SELECT A CONTEXT")
         self.title.setText("Context details")
         self.subtitle.setText("Choose an evaluation and context to inspect its data.")
@@ -230,6 +261,8 @@ class Inspector(QWidget):
     def set_details(self, details: NodeDetails) -> None:
         self._details = details
         self._set_number_selector(None)
+        self._set_field_selector(None)
+        self.extract_component_button.setEnabled(True)
         info = details.info
         self.eyebrow.setText(info.kind.upper())
         self.title.setText(info.label)
@@ -298,6 +331,31 @@ class Inspector(QWidget):
             else "Numeric selection: none"
         )
 
+    def _value_selected(self, section: str, selection: object) -> None:
+        if self._details is None or not isinstance(selection, tuple):
+            self._set_field_selector(None)
+            return
+        value_path, _value = selection
+        if not isinstance(value_path, tuple):
+            self._set_field_selector(None)
+            return
+        column = str(value_path[-1]) if value_path else section
+        self._set_field_selector(
+            FieldSelector(
+                node_path=self._details.info.path,
+                section=section,
+                value_path=value_path,
+                column=column,
+            )
+        )
+
+    def _set_field_selector(self, selector: FieldSelector | None) -> None:
+        self._field_selector = selector
+        self.extract_button.setEnabled(selector is not None)
+        self.extract_button.setToolTip(
+            selector.path_label if selector is not None else ""
+        )
+
     def _request_plot(self) -> None:
         if self._number_selector is not None:
             self.plot_requested.emit(self._number_selector)
@@ -309,6 +367,20 @@ class Inspector(QWidget):
     def _request_order(self) -> None:
         if self._number_selector is not None:
             self.order_requested.emit(self._number_selector)
+
+    def _request_extraction(self) -> None:
+        if self._field_selector is not None:
+            self.extraction_requested.emit(self._field_selector)
+
+    def _request_component_extraction(self) -> None:
+        if self._details is not None:
+            self.component_extraction_requested.emit(
+                FieldSelector(
+                    node_path=self._details.info.path,
+                    section="component",
+                    column=self._details.info.label or "component",
+                )
+            )
 
 
 def _format_sources(value: Any) -> str:

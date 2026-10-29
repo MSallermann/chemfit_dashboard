@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import heapq
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from html import escape
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
@@ -53,7 +57,6 @@ class ContextSearchIndex:
 
     def __init__(self, document: ContextDocument):
         """Index context identities and nested fields without mutating the document."""
-        self.document = document
         self.entries = tuple(_index_document(document))
 
     def search(
@@ -111,21 +114,58 @@ class ContextSearchIndex:
         return rank_search_hits(matches, limit)
 
 
+def _rank_key(hit: SearchHit) -> tuple[Any, ...]:
+    return (
+        -hit.score,
+        hit.record_name.casefold(),
+        len(hit.breadcrumb),
+        len(hit.value_path),
+        hit.breadcrumb.casefold(),
+        hit.field_label.casefold(),
+    )
+
+
+@dataclass(order=False)
+class _WorstFirst:
+    key: tuple[Any, ...]
+    hit: SearchHit
+
+    def __lt__(self, other: _WorstFirst) -> bool:
+        return self.key > other.key
+
+
+class TopKSearchHits:
+    """Retain only the globally best deterministic search results."""
+
+    def __init__(self, limit: int = MAX_RESULTS):
+        """Create a collector retaining at most ``limit`` results."""
+        self.limit = max(0, limit)
+        self._heap: list[_WorstFirst] = []
+
+    def add(self, hit: SearchHit) -> None:
+        if not self.limit:
+            return
+        item = _WorstFirst(_rank_key(hit), hit)
+        if len(self._heap) < self.limit:
+            heapq.heappush(self._heap, item)
+        elif item.key < self._heap[0].key:
+            heapq.heapreplace(self._heap, item)
+
+    def extend(self, hits: Iterable[SearchHit]) -> None:
+        for hit in hits:
+            self.add(hit)
+
+    def results(self) -> list[SearchHit]:
+        return sorted((item.hit for item in self._heap), key=_rank_key)
+
+
 def rank_search_hits(
-    hits: list[SearchHit], limit: int = MAX_RESULTS
+    hits: Iterable[SearchHit], limit: int = MAX_RESULTS
 ) -> list[SearchHit]:
     """Globally rank hits from one or many context documents."""
-    return sorted(
-        hits,
-        key=lambda hit: (
-            -hit.score,
-            hit.record_name.casefold(),
-            len(hit.breadcrumb),
-            len(hit.value_path),
-            hit.breadcrumb.casefold(),
-            hit.field_label.casefold(),
-        ),
-    )[:limit]
+    collector = TopKSearchHits(limit)
+    collector.extend(hits)
+    return collector.results()
 
 
 class ContextSearchPanel(QWidget):

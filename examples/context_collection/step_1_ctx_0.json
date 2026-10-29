@@ -55,6 +55,7 @@
                 }
             ]
         },
+        "name": "root",
         "example": "nested Lennard-Jones calibration",
         "dataset": {
             "name": "synthetic argon",
@@ -136,6 +137,7 @@
                         }
                     ]
                 },
+                "name": "preparation",
                 "stage": "parameter preparation",
                 "units": "reduced Lennard-Jones"
             },
@@ -267,6 +269,7 @@
                         }
                     ]
                 },
+                "name": "simulation",
                 "stage": "simulation suite"
             },
             "children": [
@@ -380,6 +383,7 @@
                                 }
                             ]
                         },
+                        "name": "simulation",
                         "execution": "parallel model branches"
                     },
                     "children": [
@@ -514,6 +518,7 @@
                                                 }
                                             ]
                                         },
+                                        "name": "pair_model",
                                         "model": "pair potential terms"
                                     },
                                     "children": [
@@ -717,6 +722,7 @@
                                                 }
                                             ]
                                         },
+                                        "name": "thermodynamic_model",
                                         "model": "thermodynamic observables"
                                     },
                                     "children": [
@@ -845,6 +851,7 @@
                                         }
                                     ]
                                 },
+                                "name": "structural_model",
                                 "stage": "structure analysis"
                             },
                             "children": [
@@ -1141,6 +1148,7 @@
                         }
                     ]
                 },
+                "name": "scoring",
                 "stage": "loss aggregation"
             },
             "children": [
@@ -1240,6 +1248,7 @@
                                 }
                             ]
                         },
+                        "name": "join_errors",
                         "metric": "weighted residual terms"
                     },
                     "children": [

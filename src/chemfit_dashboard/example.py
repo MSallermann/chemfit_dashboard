@@ -198,17 +198,21 @@ def build_example_objective(*, fail: bool = False):
     preparation = (
         pipeline(validate_parameters, derive_state)
         .then(attach_targets)
-        .with_meta(stage="parameter preparation", units="reduced Lennard-Jones")
+        .with_meta(
+            name="preparation",
+            stage="parameter preparation",
+            units="reduced Lennard-Jones",
+        )
     )
     pair_model = pipeline(
         join(repulsive_energy, attractive_energy, cutoff_correction).with_meta(
-            model="pair potential terms"
+            name="pair_model", model="pair potential terms"
         ),
         assemble_pair_terms,
     ).with_meta(stage="pair potential")
     thermodynamic_model = pipeline(
         join(virial_pressure, compressibility, heat_capacity).with_meta(
-            model="thermodynamic observables"
+            name="thermodynamic_model", model="thermodynamic observables"
         ),
         assemble_thermodynamics,
     ).with_meta(stage="thermodynamics")
@@ -217,29 +221,30 @@ def build_example_objective(*, fail: bool = False):
             model="structural observables"
         ),
         assemble_structure,
-    ).with_meta(stage="structure analysis")
+    ).with_meta(name="structural_model", stage="structure analysis")
     simulation = pipeline(
         join(
             pair_model,
             thermodynamic_model,
             structural_model,
             retain_prepared_state,
-        ).with_meta(execution="parallel model branches"),
+        ).with_meta(name="simulation", execution="parallel model branches"),
         merge_observables,
-    ).with_meta(stage="simulation suite")
+    ).with_meta(name="simulation", stage="simulation suite")
     scoring = pipeline(
         join(
             energy_error,
             pressure_error,
             failing_structure_error if fail else structure_error,
             response_error,
-        ).with_meta(metric="weighted residual terms"),
+        ).with_meta(name="join_errors", metric="weighted residual terms"),
         aggregate_loss,
-    ).with_meta(stage="loss aggregation")
+    ).with_meta(name="scoring", stage="loss aggregation")
     return (
         pipeline(preparation, simulation)
         .then(scoring)
         .with_meta(
+            name="root",
             example="nested Lennard-Jones calibration",
             dataset={"name": "synthetic argon", "state_points": 4},
             units={

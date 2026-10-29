@@ -41,6 +41,10 @@ class TaskRunner(QObject):
         self._pool = QThreadPool.globalInstance()
         self._active: set[_Task] = set()
 
+    def cancel_pending(self) -> None:
+        """Discard queued work; running tasks must stop cooperatively."""
+        self._pool.clear()
+
     def submit(
         self,
         function: Callable[[], Any],

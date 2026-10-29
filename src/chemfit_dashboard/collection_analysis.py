@@ -84,18 +84,18 @@ class CollectionSummary:
         )
 
 
-def analyze_collection(
+def analyze_collection(  # noqa: PLR0912
     records_and_documents: Iterable[tuple[RecordRef, ContextDocument | None]],
 ) -> CollectionSummary:
     """Summarize numeric root fields and primary failures in a collection."""
-    pairs = list(records_and_documents)
-    numeric_values: dict[str, list[float]] = defaultdict(list)
+    numeric_values: dict[str, list[float]] = {}
     failure_occurrences: list[FailureOccurrence] = []
     skipped: Counter[str] = Counter()
     missing: Counter[str] = Counter()
-    readable = successful = failed = partial = node_count = 0
+    total = readable = successful = failed = partial = node_count = 0
 
-    for record, document in pairs:
+    for record, document in records_and_documents:
+        total += 1
         if document is None:
             continue
         readable += 1
@@ -142,18 +142,26 @@ def analyze_collection(
             )
 
         for path, value in _numeric_leaves(document.details(()).fields):
-            numeric_values[path].append(value)
+            accumulator = numeric_values.get(path)
+            if accumulator is None:
+                # count, minimum, maximum, sum
+                numeric_values[path] = [1.0, value, value, value]
+            else:
+                accumulator[0] += 1
+                accumulator[1] = min(accumulator[1], value)
+                accumulator[2] = max(accumulator[2], value)
+                accumulator[3] += value
 
     numeric_fields = tuple(
         NumericSummary(
             path=path,
-            count=len(values),
-            minimum=min(values),
-            maximum=max(values),
-            mean=sum(values) / len(values),
+            count=int(values[0]),
+            minimum=values[1],
+            maximum=values[2],
+            mean=values[3] / values[0],
         )
         for path, values in sorted(
-            numeric_values.items(), key=lambda item: (-len(item[1]), item[0].casefold())
+            numeric_values.items(), key=lambda item: (-item[1][0], item[0].casefold())
         )[:40]
     )
     grouped: dict[tuple[str, str, str], list[FailureOccurrence]] = defaultdict(list)
@@ -173,12 +181,12 @@ def analyze_collection(
         )
     )
     return CollectionSummary(
-        total_records=len(pairs),
+        total_records=total,
         readable_records=readable,
         successful_records=successful,
         failed_records=failed,
         partial_records=partial,
-        unreadable_records=len(pairs) - readable,
+        unreadable_records=total - readable,
         node_count=node_count,
         numeric_fields=numeric_fields,
         failure_groups=failure_groups,

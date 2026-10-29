@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 
 from PySide6.QtWidgets import QLabel
@@ -8,6 +10,8 @@ from chemfit_dashboard.appearance import active_color_scheme
 from chemfit_dashboard.context_search import (
     ContextSearchIndex,
     ContextSearchPanel,
+    SearchHit,
+    TopKSearchHits,
     rank_search_hits,
 )
 from chemfit_dashboard.source import JsonFileSource
@@ -188,3 +192,36 @@ def test_collection_hits_are_globally_ranked_and_show_filename(tmp_path):
     assert isinstance(first_label, QLabel)
     assert "step_" in first_label.text()
     assert "files" in panel.status.text()
+
+
+def test_top_k_search_collection_is_bounded_and_deterministic():
+    collector = TopKSearchHits(3)
+    for index in reversed(range(20)):
+        collector.add(
+            SearchHit(
+                (),
+                f"root {index}",
+                "complete",
+                "fields",
+                ("value",),
+                "value",
+                str(index),
+                score=index / 20,
+                record_name=f"record_{index}.json",
+            )
+        )
+
+    assert [hit.score for hit in collector.results()] == [0.95, 0.9, 0.85]
+
+
+def test_search_index_does_not_retain_document(chemfit_json_path):
+    source = JsonFileSource(cache_capacity=0)
+    document = source.load(source.discover([chemfit_json_path])[0])
+    reference = weakref.ref(document)
+    index = ContextSearchIndex(document)
+
+    del document
+    gc.collect()
+
+    assert reference() is None
+    assert index.search("output")

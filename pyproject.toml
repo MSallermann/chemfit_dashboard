@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Native viewer for serialized ChemFit evaluation contexts"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PySide6>=6.7"]
+dependencies = ["PySide6>=6.7", "pydictnest>=0.3.0"]
 
 [project.optional-dependencies]
 test = ["chemfit>=4.0.0", "pytest>=8"]

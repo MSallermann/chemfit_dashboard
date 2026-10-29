@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from collections import OrderedDict
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QItemSelection, QSettings, QSortFilterProxyModel, Qt, QTimer
@@ -46,11 +48,9 @@ from chemfit_dashboard.collection_analysis import (
 from chemfit_dashboard.collection_plot import (
     CollectionPlotPanel,
     CollectionSeries,
-    NodeTrail,
     NumberSelector,
     build_collection_series,
-    component_trail_for_path,
-    resolve_component_selection,
+    build_collection_series_multi,
     selector_for_document,
 )
 from chemfit_dashboard.context_search import (
@@ -59,11 +59,27 @@ from chemfit_dashboard.context_search import (
     ContextSearchPanel,
     SearchHit,
     SearchMode,
-    rank_search_hits,
+    TopKSearchHits,
 )
+from chemfit_dashboard.extraction import (
+    ExtractionConfig,
+    FieldSelector,
+    export_csv,
+    export_jsonl,
+    extract_fields,
+)
+from chemfit_dashboard.extraction import (
+    selector_for_document as extraction_selector_for_document,
+)
+from chemfit_dashboard.extraction_ui import PREVIEW_LIMIT, DataExtractionPanel
 from chemfit_dashboard.graph_view import ContextGraphPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.models import ContextTreeModel, EvaluationListModel
+from chemfit_dashboard.semantic import (
+    NodeTrail,
+    component_trail_for_path,
+    resolve_component_selection,
+)
 from chemfit_dashboard.source import (
     ContextDocument,
     ContextSource,
@@ -71,6 +87,10 @@ from chemfit_dashboard.source import (
     JsonFileSource,
     NodePath,
     RecordRef,
+)
+from chemfit_dashboard.traversal import (
+    CancellationToken,
+    iter_collection,
 )
 from chemfit_dashboard.workers import TaskRunner
 
@@ -97,10 +117,13 @@ class MainWindow(QMainWindow):
         self._order_generation = 0
         self._search_generation = 0
         self._analysis_generation = 0
-        self._search_index_cache: dict[
+        self._extraction_generation = 0
+        self._search_index_cache: OrderedDict[
             str, tuple[tuple[int, int], ContextSearchIndex]
-        ] = {}
+        ] = OrderedDict()
+        self._search_index_capacity = 32
         self._search_index_lock = threading.Lock()
+        self._operation_tokens: dict[str, CancellationToken] = {}
         self._pending_search_hit: SearchHit | None = None
         self._pending_failure: FailureOccurrence | None = None
         self._sticky_node_path: NodePath = ()
@@ -212,6 +235,10 @@ class MainWindow(QMainWindow):
         self.inspector.plot_requested.connect(self._plot_requested)
         self.inspector.plot_add_requested.connect(self._plot_add_requested)
         self.inspector.order_requested.connect(self._order_requested)
+        self.inspector.extraction_requested.connect(self._add_extraction_selector)
+        self.inspector.component_extraction_requested.connect(
+            self._add_extraction_selector
+        )
         self.context_workspace.addWidget(self.inspector)
         self.context_workspace.setSizes([275, 440, 745])
 
@@ -225,6 +252,10 @@ class MainWindow(QMainWindow):
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.addTab(self.context_workspace, "Context inspector")
         self.workspace_tabs.addTab(self.collection_analysis, "Collection overview")
+        self.extraction = DataExtractionPanel()
+        self.extraction.selectors_changed.connect(self._refresh_extraction_preview)
+        self.extraction.export_requested.connect(self._export_extraction)
+        self.workspace_tabs.addTab(self.extraction, "Data Extraction")
         outer.addWidget(self.workspace_tabs, 1)
         self.setCentralWidget(container)
         self.statusBar().showMessage("Ready")
@@ -398,6 +429,26 @@ class MainWindow(QMainWindow):
         close.triggered.connect(self.close)
         file_menu.addAction(close)
 
+    def _new_operation(self, name: str) -> CancellationToken:
+        previous = self._operation_tokens.get(name)
+        if previous is not None:
+            previous.cancel()
+        token = CancellationToken()
+        self._operation_tokens[name] = token
+        return token
+
+    def _cancel_operation(self, name: str) -> None:
+        token = self._operation_tokens.get(name)
+        if token is not None:
+            token.cancel()
+
+    def closeEvent(self, event) -> None:  # noqa: N802, ANN001
+        for token in self._operation_tokens.values():
+            token.cancel()
+        self.graph.view.cancel_pending_layout()
+        self.tasks.cancel_pending()
+        super().closeEvent(event)
+
     def _change_font_scale(self, change: float) -> None:
         application = QApplication.instance()
         if not isinstance(application, QApplication) or self._base_font is None:
@@ -488,6 +539,7 @@ class MainWindow(QMainWindow):
         self.reverse_order_button.setEnabled(count > 1)
         self.statusBar().showMessage(f"Found {len(records)} context files", 3500)
         self._refresh_collection_analysis()
+        self._refresh_extraction_preview(self.extraction.selectors)
         if not self.file_list.currentIndex().isValid() and count:
             root_index = self.file_proxy.index(0, 0)
             self.file_list.expand(root_index)
@@ -659,20 +711,20 @@ class MainWindow(QMainWindow):
         records = list(self.file_model.records)
         self._analysis_generation += 1
         generation = self._analysis_generation
+        cancellation = self._new_operation("analysis")
         if not records:
             self.collection_analysis.show_error("No context collection is loaded.")
             return
         self.collection_analysis.show_loading(len(records))
 
         def load_summary() -> CollectionSummary:
-            records_and_documents = []
-            for record in records:
-                try:
-                    document = self.source.load(record)
-                except ContextSourceError:
-                    document = None
-                records_and_documents.append((record, document))
-            return analyze_collection(records_and_documents)
+            pairs = (
+                (item.record, item.document)
+                for item in iter_collection(
+                    self.source, records, cancellation=cancellation
+                )
+            )
+            return analyze_collection(pairs)
 
         self.tasks.submit(
             load_summary,
@@ -741,6 +793,7 @@ class MainWindow(QMainWindow):
         self._select_record_by_id(record_id)
 
     def _field_search_changed(self, text: str) -> None:
+        self._cancel_operation("search")
         if text.strip():
             self._search_generation += 1
             if self.hierarchy_tabs.currentWidget() is not self.search_panel:
@@ -792,6 +845,7 @@ class MainWindow(QMainWindow):
 
         self._search_generation += 1
         generation = self._search_generation
+        cancellation = self._new_operation("search")
         count = len(records)
         self.search_panel.show_loading(
             f"Searching {count:,} evaluation{'s' if count != 1 else ''} "
@@ -799,10 +853,10 @@ class MainWindow(QMainWindow):
         )
 
         def search_records() -> tuple[list[SearchHit], int, bool]:
-            hits: list[SearchHit] = []
+            hits = TopKSearchHits(MAX_RESULTS)
             failed_records = 0
             for record in records:
-                if generation != self._search_generation:
+                if cancellation.cancelled:
                     return [], failed_records, True
                 try:
                     document = (
@@ -822,7 +876,7 @@ class MainWindow(QMainWindow):
                     )
                 except ContextSourceError:
                     failed_records += 1
-            return rank_search_hits(hits, MAX_RESULTS), failed_records, False
+            return hits.results(), failed_records, False
 
         self.tasks.submit(
             search_records,
@@ -841,16 +895,19 @@ class MainWindow(QMainWindow):
 
     def _search_options_toggled(self, _checked: bool) -> None:
         if self.field_search.text().strip():
+            self._cancel_operation("search")
             self._search_generation += 1
             self._search_timer.start()
 
     def _search_mode_changed(self, _index: int) -> None:
         if self.field_search.text().strip():
+            self._cancel_operation("search")
             self._search_generation += 1
             self._search_timer.start()
 
     def _search_scope_changed(self, _index: int) -> None:
         if self.field_search.text().strip():
+            self._cancel_operation("search")
             self._search_generation += 1
             self._search_timer.start()
 
@@ -863,10 +920,14 @@ class MainWindow(QMainWindow):
         with self._search_index_lock:
             cached = self._search_index_cache.get(document.record.id)
             if cached is not None and cached[0] == signature:
+                self._search_index_cache.move_to_end(document.record.id)
                 return cached[1]
         index = ContextSearchIndex(document)
         with self._search_index_lock:
             self._search_index_cache[document.record.id] = (signature, index)
+            self._search_index_cache.move_to_end(document.record.id)
+            while len(self._search_index_cache) > self._search_index_capacity:
+                self._search_index_cache.popitem(last=False)
         return index
 
     def _search_loaded(
@@ -962,6 +1023,7 @@ class MainWindow(QMainWindow):
         records = list(self.file_model.records)
         self._plot_generation += 1
         generation = self._plot_generation
+        cancellation = self._new_operation("plot")
         if activate:
             self.hierarchy_tabs.setCurrentWidget(self.collection_plot)
         self.collection_plot.show_loading(selected, len(records))
@@ -970,17 +1032,13 @@ class MainWindow(QMainWindow):
             return
 
         def load_series() -> tuple[CollectionSeries, ...]:
-            records_and_documents = []
-            for record in records:
-                try:
-                    document = self.source.load(record)
-                except ContextSourceError:
-                    document = None
-                records_and_documents.append((record, document))
-            return tuple(
-                build_collection_series(selector, records_and_documents)
-                for selector in selected
+            pairs = (
+                (item.record, item.document)
+                for item in iter_collection(
+                    self.source, records, cancellation=cancellation
+                )
             )
+            return build_collection_series_multi(selected, pairs)
 
         self.tasks.submit(
             load_series,
@@ -1028,6 +1086,7 @@ class MainWindow(QMainWindow):
             self.collection_plot.clear()
 
     def _clear_plot_series(self) -> None:
+        self._cancel_operation("plot")
         self._plot_generation += 1
         self._active_plot_selector = None
         self._active_plot_selectors = []
@@ -1042,20 +1101,20 @@ class MainWindow(QMainWindow):
             return
         self._order_generation += 1
         generation = self._order_generation
+        cancellation = self._new_operation("order")
         self.order_status.setText("Order: loading selected values…")
         self.statusBar().showMessage(
             f"Ordering {len(records):,} contexts by {selector.label}…"
         )
 
         def load_order_values() -> tuple[list[RecordRef], CollectionSeries]:
-            records_and_documents = []
-            for record in records:
-                try:
-                    document = self.source.load(record)
-                except ContextSourceError:
-                    document = None
-                records_and_documents.append((record, document))
-            return records, build_collection_series(selector, records_and_documents)
+            pairs = (
+                (item.record, item.document)
+                for item in iter_collection(
+                    self.source, records, cancellation=cancellation
+                )
+            )
+            return records, build_collection_series(selector, pairs)
 
         self.tasks.submit(
             load_order_values,
@@ -1112,6 +1171,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Could not order the context collection.", 5000)
 
     def _reset_collection_order(self) -> None:
+        self._cancel_operation("order")
         self._order_generation += 1
         selected_id = self._selected_record_id()
         self._clear_numeric_order()
@@ -1177,6 +1237,106 @@ class MainWindow(QMainWindow):
         self._numeric_order_missing = ()
         self._numeric_order_label = None
         self._order_descending = False
+
+    def _add_extraction_selector(self, selector: FieldSelector) -> None:
+        if self._current_document is not None:
+            selector = extraction_selector_for_document(
+                self._current_document, selector
+            )
+        self.extraction.add_selector(selector)
+        self.workspace_tabs.setCurrentWidget(self.extraction)
+
+    def _refresh_extraction_preview(
+        self, selectors: tuple[FieldSelector, ...] | object
+    ) -> None:
+        selected = (
+            selectors if isinstance(selectors, tuple) else self.extraction.selectors
+        )
+        if not all(isinstance(item, FieldSelector) for item in selected):
+            selected = self.extraction.selectors
+        records = list(self.file_model.records)
+        self._extraction_generation += 1
+        generation = self._extraction_generation
+        cancellation = self._new_operation("extraction_preview")
+        if not selected:
+            self.extraction.preview_model.set_data((), ())
+            self.extraction.status.setText(
+                "Add any inspector value or component to begin."
+            )
+            return
+        if not records:
+            self.extraction.show_error("No context collection is loaded.")
+            return
+        self.extraction.show_loading(len(records))
+
+        def preview():
+            return tuple(
+                islice(
+                    extract_fields(
+                        self.source,
+                        records,
+                        selected,
+                        cancellation=cancellation,
+                    ),
+                    PREVIEW_LIMIT,
+                )
+            )
+
+        self.tasks.submit(
+            preview,
+            lambda rows: self._extraction_preview_loaded(
+                generation, rows, len(records)
+            ),
+            lambda details: self._extraction_failed(generation, details),
+        )
+
+    def _extraction_preview_loaded(
+        self, generation: int, rows: tuple, total: int
+    ) -> None:
+        if generation == self._extraction_generation:
+            self.extraction.set_preview(rows, total)
+
+    def _extraction_failed(self, generation: int, details: str) -> None:
+        if generation != self._extraction_generation:
+            return
+        logger.error("Could not build extraction preview\n%s", details)
+        self.extraction.show_error("Could not build the extraction preview.")
+
+    def _export_extraction(
+        self, path: str, format_name: str, config: ExtractionConfig
+    ) -> None:
+        records = list(self.file_model.records)
+        cancellation = self._new_operation("extraction_export")
+        self.extraction.status.setText(
+            f"Exporting {len(records):,} evaluations to {format_name.upper()}…"
+        )
+
+        def write_export() -> int:
+            if format_name == "csv":
+                return export_csv(
+                    path,
+                    self.source,
+                    records,
+                    config,
+                    cancellation=cancellation,
+                )
+            return export_jsonl(
+                path,
+                self.source,
+                records,
+                config,
+                cancellation=cancellation,
+            )
+
+        self.tasks.submit(
+            write_export,
+            lambda count: self.extraction.status.setText(
+                f"Exported {count:,} rows to {path}"
+            ),
+            lambda _details: self.extraction.show_error(
+                "Could not export extraction; see the application log."
+            ),
+        )
 
     def _selected_record_id(self) -> str | None:
         proxy_index = self.file_list.currentIndex()

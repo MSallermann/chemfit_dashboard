@@ -5,6 +5,7 @@ import json
 import re
 import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -273,12 +274,41 @@ class ContextSource(ABC):
 
 
 class JsonFileSource(ContextSource):
-    """JSON context source with a stat-aware, per-session document cache."""
+    """JSON context source with a stat-aware, bounded LRU document cache."""
 
-    def __init__(self) -> None:
-        """Initialize an empty thread-safe session cache."""
-        self._cache: dict[str, tuple[tuple[int, int], ContextDocument]] = {}
-        self._lock = threading.Lock()
+    def __init__(
+        self,
+        *,
+        cache_capacity: int = 64,
+        cache_memory_budget: int = 256 * 1024 * 1024,
+        object_overhead_factor: float = 3.0,
+    ) -> None:
+        """Initialize a thread-safe cache bounded by entries and estimated bytes."""
+        if cache_capacity < 0 or cache_memory_budget < 0:
+            message = "Cache limits cannot be negative"
+            raise ValueError(message)
+        if object_overhead_factor < 1:
+            message = "object_overhead_factor must be at least 1"
+            raise ValueError(message)
+        self.cache_capacity = cache_capacity
+        self.cache_memory_budget = cache_memory_budget
+        self.object_overhead_factor = object_overhead_factor
+        self._cache: OrderedDict[str, tuple[tuple[int, int], int, ContextDocument]] = (
+            OrderedDict()
+        )
+        self._cache_bytes = 0
+        self._lock = threading.RLock()
+
+    @property
+    def cache_info(self) -> tuple[int, int]:
+        """Return cached entry count and approximate retained bytes."""
+        with self._lock:
+            return len(self._cache), self._cache_bytes
+
+    def clear_cache(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._cache_bytes = 0
 
     def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
         paths: set[Path] = set()
@@ -329,8 +359,12 @@ class JsonFileSource(ContextSource):
 
         with self._lock:
             cached = self._cache.get(record.id)
-            if cached is not None and cached[0] == signature:
-                return cached[1]
+            if cached is not None:
+                if cached[0] == signature:
+                    self._cache.move_to_end(record.id)
+                    return cached[2]
+                self._cache_bytes -= cached[1]
+                del self._cache[record.id]
 
         try:
             with record.path.open(encoding="utf-8") as stream:
@@ -340,8 +374,25 @@ class JsonFileSource(ContextSource):
             raise ContextSourceError(message) from exc
 
         document = ContextDocument(record, raw)
+        estimated_cost = max(1, round(stat.st_size * self.object_overhead_factor))
+        if (
+            self.cache_capacity == 0
+            or self.cache_memory_budget == 0
+            or estimated_cost > self.cache_memory_budget
+        ):
+            return document
         with self._lock:
-            self._cache[record.id] = (signature, document)
+            previous = self._cache.pop(record.id, None)
+            if previous is not None:
+                self._cache_bytes -= previous[1]
+            self._cache[record.id] = (signature, estimated_cost, document)
+            self._cache_bytes += estimated_cost
+            while self._cache and (
+                len(self._cache) > self.cache_capacity
+                or self._cache_bytes > self.cache_memory_budget
+            ):
+                _key, (_signature, cost, _document) = self._cache.popitem(last=False)
+                self._cache_bytes -= cost
         return document
 
 

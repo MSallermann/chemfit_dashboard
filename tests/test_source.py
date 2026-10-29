@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import sleep
 
 from chemfit.fitter import FitContext
 from chemfit.fitter_callbacks import CheckpointBestParameters, SaveMetaData
@@ -145,3 +147,59 @@ def test_large_example_exercises_a_deep_real_chemfit_hierarchy():
     assert node_count >= 30
     assert maximum_depth >= 5
     assert context.output == context.children[-1].output
+
+
+def test_bounded_lru_cache_evicts_without_invalidating_live_document(tmp_path):
+    for index in range(3):
+        (tmp_path / f"{index}.json").write_text(
+            json.dumps({"output": index}), encoding="utf-8"
+        )
+    source = JsonFileSource(cache_capacity=2, cache_memory_budget=10_000)
+    records = source.discover([tmp_path])
+    first = source.load(records[0])
+    source.load(records[1])
+    source.load(records[2])
+
+    assert source.cache_info[0] == 2
+    assert first.details(()).fields["output"] == 0
+    assert source.load(records[0]) is not first
+
+
+def test_cache_does_not_retain_document_larger_than_budget(tmp_path):
+    path = tmp_path / "large.json"
+    path.write_text(json.dumps({"value": "x" * 2_000}), encoding="utf-8")
+    source = JsonFileSource(cache_capacity=4, cache_memory_budget=100)
+    record = source.discover([path])[0]
+
+    assert source.load(record) is not source.load(record)
+    assert source.cache_info == (0, 0)
+
+
+def test_cache_access_is_thread_safe(tmp_path):
+    path = tmp_path / "threaded.json"
+    path.write_text(json.dumps({"output": list(range(100))}), encoding="utf-8")
+    source = JsonFileSource(cache_capacity=2)
+    record = source.discover([path])[0]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        documents = list(executor.map(lambda _index: source.load(record), range(40)))
+
+    assert all(
+        document.details(()).fields["output"][50] == 50 for document in documents
+    )
+    assert source.cache_info[0] == 1
+
+
+def test_cache_invalidates_when_file_signature_changes(tmp_path):
+    path = tmp_path / "changing.json"
+    path.write_text('{"output": 1}', encoding="utf-8")
+    source = JsonFileSource()
+    record = source.discover([path])[0]
+    first = source.load(record)
+    sleep(0.002)
+    path.write_text('{"output": 200}', encoding="utf-8")
+
+    second = source.load(record)
+
+    assert second is not first
+    assert second.details(()).fields["output"] == 200
