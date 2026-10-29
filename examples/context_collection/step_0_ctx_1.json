@@ -1,0 +1,1370 @@
+{
+    "input": {
+        "epsilon": 0.2,
+        "sigma": 3.4
+    },
+    "output": 0.0333944817011902,
+    "meta": {
+        "chemfit.structure": {
+            "children": [
+                {
+                    "index": 0,
+                    "name": "PipelineComponent"
+                },
+                {
+                    "index": 1,
+                    "name": "PipelineComponent"
+                },
+                {
+                    "index": 2,
+                    "name": "PipelineComponent"
+                }
+            ],
+            "inputs": [
+                [
+                    {
+                        "kind": "parent_input"
+                    }
+                ],
+                [
+                    {
+                        "kind": "child",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "kind": "child",
+                        "index": 1
+                    }
+                ]
+            ],
+            "dependencies": [
+                [],
+                [
+                    0
+                ],
+                [
+                    1
+                ]
+            ],
+            "outputs": [
+                {
+                    "kind": "child",
+                    "index": 2
+                }
+            ]
+        },
+        "example": "nested Lennard-Jones calibration",
+        "dataset": {
+            "name": "synthetic argon",
+            "state_points": 4
+        },
+        "units": {
+            "energy": "eV",
+            "pressure": "reduced",
+            "distance": "angstrom"
+        },
+        "example_state": "complete evaluation"
+    },
+    "children": [
+        {
+            "input": {
+                "epsilon": 0.2,
+                "sigma": 3.4
+            },
+            "output": {
+                "epsilon": 0.2,
+                "sigma": 3.4,
+                "cutoff": 8.5,
+                "density": 0.019082027274577654,
+                "sample_distance": 3.8080000000000003,
+                "temperature": 0.22999999999999998,
+                "target_energy": -0.17,
+                "target_pressure": 0.025,
+                "target_rdf_peak": 1.84,
+                "target_compressibility": 0.58
+            },
+            "meta": {
+                "chemfit.structure": {
+                    "children": [
+                        {
+                            "index": 0,
+                            "name": "validate_parameters"
+                        },
+                        {
+                            "index": 1,
+                            "name": "derive_state"
+                        },
+                        {
+                            "index": 2,
+                            "name": "attach_targets"
+                        }
+                    ],
+                    "inputs": [
+                        [
+                            {
+                                "kind": "parent_input"
+                            }
+                        ],
+                        [
+                            {
+                                "kind": "child",
+                                "index": 0
+                            }
+                        ],
+                        [
+                            {
+                                "kind": "child",
+                                "index": 1
+                            }
+                        ]
+                    ],
+                    "dependencies": [
+                        [],
+                        [
+                            0
+                        ],
+                        [
+                            1
+                        ]
+                    ],
+                    "outputs": [
+                        {
+                            "kind": "child",
+                            "index": 2
+                        }
+                    ]
+                },
+                "stage": "parameter preparation",
+                "units": "reduced Lennard-Jones"
+            },
+            "children": [
+                {
+                    "input": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4
+                    },
+                    "output": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4
+                    },
+                    "meta": {},
+                    "children": []
+                },
+                {
+                    "input": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4
+                    },
+                    "output": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4,
+                        "cutoff": 8.5,
+                        "density": 0.019082027274577654,
+                        "sample_distance": 3.8080000000000003,
+                        "temperature": 0.22999999999999998
+                    },
+                    "meta": {},
+                    "children": []
+                },
+                {
+                    "input": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4,
+                        "cutoff": 8.5,
+                        "density": 0.019082027274577654,
+                        "sample_distance": 3.8080000000000003,
+                        "temperature": 0.22999999999999998
+                    },
+                    "output": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4,
+                        "cutoff": 8.5,
+                        "density": 0.019082027274577654,
+                        "sample_distance": 3.8080000000000003,
+                        "temperature": 0.22999999999999998,
+                        "target_energy": -0.17,
+                        "target_pressure": 0.025,
+                        "target_rdf_peak": 1.84,
+                        "target_compressibility": 0.58
+                    },
+                    "meta": {},
+                    "children": []
+                }
+            ]
+        },
+        {
+            "input": {
+                "epsilon": 0.2,
+                "sigma": 3.4,
+                "cutoff": 8.5,
+                "density": 0.019082027274577654,
+                "sample_distance": 3.8080000000000003,
+                "temperature": 0.22999999999999998,
+                "target_energy": -0.17,
+                "target_pressure": 0.025,
+                "target_rdf_peak": 1.84,
+                "target_compressibility": 0.58
+            },
+            "output": {
+                "repulsive_energy": 0.2053400743563112,
+                "attractive_energy": -0.40530489694185656,
+                "cutoff_correction": -0.14783965428657853,
+                "energy": -0.3478044768721239,
+                "pressure": 0.00469608691227356,
+                "compressibility": 0.5714285714285714,
+                "heat_capacity": 1.73,
+                "rdf_peak": 1.829268292682927,
+                "coordination_number": 10.25,
+                "bond_order": 0.794533602503334,
+                "epsilon": 0.2,
+                "sigma": 3.4,
+                "cutoff": 8.5,
+                "density": 0.019082027274577654,
+                "sample_distance": 3.8080000000000003,
+                "temperature": 0.22999999999999998,
+                "target_energy": -0.17,
+                "target_pressure": 0.025,
+                "target_rdf_peak": 1.84,
+                "target_compressibility": 0.58
+            },
+            "meta": {
+                "chemfit.structure": {
+                    "children": [
+                        {
+                            "index": 0,
+                            "name": "TupleJoinedComponent"
+                        },
+                        {
+                            "index": 1,
+                            "name": "merge_observables"
+                        }
+                    ],
+                    "inputs": [
+                        [
+                            {
+                                "kind": "parent_input"
+                            }
+                        ],
+                        [
+                            {
+                                "kind": "child",
+                                "index": 0
+                            }
+                        ]
+                    ],
+                    "dependencies": [
+                        [],
+                        [
+                            0
+                        ]
+                    ],
+                    "outputs": [
+                        {
+                            "kind": "child",
+                            "index": 1
+                        }
+                    ]
+                },
+                "stage": "simulation suite"
+            },
+            "children": [
+                {
+                    "input": {
+                        "epsilon": 0.2,
+                        "sigma": 3.4,
+                        "cutoff": 8.5,
+                        "density": 0.019082027274577654,
+                        "sample_distance": 3.8080000000000003,
+                        "temperature": 0.22999999999999998,
+                        "target_energy": -0.17,
+                        "target_pressure": 0.025,
+                        "target_rdf_peak": 1.84,
+                        "target_compressibility": 0.58
+                    },
+                    "output": [
+                        {
+                            "repulsive_energy": 0.2053400743563112,
+                            "attractive_energy": -0.40530489694185656,
+                            "cutoff_correction": -0.14783965428657853,
+                            "energy": -0.3478044768721239
+                        },
+                        {
+                            "pressure": 0.00469608691227356,
+                            "compressibility": 0.5714285714285714,
+                            "heat_capacity": 1.73
+                        },
+                        {
+                            "rdf_peak": 1.829268292682927,
+                            "coordination_number": 10.25,
+                            "bond_order": 0.794533602503334
+                        },
+                        {
+                            "epsilon": 0.2,
+                            "sigma": 3.4,
+                            "cutoff": 8.5,
+                            "density": 0.019082027274577654,
+                            "sample_distance": 3.8080000000000003,
+                            "temperature": 0.22999999999999998,
+                            "target_energy": -0.17,
+                            "target_pressure": 0.025,
+                            "target_rdf_peak": 1.84,
+                            "target_compressibility": 0.58
+                        }
+                    ],
+                    "meta": {
+                        "chemfit.structure": {
+                            "children": [
+                                {
+                                    "index": 0,
+                                    "name": "PipelineComponent"
+                                },
+                                {
+                                    "index": 1,
+                                    "name": "PipelineComponent"
+                                },
+                                {
+                                    "index": 2,
+                                    "name": "PipelineComponent"
+                                },
+                                {
+                                    "index": 3,
+                                    "name": "retain_prepared_state"
+                                }
+                            ],
+                            "inputs": [
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ],
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ],
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ],
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ]
+                            ],
+                            "dependencies": [
+                                [],
+                                [],
+                                [],
+                                []
+                            ],
+                            "outputs": [
+                                {
+                                    "kind": "child",
+                                    "index": 0
+                                },
+                                {
+                                    "kind": "child",
+                                    "index": 1
+                                },
+                                {
+                                    "kind": "child",
+                                    "index": 2
+                                },
+                                {
+                                    "kind": "child",
+                                    "index": 3
+                                }
+                            ]
+                        },
+                        "execution": "parallel model branches"
+                    },
+                    "children": [
+                        {
+                            "input": {
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": {
+                                "repulsive_energy": 0.2053400743563112,
+                                "attractive_energy": -0.40530489694185656,
+                                "cutoff_correction": -0.14783965428657853,
+                                "energy": -0.3478044768721239
+                            },
+                            "meta": {
+                                "chemfit.structure": {
+                                    "children": [
+                                        {
+                                            "index": 0,
+                                            "name": "TupleJoinedComponent"
+                                        },
+                                        {
+                                            "index": 1,
+                                            "name": "assemble_pair_terms"
+                                        }
+                                    ],
+                                    "inputs": [
+                                        [
+                                            {
+                                                "kind": "parent_input"
+                                            }
+                                        ],
+                                        [
+                                            {
+                                                "kind": "child",
+                                                "index": 0
+                                            }
+                                        ]
+                                    ],
+                                    "dependencies": [
+                                        [],
+                                        [
+                                            0
+                                        ]
+                                    ],
+                                    "outputs": [
+                                        {
+                                            "kind": "child",
+                                            "index": 1
+                                        }
+                                    ]
+                                },
+                                "stage": "pair potential"
+                            },
+                            "children": [
+                                {
+                                    "input": {
+                                        "epsilon": 0.2,
+                                        "sigma": 3.4,
+                                        "cutoff": 8.5,
+                                        "density": 0.019082027274577654,
+                                        "sample_distance": 3.8080000000000003,
+                                        "temperature": 0.22999999999999998,
+                                        "target_energy": -0.17,
+                                        "target_pressure": 0.025,
+                                        "target_rdf_peak": 1.84,
+                                        "target_compressibility": 0.58
+                                    },
+                                    "output": [
+                                        0.2053400743563112,
+                                        -0.40530489694185656,
+                                        -0.14783965428657853
+                                    ],
+                                    "meta": {
+                                        "chemfit.structure": {
+                                            "children": [
+                                                {
+                                                    "index": 0,
+                                                    "name": "repulsive_energy"
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "name": "attractive_energy"
+                                                },
+                                                {
+                                                    "index": 2,
+                                                    "name": "cutoff_correction"
+                                                }
+                                            ],
+                                            "inputs": [
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ],
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ],
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ]
+                                            ],
+                                            "dependencies": [
+                                                [],
+                                                [],
+                                                []
+                                            ],
+                                            "outputs": [
+                                                {
+                                                    "kind": "child",
+                                                    "index": 0
+                                                },
+                                                {
+                                                    "kind": "child",
+                                                    "index": 1
+                                                },
+                                                {
+                                                    "kind": "child",
+                                                    "index": 2
+                                                }
+                                            ]
+                                        },
+                                        "model": "pair potential terms"
+                                    },
+                                    "children": [
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 0.2053400743563112,
+                                            "meta": {},
+                                            "children": []
+                                        },
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": -0.40530489694185656,
+                                            "meta": {},
+                                            "children": []
+                                        },
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": -0.14783965428657853,
+                                            "meta": {},
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "input": [
+                                        0.2053400743563112,
+                                        -0.40530489694185656,
+                                        -0.14783965428657853
+                                    ],
+                                    "output": {
+                                        "repulsive_energy": 0.2053400743563112,
+                                        "attractive_energy": -0.40530489694185656,
+                                        "cutoff_correction": -0.14783965428657853,
+                                        "energy": -0.3478044768721239
+                                    },
+                                    "meta": {},
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "input": {
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": {
+                                "pressure": 0.00469608691227356,
+                                "compressibility": 0.5714285714285714,
+                                "heat_capacity": 1.73
+                            },
+                            "meta": {
+                                "chemfit.structure": {
+                                    "children": [
+                                        {
+                                            "index": 0,
+                                            "name": "TupleJoinedComponent"
+                                        },
+                                        {
+                                            "index": 1,
+                                            "name": "assemble_thermodynamics"
+                                        }
+                                    ],
+                                    "inputs": [
+                                        [
+                                            {
+                                                "kind": "parent_input"
+                                            }
+                                        ],
+                                        [
+                                            {
+                                                "kind": "child",
+                                                "index": 0
+                                            }
+                                        ]
+                                    ],
+                                    "dependencies": [
+                                        [],
+                                        [
+                                            0
+                                        ]
+                                    ],
+                                    "outputs": [
+                                        {
+                                            "kind": "child",
+                                            "index": 1
+                                        }
+                                    ]
+                                },
+                                "stage": "thermodynamics"
+                            },
+                            "children": [
+                                {
+                                    "input": {
+                                        "epsilon": 0.2,
+                                        "sigma": 3.4,
+                                        "cutoff": 8.5,
+                                        "density": 0.019082027274577654,
+                                        "sample_distance": 3.8080000000000003,
+                                        "temperature": 0.22999999999999998,
+                                        "target_energy": -0.17,
+                                        "target_pressure": 0.025,
+                                        "target_rdf_peak": 1.84,
+                                        "target_compressibility": 0.58
+                                    },
+                                    "output": [
+                                        0.00469608691227356,
+                                        0.5714285714285714,
+                                        1.73
+                                    ],
+                                    "meta": {
+                                        "chemfit.structure": {
+                                            "children": [
+                                                {
+                                                    "index": 0,
+                                                    "name": "virial_pressure"
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "name": "compressibility"
+                                                },
+                                                {
+                                                    "index": 2,
+                                                    "name": "heat_capacity"
+                                                }
+                                            ],
+                                            "inputs": [
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ],
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ],
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ]
+                                            ],
+                                            "dependencies": [
+                                                [],
+                                                [],
+                                                []
+                                            ],
+                                            "outputs": [
+                                                {
+                                                    "kind": "child",
+                                                    "index": 0
+                                                },
+                                                {
+                                                    "kind": "child",
+                                                    "index": 1
+                                                },
+                                                {
+                                                    "kind": "child",
+                                                    "index": 2
+                                                }
+                                            ]
+                                        },
+                                        "model": "thermodynamic observables"
+                                    },
+                                    "children": [
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 0.00469608691227356,
+                                            "meta": {},
+                                            "children": []
+                                        },
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 0.5714285714285714,
+                                            "meta": {},
+                                            "children": []
+                                        },
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 1.73,
+                                            "meta": {},
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "input": [
+                                        0.00469608691227356,
+                                        0.5714285714285714,
+                                        1.73
+                                    ],
+                                    "output": {
+                                        "pressure": 0.00469608691227356,
+                                        "compressibility": 0.5714285714285714,
+                                        "heat_capacity": 1.73
+                                    },
+                                    "meta": {},
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "input": {
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": {
+                                "rdf_peak": 1.829268292682927,
+                                "coordination_number": 10.25,
+                                "bond_order": 0.794533602503334
+                            },
+                            "meta": {
+                                "chemfit.structure": {
+                                    "children": [
+                                        {
+                                            "index": 0,
+                                            "name": "TupleJoinedComponent"
+                                        },
+                                        {
+                                            "index": 1,
+                                            "name": "assemble_structure"
+                                        }
+                                    ],
+                                    "inputs": [
+                                        [
+                                            {
+                                                "kind": "parent_input"
+                                            }
+                                        ],
+                                        [
+                                            {
+                                                "kind": "child",
+                                                "index": 0
+                                            }
+                                        ]
+                                    ],
+                                    "dependencies": [
+                                        [],
+                                        [
+                                            0
+                                        ]
+                                    ],
+                                    "outputs": [
+                                        {
+                                            "kind": "child",
+                                            "index": 1
+                                        }
+                                    ]
+                                },
+                                "stage": "structure analysis"
+                            },
+                            "children": [
+                                {
+                                    "input": {
+                                        "epsilon": 0.2,
+                                        "sigma": 3.4,
+                                        "cutoff": 8.5,
+                                        "density": 0.019082027274577654,
+                                        "sample_distance": 3.8080000000000003,
+                                        "temperature": 0.22999999999999998,
+                                        "target_energy": -0.17,
+                                        "target_pressure": 0.025,
+                                        "target_rdf_peak": 1.84,
+                                        "target_compressibility": 0.58
+                                    },
+                                    "output": [
+                                        1.829268292682927,
+                                        10.25,
+                                        0.794533602503334
+                                    ],
+                                    "meta": {
+                                        "chemfit.structure": {
+                                            "children": [
+                                                {
+                                                    "index": 0,
+                                                    "name": "radial_distribution_peak"
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "name": "coordination_number"
+                                                },
+                                                {
+                                                    "index": 2,
+                                                    "name": "bond_order"
+                                                }
+                                            ],
+                                            "inputs": [
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ],
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ],
+                                                [
+                                                    {
+                                                        "kind": "parent_input"
+                                                    }
+                                                ]
+                                            ],
+                                            "dependencies": [
+                                                [],
+                                                [],
+                                                []
+                                            ],
+                                            "outputs": [
+                                                {
+                                                    "kind": "child",
+                                                    "index": 0
+                                                },
+                                                {
+                                                    "kind": "child",
+                                                    "index": 1
+                                                },
+                                                {
+                                                    "kind": "child",
+                                                    "index": 2
+                                                }
+                                            ]
+                                        },
+                                        "model": "structural observables"
+                                    },
+                                    "children": [
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 1.829268292682927,
+                                            "meta": {},
+                                            "children": []
+                                        },
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 10.25,
+                                            "meta": {},
+                                            "children": []
+                                        },
+                                        {
+                                            "input": {
+                                                "epsilon": 0.2,
+                                                "sigma": 3.4,
+                                                "cutoff": 8.5,
+                                                "density": 0.019082027274577654,
+                                                "sample_distance": 3.8080000000000003,
+                                                "temperature": 0.22999999999999998,
+                                                "target_energy": -0.17,
+                                                "target_pressure": 0.025,
+                                                "target_rdf_peak": 1.84,
+                                                "target_compressibility": 0.58
+                                            },
+                                            "output": 0.794533602503334,
+                                            "meta": {},
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "input": [
+                                        1.829268292682927,
+                                        10.25,
+                                        0.794533602503334
+                                    ],
+                                    "output": {
+                                        "rdf_peak": 1.829268292682927,
+                                        "coordination_number": 10.25,
+                                        "bond_order": 0.794533602503334
+                                    },
+                                    "meta": {},
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "input": {
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": {
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "meta": {},
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "input": [
+                        {
+                            "repulsive_energy": 0.2053400743563112,
+                            "attractive_energy": -0.40530489694185656,
+                            "cutoff_correction": -0.14783965428657853,
+                            "energy": -0.3478044768721239
+                        },
+                        {
+                            "pressure": 0.00469608691227356,
+                            "compressibility": 0.5714285714285714,
+                            "heat_capacity": 1.73
+                        },
+                        {
+                            "rdf_peak": 1.829268292682927,
+                            "coordination_number": 10.25,
+                            "bond_order": 0.794533602503334
+                        },
+                        {
+                            "epsilon": 0.2,
+                            "sigma": 3.4,
+                            "cutoff": 8.5,
+                            "density": 0.019082027274577654,
+                            "sample_distance": 3.8080000000000003,
+                            "temperature": 0.22999999999999998,
+                            "target_energy": -0.17,
+                            "target_pressure": 0.025,
+                            "target_rdf_peak": 1.84,
+                            "target_compressibility": 0.58
+                        }
+                    ],
+                    "output": {
+                        "repulsive_energy": 0.2053400743563112,
+                        "attractive_energy": -0.40530489694185656,
+                        "cutoff_correction": -0.14783965428657853,
+                        "energy": -0.3478044768721239,
+                        "pressure": 0.00469608691227356,
+                        "compressibility": 0.5714285714285714,
+                        "heat_capacity": 1.73,
+                        "rdf_peak": 1.829268292682927,
+                        "coordination_number": 10.25,
+                        "bond_order": 0.794533602503334,
+                        "epsilon": 0.2,
+                        "sigma": 3.4,
+                        "cutoff": 8.5,
+                        "density": 0.019082027274577654,
+                        "sample_distance": 3.8080000000000003,
+                        "temperature": 0.22999999999999998,
+                        "target_energy": -0.17,
+                        "target_pressure": 0.025,
+                        "target_rdf_peak": 1.84,
+                        "target_compressibility": 0.58
+                    },
+                    "meta": {},
+                    "children": []
+                }
+            ]
+        },
+        {
+            "input": {
+                "repulsive_energy": 0.2053400743563112,
+                "attractive_energy": -0.40530489694185656,
+                "cutoff_correction": -0.14783965428657853,
+                "energy": -0.3478044768721239,
+                "pressure": 0.00469608691227356,
+                "compressibility": 0.5714285714285714,
+                "heat_capacity": 1.73,
+                "rdf_peak": 1.829268292682927,
+                "coordination_number": 10.25,
+                "bond_order": 0.794533602503334,
+                "epsilon": 0.2,
+                "sigma": 3.4,
+                "cutoff": 8.5,
+                "density": 0.019082027274577654,
+                "sample_distance": 3.8080000000000003,
+                "temperature": 0.22999999999999998,
+                "target_energy": -0.17,
+                "target_pressure": 0.025,
+                "target_rdf_peak": 1.84,
+                "target_compressibility": 0.58
+            },
+            "output": 0.0333944817011902,
+            "meta": {
+                "chemfit.structure": {
+                    "children": [
+                        {
+                            "index": 0,
+                            "name": "TupleJoinedComponent"
+                        },
+                        {
+                            "index": 1,
+                            "name": "aggregate_loss"
+                        }
+                    ],
+                    "inputs": [
+                        [
+                            {
+                                "kind": "parent_input"
+                            }
+                        ],
+                        [
+                            {
+                                "kind": "child",
+                                "index": 0
+                            }
+                        ]
+                    ],
+                    "dependencies": [
+                        [],
+                        [
+                            0
+                        ]
+                    ],
+                    "outputs": [
+                        {
+                            "kind": "child",
+                            "index": 1
+                        }
+                    ]
+                },
+                "stage": "loss aggregation"
+            },
+            "children": [
+                {
+                    "input": {
+                        "repulsive_energy": 0.2053400743563112,
+                        "attractive_energy": -0.40530489694185656,
+                        "cutoff_correction": -0.14783965428657853,
+                        "energy": -0.3478044768721239,
+                        "pressure": 0.00469608691227356,
+                        "compressibility": 0.5714285714285714,
+                        "heat_capacity": 1.73,
+                        "rdf_peak": 1.829268292682927,
+                        "coordination_number": 10.25,
+                        "bond_order": 0.794533602503334,
+                        "epsilon": 0.2,
+                        "sigma": 3.4,
+                        "cutoff": 8.5,
+                        "density": 0.019082027274577654,
+                        "sample_distance": 3.8080000000000003,
+                        "temperature": 0.22999999999999998,
+                        "target_energy": -0.17,
+                        "target_pressure": 0.025,
+                        "target_rdf_peak": 1.84,
+                        "target_compressibility": 0.58
+                    },
+                    "output": [
+                        0.03161443199576964,
+                        0.0016489955466957962,
+                        5.758477096966102e-05,
+                        7.34693877551019e-05
+                    ],
+                    "meta": {
+                        "chemfit.structure": {
+                            "children": [
+                                {
+                                    "index": 0,
+                                    "name": "energy_error"
+                                },
+                                {
+                                    "index": 1,
+                                    "name": "pressure_error"
+                                },
+                                {
+                                    "index": 2,
+                                    "name": "structure_error"
+                                },
+                                {
+                                    "index": 3,
+                                    "name": "response_error"
+                                }
+                            ],
+                            "inputs": [
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ],
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ],
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ],
+                                [
+                                    {
+                                        "kind": "parent_input"
+                                    }
+                                ]
+                            ],
+                            "dependencies": [
+                                [],
+                                [],
+                                [],
+                                []
+                            ],
+                            "outputs": [
+                                {
+                                    "kind": "child",
+                                    "index": 0
+                                },
+                                {
+                                    "kind": "child",
+                                    "index": 1
+                                },
+                                {
+                                    "kind": "child",
+                                    "index": 2
+                                },
+                                {
+                                    "kind": "child",
+                                    "index": 3
+                                }
+                            ]
+                        },
+                        "metric": "weighted residual terms"
+                    },
+                    "children": [
+                        {
+                            "input": {
+                                "repulsive_energy": 0.2053400743563112,
+                                "attractive_energy": -0.40530489694185656,
+                                "cutoff_correction": -0.14783965428657853,
+                                "energy": -0.3478044768721239,
+                                "pressure": 0.00469608691227356,
+                                "compressibility": 0.5714285714285714,
+                                "heat_capacity": 1.73,
+                                "rdf_peak": 1.829268292682927,
+                                "coordination_number": 10.25,
+                                "bond_order": 0.794533602503334,
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": 0.03161443199576964,
+                            "meta": {},
+                            "children": []
+                        },
+                        {
+                            "input": {
+                                "repulsive_energy": 0.2053400743563112,
+                                "attractive_energy": -0.40530489694185656,
+                                "cutoff_correction": -0.14783965428657853,
+                                "energy": -0.3478044768721239,
+                                "pressure": 0.00469608691227356,
+                                "compressibility": 0.5714285714285714,
+                                "heat_capacity": 1.73,
+                                "rdf_peak": 1.829268292682927,
+                                "coordination_number": 10.25,
+                                "bond_order": 0.794533602503334,
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": 0.0016489955466957962,
+                            "meta": {},
+                            "children": []
+                        },
+                        {
+                            "input": {
+                                "repulsive_energy": 0.2053400743563112,
+                                "attractive_energy": -0.40530489694185656,
+                                "cutoff_correction": -0.14783965428657853,
+                                "energy": -0.3478044768721239,
+                                "pressure": 0.00469608691227356,
+                                "compressibility": 0.5714285714285714,
+                                "heat_capacity": 1.73,
+                                "rdf_peak": 1.829268292682927,
+                                "coordination_number": 10.25,
+                                "bond_order": 0.794533602503334,
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": 5.758477096966102e-05,
+                            "meta": {},
+                            "children": []
+                        },
+                        {
+                            "input": {
+                                "repulsive_energy": 0.2053400743563112,
+                                "attractive_energy": -0.40530489694185656,
+                                "cutoff_correction": -0.14783965428657853,
+                                "energy": -0.3478044768721239,
+                                "pressure": 0.00469608691227356,
+                                "compressibility": 0.5714285714285714,
+                                "heat_capacity": 1.73,
+                                "rdf_peak": 1.829268292682927,
+                                "coordination_number": 10.25,
+                                "bond_order": 0.794533602503334,
+                                "epsilon": 0.2,
+                                "sigma": 3.4,
+                                "cutoff": 8.5,
+                                "density": 0.019082027274577654,
+                                "sample_distance": 3.8080000000000003,
+                                "temperature": 0.22999999999999998,
+                                "target_energy": -0.17,
+                                "target_pressure": 0.025,
+                                "target_rdf_peak": 1.84,
+                                "target_compressibility": 0.58
+                            },
+                            "output": 7.34693877551019e-05,
+                            "meta": {},
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "input": [
+                        0.03161443199576964,
+                        0.0016489955466957962,
+                        5.758477096966102e-05,
+                        7.34693877551019e-05
+                    ],
+                    "output": 0.0333944817011902,
+                    "meta": {},
+                    "children": []
+                }
+            ]
+        }
+    ]
+}
