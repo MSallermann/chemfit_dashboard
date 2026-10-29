@@ -4,38 +4,48 @@
 
 # ChemFit Dashboard
 
-A desktop application for exploring and visualizing evaluation results from [ChemFit](https://github.com/MSallermann/chemfit).
+A desktop application for exploring, visualizing, and extracting evaluation data from [ChemFit](https://github.com/MSallermann/chemfit).
 
-ChemFit can produce detailed records of an optimization, including intermediate results, component metadata, and errors. This dashboard makes those results much easier to inspect without digging through JSON by hand.
+ChemFit records inputs, outputs, metadata, and intermediate results throughout an evaluation. The dashboard makes it easy to explore this information without digging through JSON files by hand.
 
-Built with Python and PySide6, the dashboard runs locally and works directly with serialized evaluation contexts from ChemFit 4.0.0. It is entirely read-only, so your original results are never modified.
+Built with Python and PySide6, it works directly with serialized evaluation contexts from ChemFit 4.0.0. Everything runs locally, and the original files are never modified.
 
 ![ChemFit Dashboard screenshot](res/screenshot.png)
 
 ## Features
 
-- **Explore evaluations:** Browse individual evaluation contexts or whole collections of results. Inspect nested components, inputs, outputs, metadata, and errors.
-- **Visualize component graphs:** View the structure of an evaluation as an interactive graph, including dependencies and parent-child relationships.
-- **Track results across evaluations:** Follow the same component through multiple evaluations, even when parts of the execution tree are skipped or fail.
-- **Plot numerical data:** Plot any numerical value across a collection of evaluations, compare multiple quantities, normalize curves, and export plots as PNG, SVG, or CSV.
-- **Search contexts:** Search components, metadata, and values using plain text or regular expressions, either within one evaluation or across a whole collection.
-- **Investigate failures:** Get an overview of failed or incomplete evaluations and jump directly to the relevant components.
-- **Extract arbitrary data:** Add scalar or structured inspector values and complete components to a reusable extraction, preview them, and stream the complete collection to CSV or JSONL.
-- **Navigate large graphs:** Structural components start collapsed, can be expanded incrementally, and use a deterministic dependency-aware layout.
+- **Explore evaluations:** Browse individual contexts or entire collections, including nested components, inputs, outputs, metadata, and errors.
+- **Visualize component graphs:** Explore component hierarchies and dependencies in an interactive graph. Expand and collapse structural components to navigate complex evaluations.
+- **Search contexts:** Find components, fields, and values using text searches or regular expressions, within an evaluation or across a collection.
+- **Plot numerical data:** Follow numerical values across evaluations, compare multiple quantities, and export plots as PNG, SVG, or CSV.
+- **Investigate failures:** Identify failed evaluations and navigate directly to the components responsible.
+- **Extract data:** Collect arbitrary fields from multiple evaluations and export them as CSV or JSONL for further analysis.
 
-The dashboard also includes multiple color themes, adjustable font sizes, and keyboard navigation.
+The dashboard also includes several color themes, adjustable font sizes, and keyboard navigation. Large collections are processed in the background to keep the interface responsive.
 
 ## Installation
 
-Requires Python 3.10 or newer.
+ChemFit Dashboard requires Python 3.10 or newer.
+
+Clone the repository:
 
 ```bash
 git clone https://github.com/MSallermann/chemfit_dashboard.git
 cd chemfit_dashboard
-pip install -e .
 ```
 
-## Usage
+Install the required development version of `pydictnest`, followed by the dashboard:
+
+```bash
+python -m pip install git+https://github.com/MSallermann/pydictnest.git
+python -m pip install -e .
+```
+
+The separate `pydictnest` installation is only necessary until version 0.3.0 is available on PyPI.
+
+ChemFit itself is not required to view previously saved evaluation contexts.
+
+## Getting started
 
 Start the dashboard with:
 
@@ -43,151 +53,188 @@ Start the dashboard with:
 chemfit-dashboard
 ```
 
-You can also open a JSON evaluation context or an entire directory directly:
+You can open JSON files and directories from within the application, or specify them directly on the command line:
 
 ```bash
 chemfit-dashboard path/to/context.json
 chemfit-dashboard path/to/results/
 ```
 
-To explore the included examples:
+To explore the included examples, open a single evaluation:
 
 ```bash
 chemfit-dashboard examples/step_0_ctx_0.json
+```
+
+Or load a collection containing several evaluations:
+
+```bash
 chemfit-dashboard examples/context_collection/
 ```
 
-Multiple files and directories can be passed at once. Directories are scanned recursively, and additional files can be opened from within the application.
+You can also pass multiple files and directories at once. Directories are scanned recursively.
+
+### Exploring evaluations
+
+Select an evaluation from the file browser to inspect its component hierarchy. Clicking a component shows its inputs, outputs, metadata, and other recorded information.
+
+The **Graph** view provides an alternative way to navigate the hierarchy, including dependencies between components. Structural components can be expanded or collapsed, and selections are synchronized with the inspector.
+
+Use the search field to find particular components or values. You can search the current evaluation or the entire loaded collection.
+
+When working with multiple evaluations, the **Collection Overview** summarizes their execution status, numerical results, and failures.
+
+### Plotting results
+
+To plot a numerical value across evaluations, select it in the inspector and choose **Plot selected number across collection**.
+
+The dashboard follows the same component through the collection, even when some evaluations contain skipped or missing branches.
+
+You can add additional values to the plot, normalize them, use logarithmic scaling, and export the result.
+
+Clicking a plotted point opens the corresponding evaluation.
 
 ## Data extraction
 
-Select any value in the Overview, Metadata, Structure, or Raw fields inspector,
-then choose **Add selected field to extraction**. **Add component to extraction**
-captures the component's fields, metadata, and declared structure as one nested
-value. Selections remain active while moving between evaluations.
+The dashboard can also collect arbitrary values from evaluation contexts and export them for analysis in Python, spreadsheets, or other tools.
 
-The **Data Extraction** workspace supports editable column names, ordering,
-removal, dictionary flattening, single-array expansion, a model-backed preview,
-and configuration save/load. The preview is deliberately limited to 200 rows;
-CSV and JSONL exports always traverse the complete collection incrementally.
+Unlike plotting, data extraction is not limited to numerical values. You can extract strings, lists, dictionaries, metadata, or complete component information.
 
-- CSV stores dictionaries and lists as JSON strings. Optional flattening uses
-  JSON Pointer escaping (`~0` and `~1`) so keys containing separators cannot
-  collide. Companion `__status` columns distinguish unavailable data.
-- JSONL preserves structured values under `values` and records an independent
-  status for every selection under `status`.
-- Only one selected array may expand into long-format rows. Multiple expanded
-  arrays are rejected instead of producing an implicit Cartesian product.
+### Extracting data
 
-Statuses include `available`, `explicit_null`, `missing_component`,
-`declared_unexecuted`, `skipped_component`, `missing_field`,
-`serialized_exception`, and `unreadable_evaluation`.
+1. Open an evaluation and select a value in the inspector.
+2. Choose **Add selected field to extraction**. You can also use **Add component to extraction** to include a component's fields, metadata, and structure.
+3. Repeat for any other values you want to collect.
+4. Open the **Data Extraction** tab to preview the results.
+5. Export the collected data as CSV or JSONL.
 
-### Configuration format
+By default, each evaluation becomes one row, and each selected field becomes a column.
 
-Configurations are human-readable, versioned JSON objects:
+In the extraction tab, you can rename, reorder, or remove columns. Nested dictionaries can optionally be flattened into separate columns, and a selected array can be expanded into multiple rows.
 
-```json
-{
-  "version": 1,
-  "include_identifiers": true,
-  "include_status_columns": true,
-  "selectors": [
-    {
-      "component": {
-        "preferred_path": [1, 0],
-        "trail": [
-          {"name": "simulation", "occurrence": 0, "declared_index": 1, "declared": true}
-        ]
-      },
-      "section": "fields",
-      "path": ["output", "energy"],
-      "column": "energy",
-      "flatten": false,
-      "expand_array": false
-    }
-  ]
-}
-```
+The preview shows up to 200 evaluations, but exports include the complete collection.
 
-The semantic trail, rather than raw child indices alone, lets a configuration
-resolve repeated and nested declared components across compatible collections.
-Unresolved fields retain an explicit unavailable status and are never silently
-matched to an unrelated display name.
+### Export formats
 
-### Standalone Python API
+**CSV** is useful for spreadsheets, Pandas, and other tabular analysis tools. Dictionaries and lists are stored as JSON strings unless you choose to flatten them.
 
-The extraction core does not import Qt widgets and requires neither Pandas nor
-NumPy:
+**JSONL** preserves nested values as JSON objects and arrays, making it better suited for structured data.
+
+The dashboard also records whether a value was available, missing, skipped, or associated with an error, so these cases can be distinguished during analysis.
+
+### Reusing field selections
+
+If you frequently extract the same fields, you can save your selections using **Save configuration**.
+
+A configuration is simply a list of the fields you've selected, their column names, and any extraction options. It does not contain the extracted data.
+
+You can later choose **Load configuration** to restore those selections, including when working with another collection.
+
+The dashboard uses ChemFit's component structure to recognize corresponding components across evaluations, so you don't have to select the same fields in every file.
+
+## Using the extraction API from Python
+
+Data extraction is also available directly from Python, without launching the graphical interface.
+
+For example, the following script extracts the Lennard-Jones parameter `epsilon` and the objective value from the included example collection.
 
 ```python
-from chemfit_dashboard import FieldSelector, extract_fields
+from chemfit_dashboard import (
+    ExtractionConfig,
+    FieldSelector,
+    export_csv,
+    extract_fields,
+)
 from chemfit_dashboard.source import JsonFileSource
 
-source = JsonFileSource(cache_capacity=32, cache_memory_budget=128 * 1024**2)
-records = source.discover(["results/"])
-selectors = [
-    FieldSelector((), "fields", ("loss",), "loss"),
-    FieldSelector((), "metadata", ("dataset",), "dataset"),
-]
+# Find the evaluation files
+source = JsonFileSource()
+records = source.discover(["examples/context_collection/"])
 
-for row in extract_fields(source, records, selectors):
-    print(row.filename, row.values)
+# Select the values we want
+columns = (
+    FieldSelector(
+        node_path=(),
+        section="fields",
+        value_path=("input", "epsilon"),
+        column="epsilon",
+    ),
+    FieldSelector(
+        node_path=(),
+        section="fields",
+        value_path=("output",),
+        column="loss",
+    ),
+)
+
+# Inspect the extracted values
+for row in extract_fields(source, records, columns):
+    epsilon = row.values[0].value
+    loss = row.values[1].value
+    print(row.filename, epsilon, loss)
+
+# Export the collection to CSV
+export_csv(
+    "results.csv",
+    source,
+    records,
+    ExtractionConfig(columns),
+)
 ```
 
-Use `selector_for_document` from `chemfit_dashboard.extraction` when creating a
-selector from a concrete component; it attaches the reusable semantic identity.
-`export_csv`, `export_jsonl`, `save_config`, and `load_config` are also public.
+Here, each `FieldSelector` describes a value to extract:
 
-## Architecture and scaling
+- `node_path=()` selects the root evaluation context.
+- `section="fields"` selects the regular context fields.
+- `value_path` identifies the value within those fields.
+- `column` specifies the output column name.
 
-Core JSON loading, semantic component resolution, collection traversal,
-extraction, serialization, and graph layout are independent of Qt widgets.
-Collection operations load one document at a time through a shared cancellable
-traversal. Plotting extracts all selected series in one pass, collection search
-retains a bounded global top-K, and parsed documents live in a stat-aware LRU
-bounded by entry count and estimated bytes. Search indexes are separately
-bounded and contain extracted entries rather than references to documents.
+For instance, `("input", "epsilon")` selects the `epsilon` entry from the root context's input dictionary.
 
-Graph layout is calculated from ordinary Python data structures in
-`graph_layout.py`; `graph_view.py` only manages visibility, interaction, and Qt
-graphics items. Collapsing nested structures keeps the overview readable, while
-selecting a hidden component automatically expands its ancestors.
+The resulting `results.csv` contains the extracted values for every evaluation, along with evaluation identifiers and status information.
 
-Generic mapping and mixed mapping/list path operations come from
-`pydictnest>=0.3.0`. When developing both repositories before that version is
-released, install the corresponding checkout first:
+Each value returned by `extract_fields()` also has a `.status` attribute, which can be used to check whether the value was available or why it could not be extracted.
+
+For nested components, the `selector_for_document()` function in `chemfit_dashboard.extraction` can attach the component's identity to a selector, allowing it to be reused across evaluations with the same logical structure.
+
+The extraction API does not require Pandas or NumPy.
+
+## Development
+
+Install the test dependencies:
 
 ```bash
-pip install -e ../pydictnest
-pip install -e .
+python -m pip install -e ".[test]"
 ```
 
-## Benchmarks
+Run the tests:
 
-The opt-in benchmark creates a reproducible synthetic collection and measures
-discovery, parsing/indexing, analysis, bounded search, multi-field extraction,
-streaming CSV/JSONL, graph layout, graph rendering, and Python peak memory:
+```bash
+pytest -q
+```
+
+The repository also uses Ruff and Pyright for linting and type checking:
+
+```bash
+ruff check src tests benchmark
+pyright
+```
+
+### Benchmarks
+
+A small benchmark suite is included to evaluate collection processing, searching, extraction, and graph rendering.
+
+Run it with:
 
 ```bash
 PYTHONPATH=src python benchmark/benchmark.py --evaluations 1000 --graph-nodes 2000
 ```
 
-Larger collection runs can use `--evaluations 10000` or `100000`. Benchmarks
-are intentionally excluded from the unit-test suite. Results depend strongly
-on storage, Python, Qt, and whether filesystem data is cached; compare revisions
-using the same command and environment. No pre-change measurement was preserved
-for this development checkout, so the project does not claim an unsupported
-before/after speedup. See [BENCHMARKS.md](BENCHMARKS.md) for the latest recorded
-1,000-evaluation and 2,000-component result.
+Larger workloads can be tested by increasing the number of evaluations or graph nodes.
 
-## Development
+See [BENCHMARKS.md](BENCHMARKS.md) for recorded benchmark results.
 
-```bash
-pytest -q
-ruff check src tests benchmark
-pyright
-```
+## Related projects
 
-The tests use real ChemFit 4.0.0 contexts where semantic compatibility matters
-and small synthetic inputs for cache, cancellation, export, and graph edge cases.
+- [ChemFit](https://github.com/MSallermann/chemfit) — A Python framework for automated, high-dimensional model parameter optimization.
+- [pydictnest](https://github.com/MSallermann/pydictnest) — Utilities for working with nested Python data structures.
