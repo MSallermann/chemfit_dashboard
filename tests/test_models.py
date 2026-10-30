@@ -6,7 +6,7 @@ from contextlib import suppress
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
 from PySide6.QtCore import QModelIndex, Qt
-from PySide6.QtWidgets import QGraphicsSimpleTextItem, QHeaderView
+from PySide6.QtWidgets import QGraphicsSimpleTextItem, QHeaderView, QLabel, QPushButton
 
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
@@ -138,6 +138,73 @@ def test_data_flow_view_renders_one_structural_level(chemfit_document):
     assert graph.view.rendered_node_count == len(chemfit_document.children(())) + 2
 
 
+def test_data_flow_can_expand_into_window_and_collapse_back(qapp):
+    window = MainWindow()
+    window.show()
+    qapp.processEvents()
+    window.hierarchy_tabs.setCurrentWidget(window.graph)
+    tab_count = window.hierarchy_tabs.count()
+    window.graph.view.scale(1.2, 1.2)
+    zoom = window.graph.view.transform().m11()
+
+    window.graph.expand_button.click()
+    qapp.processEvents()
+
+    dialog = window._expanded_data_flow_dialog  # noqa: SLF001
+    assert dialog is not None
+    assert window.hierarchy_tabs.indexOf(window.graph) == -1
+    placeholder = window._data_flow_placeholder  # noqa: SLF001
+    assert placeholder is not None
+    placeholder_index = window.hierarchy_tabs.indexOf(placeholder)
+    assert placeholder_index == 1
+    assert window.hierarchy_tabs.count() == tab_count
+    assert window.hierarchy_tabs.tabText(placeholder_index) == "Data Flow"
+    message = placeholder.findChild(QLabel, "dataFlowDetachedMessage")
+    assert message is not None
+    assert "detached window" in message.text()
+    assert window.graph.expand_button.text() == "Collapse"
+    assert window.graph.view.transform().m11() == zoom
+    assert window.graph.isVisibleTo(dialog)
+    assert window.graph.view.isVisibleTo(dialog)
+    for control in (
+        window.graph.back_button,
+        window.graph.fit_button,
+        window.graph.zoom_out_button,
+        window.graph.zoom_in_button,
+        window.graph.expand_button,
+    ):
+        assert dialog.isAncestorOf(control)
+
+    return_button = placeholder.findChild(QPushButton, "returnDataFlowButton")
+    assert return_button is not None
+    return_button.click()
+    qapp.processEvents()
+
+    assert window._expanded_data_flow_dialog is None  # noqa: SLF001
+    assert window.hierarchy_tabs.indexOf(window.graph) == 1
+    assert window.hierarchy_tabs.currentWidget() is window.graph
+    assert window.graph.expand_button.text() == "Expand"
+    assert window.graph.view.transform().m11() == zoom
+
+    window.graph.expand_button.click()
+    qapp.processEvents()
+    window.graph.expand_button.click()
+    qapp.processEvents()
+
+    assert window._expanded_data_flow_dialog is None  # noqa: SLF001
+    assert window.hierarchy_tabs.indexOf(window.graph) == 1
+
+    window.graph.expand_button.click()
+    dialog = window._expanded_data_flow_dialog  # noqa: SLF001
+    assert dialog is not None
+    dialog.reject()
+    qapp.processEvents()
+
+    assert window._expanded_data_flow_dialog is None  # noqa: SLF001
+    assert window.hierarchy_tabs.indexOf(window.graph) == 1
+    window.close()
+
+
 def test_graph_applies_selection_requested_before_deferred_render(chemfit_document):
     graph = ContextGraphPanel()
     graph.set_document(chemfit_document)
@@ -180,6 +247,50 @@ def test_data_flow_node_shows_custom_name_and_component_type(tmp_path):
         "WrappedComponent" in item.toolTip() for item in graph.view.scene().items()
     )
     assert not any("STRUCTURE" in label or "ATOMIC NODE" in label for label in labels)
+
+
+def test_data_flow_structural_nodes_have_distinct_shape_and_fill(tmp_path):
+    path = tmp_path / "node-kinds.json"
+    path.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "chemfit.structure": {
+                        "children": [
+                            {"index": 0, "name": "NestedPipeline"},
+                            {"index": 1, "name": "AtomicComponent"},
+                        ]
+                    }
+                },
+                "children": [
+                    {
+                        "output": 1,
+                        "meta": {"chemfit.structure": {"children": []}},
+                    },
+                    {"output": 2},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+    document = source.load(source.discover([path])[0])
+    graph = ContextGraphPanel()
+    graph.set_document(document)
+    graph.ensure_rendered()
+
+    nodes = {
+        item.data(1): item
+        for item in graph.view.scene().items()
+        if item.data(1) in {"structural", "atomic"}
+    }
+    structural = nodes["structural"]
+    atomic = nodes["atomic"]
+
+    assert structural.brush().color() != atomic.brush().color()
+    assert structural.path().elementCount() != atomic.path().elementCount()
+    assert structural.pen().widthF() > atomic.pen().widthF()
+    assert len(structural.childItems()) > len(atomic.childItems())
 
 
 def test_active_graph_rebuilds_when_evaluation_changes(tmp_path, chemfit_document):

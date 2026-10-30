@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -148,6 +149,9 @@ class MainWindow(QMainWindow):
         self._color_scheme_key = DEFAULT_COLOR_SCHEME
         self._base_font: QFont | None = None
         self._base_stylesheet = ""
+        self._expanded_data_flow_dialog: QDialog | None = None
+        self._data_flow_placeholder: QWidget | None = None
+        self._data_flow_tab_index = 1
         saved_label_key = self._settings.value(
             COMPONENT_LABEL_METADATA_KEY_SETTING,
             DEFAULT_COMPONENT_LABEL_METADATA_KEY,
@@ -483,6 +487,7 @@ class MainWindow(QMainWindow):
         # single Data Flow implementation.
         self.graph = self.data_flow
         self.graph.node_selected.connect(self._graph_context_selected)
+        self.graph.expand_requested.connect(self._toggle_data_flow_expansion)
         self.collection_plot = CollectionPlotPanel()
         self.collection_plot.context_selected.connect(self._plot_context_selected)
         self.collection_plot.point_selected.connect(self._plot_point_selected)
@@ -492,7 +497,9 @@ class MainWindow(QMainWindow):
         self.search_panel.hit_selected.connect(self._search_hit_selected)
         self.hierarchy_tabs = QTabWidget()
         self.hierarchy_tabs.addTab(self.tree, "Tree")
-        self.hierarchy_tabs.addTab(self.graph, "Data Flow")
+        self._data_flow_tab_index = self.hierarchy_tabs.addTab(
+            self.graph, "Data Flow"
+        )
         self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
         self.hierarchy_tabs.addTab(self.search_panel, "Search")
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
@@ -529,6 +536,7 @@ class MainWindow(QMainWindow):
             token.cancel()
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
+        self._restore_data_flow_panel()
         for token in self._operation_tokens.values():
             token.cancel()
         self.graph.view.cancel_pending_layout()
@@ -831,6 +839,88 @@ class MainWindow(QMainWindow):
     def _hierarchy_tab_changed(self, index: int) -> None:
         if self.hierarchy_tabs.widget(index) is self.graph:
             self.graph.ensure_rendered()
+
+    def _toggle_data_flow_expansion(self) -> None:
+        if self._expanded_data_flow_dialog is not None:
+            self._restore_data_flow_panel()
+            return
+        tab_index = self.hierarchy_tabs.indexOf(self.graph)
+        if tab_index >= 0:
+            self._data_flow_tab_index = tab_index
+            self.hierarchy_tabs.removeTab(tab_index)
+        placeholder = QWidget()
+        placeholder.setObjectName("dataFlowDetachedPlaceholder")
+        placeholder_layout = QVBoxLayout(placeholder)
+        placeholder_layout.addStretch()
+        message = QLabel(
+            "Data Flow is currently open in a detached window."
+        )
+        message.setObjectName("dataFlowDetachedMessage")
+        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        message.setWordWrap(True)
+        placeholder_layout.addWidget(message)
+        return_button = QPushButton("Return Data Flow to dashboard")
+        return_button.setObjectName("returnDataFlowButton")
+        return_button.clicked.connect(
+            lambda _checked=False: self._restore_data_flow_panel()
+        )
+        placeholder_layout.addWidget(
+            return_button, alignment=Qt.AlignmentFlag.AlignHCenter
+        )
+        placeholder_layout.addStretch()
+        self._data_flow_placeholder = placeholder
+        self.hierarchy_tabs.insertTab(
+            self._data_flow_tab_index, placeholder, "Data Flow"
+        )
+        self.hierarchy_tabs.setCurrentWidget(placeholder)
+
+        dialog = QDialog(self, Qt.WindowType.Window)
+        dialog.setWindowTitle("ChemFit Data Flow")
+        dialog.setModal(False)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(12, 12, 12, 12)
+        dialog_layout.addWidget(self.graph)
+        # QTabWidget keeps a removed page explicitly hidden. Reparenting alone
+        # therefore leaves an empty dialog unless the page is shown again.
+        self.graph.show()
+        dialog.finished.connect(
+            lambda _result, target=dialog: self._restore_data_flow_panel(target)
+        )
+        self._expanded_data_flow_dialog = dialog
+        self.graph.set_expanded(True)
+        self.graph.ensure_rendered()
+        dialog.resize(max(1100, self.width() - 80), max(720, self.height() - 80))
+        dialog.showMaximized()
+
+    def _restore_data_flow_panel(self, dialog: QDialog | None = None) -> None:
+        expanded = self._expanded_data_flow_dialog
+        if expanded is None or (dialog is not None and dialog is not expanded):
+            return
+        self._expanded_data_flow_dialog = None
+        layout = expanded.layout()
+        if layout is not None:
+            layout.removeWidget(self.graph)
+        placeholder = self._data_flow_placeholder
+        placeholder_was_current = (
+            placeholder is not None
+            and self.hierarchy_tabs.currentWidget() is placeholder
+        )
+        if placeholder is not None:
+            placeholder_index = self.hierarchy_tabs.indexOf(placeholder)
+            if placeholder_index >= 0:
+                self._data_flow_tab_index = placeholder_index
+                self.hierarchy_tabs.removeTab(placeholder_index)
+            placeholder.deleteLater()
+        self._data_flow_placeholder = None
+        insert_at = min(self._data_flow_tab_index, self.hierarchy_tabs.count())
+        self._data_flow_tab_index = self.hierarchy_tabs.insertTab(
+            insert_at, self.graph, "Data Flow"
+        )
+        if placeholder_was_current:
+            self.hierarchy_tabs.setCurrentWidget(self.graph)
+        self.graph.set_expanded(False)
+        expanded.hide()
+        expanded.deleteLater()
 
     def _graph_context_selected(self, path: NodePath) -> None:
         if self._current_document is not None:

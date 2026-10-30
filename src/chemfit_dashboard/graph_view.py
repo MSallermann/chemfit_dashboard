@@ -325,17 +325,19 @@ class DataFlowView(QGraphicsView):
 
     def _add_node(self, node: DataFlowNode, position: QPointF) -> _FlowNodeItem:
         boundary = node.kind != "child"
-        shape = QPainterPath()
-        radius = NODE_HEIGHT / 2 if boundary else 10
-        shape.addRoundedRect(QRectF(0, 0, NODE_WIDTH, NODE_HEIGHT), radius, radius)
+        shape = _flow_node_shape(node)
         item = _FlowNodeItem(shape, node, self.navigate_requested.emit)
         item.setPos(position)
         status_color = QColor(_status_color(node, self._scheme))
-        fill = QColor(self._scheme.accent_soft) if boundary else QColor(self._scheme.node)
+        fill = (
+            QColor(self._scheme.accent_soft)
+            if boundary or node.nested
+            else QColor(self._scheme.node)
+        )
         item.setBrush(QBrush(fill))
         normal_pen = QPen(
             QColor(self._scheme.accent if boundary or node.nested else self._scheme.node_border),
-            2.0 if boundary or node.nested else 1.2,
+            2.4 if node.nested else (2.0 if boundary else 1.2),
         )
         item.normal_pen = normal_pen
         item.setPen(normal_pen)
@@ -357,6 +359,8 @@ class DataFlowView(QGraphicsView):
         status_bar.setBrush(QBrush(status_color))
         status_bar.setPen(QPen(Qt.PenStyle.NoPen))
         status_bar.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        if node.nested:
+            _add_structural_marker(item, QColor(self._scheme.accent))
         title = QGraphicsSimpleTextItem(
             _elide(node.label, QFont(), NODE_WIDTH - 28),
             item,
@@ -486,6 +490,7 @@ class DataFlowPanel(QWidget):
     """Data-flow canvas with breadcrumbs and level navigation."""
 
     node_selected = Signal(object)
+    expand_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         """Initialize flow controls, navigation, and the graphics view."""
@@ -504,9 +509,14 @@ class DataFlowPanel(QWidget):
         self.fit_button = QPushButton("Fit View")
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
+        self.expand_button = QPushButton("Expand")
+        self.expand_button.setToolTip(
+            "Open Data Flow in a large separate window"
+        )
         controls.addWidget(self.fit_button)
         controls.addWidget(self.zoom_out_button)
         controls.addWidget(self.zoom_in_button)
+        controls.addWidget(self.expand_button)
         layout.addLayout(controls)
         self.status = QLabel("Data Flow builds on demand")
         self.status.setObjectName("mutedLabel")
@@ -514,7 +524,8 @@ class DataFlowPanel(QWidget):
         self.view = DataFlowView()
         layout.addWidget(self.view, 1)
         hint = QLabel(
-            "Arrows show declared data connections. Double-click a nested component to open it."
+            "Rounded nodes are atomic. Accent nodes with clipped corners are "
+            "structural; double-click one to open it."
         )
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
@@ -532,6 +543,7 @@ class DataFlowPanel(QWidget):
         self.fit_button.clicked.connect(self.view.fit_graph)
         self.zoom_out_button.clicked.connect(self.view.zoom_out)
         self.zoom_in_button.clicked.connect(self.view.zoom_in)
+        self.expand_button.clicked.connect(self.expand_requested.emit)
         self._update_breadcrumbs(())
 
     def set_document(self, document: ContextDocument | None) -> None:
@@ -553,6 +565,15 @@ class DataFlowPanel(QWidget):
     def refresh_labels(self) -> None:
         self.view.refresh_labels()
         self._update_breadcrumbs(self.view.current_path)
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Reflect whether the panel is hosted in the expanded window."""
+        self.expand_button.setText("Collapse" if expanded else "Expand")
+        self.expand_button.setToolTip(
+            "Return Data Flow to the dashboard"
+            if expanded
+            else "Open Data Flow in a large separate window"
+        )
 
     def _enter(self, path: NodePath) -> None:
         self.view.navigate_to(path)
@@ -617,6 +638,45 @@ def _status_color(node: DataFlowNode, scheme: ColorScheme) -> str:
         "failed": scheme.danger,
         "skipped": scheme.status_skipped,
     }.get(node.status, scheme.status_missing)
+
+
+def _flow_node_shape(node: DataFlowNode) -> QPainterPath:
+    shape = QPainterPath()
+    if node.kind != "child":
+        radius = NODE_HEIGHT / 2
+        shape.addRoundedRect(QRectF(0, 0, NODE_WIDTH, NODE_HEIGHT), radius, radius)
+    elif node.nested:
+        corner = 14.0
+        shape.moveTo(corner, 0)
+        shape.lineTo(NODE_WIDTH - corner, 0)
+        shape.lineTo(NODE_WIDTH, corner)
+        shape.lineTo(NODE_WIDTH, NODE_HEIGHT - corner)
+        shape.lineTo(NODE_WIDTH - corner, NODE_HEIGHT)
+        shape.lineTo(corner, NODE_HEIGHT)
+        shape.lineTo(0, NODE_HEIGHT - corner)
+        shape.lineTo(0, corner)
+        shape.closeSubpath()
+    else:
+        shape.addRoundedRect(QRectF(0, 0, NODE_WIDTH, NODE_HEIGHT), 10, 10)
+    return shape
+
+
+def _add_structural_marker(item: QGraphicsItem, color: QColor) -> None:
+    center = QPointF(NODE_WIDTH - 18, 17)
+    marker = QGraphicsPolygonItem(
+        QPolygonF(
+            [
+                center + QPointF(0, -6),
+                center + QPointF(6, 0),
+                center + QPointF(0, 6),
+                center + QPointF(-6, 0),
+            ]
+        ),
+        item,
+    )
+    marker.setBrush(QBrush(color))
+    marker.setPen(QPen(Qt.PenStyle.NoPen))
+    marker.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
 
 def _elide(text: str, font: QFont, width: float) -> str:
