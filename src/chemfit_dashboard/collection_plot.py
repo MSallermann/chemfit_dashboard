@@ -328,8 +328,9 @@ class CollectionPlotPanel(QWidget):
             markers.setMarkerSize(9.0)
             markers.setColor(color)
             markers.setBorderColor(color.lighter(145))
+            marker_points = [QPointF(point.index, point.value) for point in visible]
+            markers.replace(marker_points)
             for point in visible:
-                markers.append(point.index, point.value)
                 self._rendered_points[point.index].append(
                     QPointF(point.index, point.value)
                 )
@@ -668,8 +669,7 @@ class CollectionPlotPanel(QWidget):
         selection.setMarkerSize(15.0)
         selection.setColor(QColor(self._scheme.danger))
         selection.setBorderColor(QColor(self._scheme.danger_border))
-        for point in points:
-            selection.append(point)
+        selection.replace(points)
         selection.hovered.connect(
             lambda point, state, marker_series=selection: self._selection_point_hovered(
                 marker_series, point, state
@@ -830,7 +830,6 @@ def _append_line(
         return
     line = QLineSeries()
     line.setPen(QPen(color, 2.0))
-    for point in points:
-        line.append(point.index, point.value)
+    line.replace([QPointF(point.index, point.value) for point in points])
     chart.addSeries(line)
     lines.append(line)

@@ -222,15 +222,24 @@ pyright
 
 ### Benchmarks
 
-A small benchmark suite is included to evaluate collection processing, searching, extraction, and Data Flow rendering.
-
-Run it with:
+The benchmark suite evaluates collection processing, searching, extraction,
+wide exports, and Data Flow layout/rendering. Run the standard profile with:
 
 ```bash
-PYTHONPATH=src python benchmark/benchmark.py --evaluations 1000 --graph-nodes 2000
+PYTHONPATH=src python benchmark/benchmark.py --profile standard
 ```
 
-Larger workloads can be tested by increasing the number of evaluations or graph nodes.
+An intentionally large stress profile is also included:
+
+```bash
+PYTHONPATH=src python benchmark/benchmark.py --profile stress
+```
+
+The stress profile generates 50,000 evaluation files, indexes roughly two
+million runtime component nodes, builds and renders a 25,000-node declared
+graph, searches several dimensions, and exports 82 selected fields. It can use
+substantial CPU time, memory, and temporary disk space. Every scale dimension
+can be overridden independently; see `--help`.
 
 See [BENCHMARKS.md](BENCHMARKS.md) for recorded benchmark results.
 

@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
     from chemfit_dashboard.source import RecordRef
 
+MAX_FAILURE_TREE_ITEMS = 1_000
+
 
 @dataclass(frozen=True, slots=True)
 class NumericSummary:
@@ -116,13 +118,15 @@ def analyze_collection(  # noqa: PLR0912
                 missing[document.component_label(node.path)] += 1
 
         failed_paths = {node.path for node in failed_nodes}
+        failed_ancestors = {
+            path[:depth]
+            for path in failed_paths
+            for depth in range(len(path))
+        }
         primary_candidates = [
             node
             for node in failed_nodes
-            if not any(
-                other != node.path and other[: len(node.path)] == node.path
-                for other in failed_paths
-            )
+            if node.path not in failed_ancestors
         ]
         primary_failures = sorted(
             primary_candidates, key=lambda item: (-len(item.path), item.path)
@@ -332,21 +336,59 @@ class CollectionAnalysisPanel(QWidget):
                 self.numeric_table.setItem(row, column, QTableWidgetItem(value))
 
         self.failure_tree.clear()
+        tree_items = 0
+        displayed_groups = 0
         for group in summary.failure_groups:
+            if tree_items >= MAX_FAILURE_TREE_ITEMS - 1:
+                break
             group_item = QTreeWidgetItem(
                 [group.component, group.exception_type, str(len(group.occurrences))]
             )
             group_item.setToolTip(0, group.message)
             group_item.setData(0, Qt.ItemDataRole.UserRole, group.occurrences[0])
             self.failure_tree.addTopLevelItem(group_item)
-            for occurrence in group.occurrences:
+            tree_items += 1
+            displayed_groups += 1
+            available_children = MAX_FAILURE_TREE_ITEMS - tree_items
+            visible_limit = (
+                available_children
+                if len(group.occurrences) <= available_children
+                else max(0, available_children - 1)
+            )
+            visible_occurrences = group.occurrences[:visible_limit]
+            for occurrence in visible_occurrences:
                 child = QTreeWidgetItem(
                     [occurrence.record_name, occurrence.message, ""]
                 )
                 child.setToolTip(1, occurrence.message)
                 child.setData(0, Qt.ItemDataRole.UserRole, occurrence)
                 group_item.addChild(child)
+            tree_items += len(visible_occurrences)
+            hidden_count = len(group.occurrences) - len(visible_occurrences)
+            if hidden_count and tree_items < MAX_FAILURE_TREE_ITEMS:
+                group_item.addChild(
+                    QTreeWidgetItem(
+                        [
+                            f"{hidden_count:,} more (use Previous/Next to navigate)",
+                            "",
+                            "",
+                        ]
+                    )
+                )
+                tree_items += 1
             group_item.setExpanded(len(group.occurrences) <= 8)
+        omitted_groups = len(summary.failure_groups) - displayed_groups
+        if omitted_groups and tree_items < MAX_FAILURE_TREE_ITEMS:
+            self.failure_tree.addTopLevelItem(
+                QTreeWidgetItem(
+                    [
+                        f"{omitted_groups:,} more failure groups "
+                        "(use Previous/Next to navigate)",
+                        "",
+                        "",
+                    ]
+                )
+            )
         self._occurrences = summary.failure_occurrences
         self._current_occurrence = -1
         available = len(self._occurrences) > 1

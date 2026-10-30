@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from chemfit_dashboard.collection_analysis import (
+    MAX_FAILURE_TREE_ITEMS,
     CollectionAnalysisPanel,
     analyze_collection,
 )
@@ -97,3 +98,24 @@ def test_example_collection_reports_originating_failure_not_propagated_parent():
     panel.set_summary(summary)
     assert not panel.previous_button.isEnabled()
     assert not panel.next_button.isEnabled()
+
+
+def test_failure_tree_materialization_is_bounded(tmp_path):
+    for index in range(MAX_FAILURE_TREE_ITEMS + 20):
+        (tmp_path / f"failure_{index}.json").write_text(
+            json.dumps({"output": f"ValueError: failure {index}"}),
+            encoding="utf-8",
+        )
+    source = JsonFileSource(cache_capacity=0)
+    records = source.discover([tmp_path])
+    summary = analyze_collection((record, source.load(record)) for record in records)
+    panel = CollectionAnalysisPanel()
+
+    panel.set_summary(summary)
+
+    tree_item_count = panel.failure_tree.topLevelItemCount() + sum(
+        panel.failure_tree.topLevelItem(index).childCount()
+        for index in range(panel.failure_tree.topLevelItemCount())
+    )
+    assert len(summary.failure_groups) == MAX_FAILURE_TREE_ITEMS + 20
+    assert tree_item_count <= MAX_FAILURE_TREE_ITEMS

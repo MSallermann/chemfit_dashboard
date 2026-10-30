@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -39,11 +40,12 @@ class _EvaluationItem:
     record: RecordRef | None
     parent: _EvaluationItem | None
     children: list[_EvaluationItem] = field(default_factory=list)
+    row_index: int = 0
 
     def row(self) -> int:
         if self.parent is None:
             return 0
-        return self.parent.children.index(self)
+        return self.row_index
 
 
 class EvaluationListModel(QAbstractItemModel):
@@ -56,6 +58,7 @@ class EvaluationListModel(QAbstractItemModel):
         super().__init__(parent)
         self._records: list[RecordRef] = []
         self._record_order: dict[str, int] | None = None
+        self._items_by_record_id: dict[str, _EvaluationItem] = {}
         self._root = _EvaluationItem("", None, None, None)
 
     def columnCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
@@ -111,6 +114,7 @@ class EvaluationListModel(QAbstractItemModel):
         ordered = self._ordered_records(merged.values())
         self.beginResetModel()
         self._records = ordered
+        self._items_by_record_id.clear()
         self._root = _EvaluationItem("", None, None, None)
         self._build_tree()
         self.endResetModel()
@@ -146,18 +150,18 @@ class EvaluationListModel(QAbstractItemModel):
         )
         self.beginResetModel()
         self._records = self._ordered_records(self._records)
+        self._items_by_record_id.clear()
         self._root = _EvaluationItem("", None, None, None)
         self._build_tree()
         self.endResetModel()
 
     def index_for_record_id(self, record_id: str) -> QModelIndex:
-        pending = list(reversed(self._root.children))
-        while pending:
-            item = pending.pop()
-            if item.record is not None and item.record.id == record_id:
-                return self.createIndex(item.row(), 0, item)
-            pending.extend(reversed(item.children))
-        return QModelIndex()
+        item = self._items_by_record_id.get(record_id)
+        return (
+            self.createIndex(item.row(), 0, item)
+            if item is not None
+            else QModelIndex()
+        )
 
     def _ordered_records(self, records: Iterable[RecordRef]) -> list[RecordRef]:
         if self._record_order is None:
@@ -198,12 +202,19 @@ class EvaluationListModel(QAbstractItemModel):
                     parent_item.children.append(folder_item)
                     folders[folder_path] = folder_item
                 parent_item = folder_item
-            parent_item.children.append(
-                _EvaluationItem(record.name, record.path, record, parent_item)
+            record_item = _EvaluationItem(
+                record.name,
+                record.path,
+                record,
+                parent_item,
             )
+            parent_item.children.append(record_item)
+            self._items_by_record_id[record.id] = record_item
 
         for folder in folders.values():
             folder.children.sort(key=self._evaluation_item_sort_key)
+            for row, child in enumerate(folder.children):
+                child.row_index = row
 
     def _evaluation_item_sort_key(self, item: _EvaluationItem):
         if item.record is None:
@@ -225,11 +236,12 @@ class _ContextItem:
     parent: _ContextItem | None
     children: list[_ContextItem] = field(default_factory=list)
     fetched: bool = False
+    row_index: int = 0
 
     def row(self) -> int:
         if self.parent is None:
             return 0
-        return self.parent.children.index(self)
+        return self.row_index
 
 
 class ContextTreeModel(QAbstractItemModel):
@@ -345,7 +357,10 @@ class ContextTreeModel(QAbstractItemModel):
             return
         qt_parent = QModelIndex(parent)  # type: ignore[arg-type]
         self.beginInsertRows(qt_parent, 0, len(children) - 1)
-        item.children = [_ContextItem(info=child, parent=item) for child in children]
+        item.children = [
+            _ContextItem(info=child, parent=item, row_index=row)
+            for row, child in enumerate(children)
+        ]
         self.endInsertRows()
 
     def node_info(self, index: ModelIndex) -> NodeInfo | None:
@@ -363,13 +378,16 @@ class ContextTreeModel(QAbstractItemModel):
             if self.canFetchMore(current):
                 self.fetchMore(current)
             prefix = (*prefix, child_index)
-            match = QModelIndex()
-            for row in range(self.rowCount(current)):
-                candidate = self.index(row, 0, current)
-                info = self.node_info(candidate)
-                if info is not None and info.path == prefix:
-                    match = candidate
-                    break
+            item = self._item(current)
+            row = bisect_left(
+                item.children,
+                prefix,
+                key=lambda child: child.info.path if child.info is not None else (),
+            )
+            match = self.index(row, 0, current)
+            info = self.node_info(match)
+            if info is None or info.path != prefix:
+                match = QModelIndex()
             if not match.isValid():
                 return QModelIndex()
             current = match

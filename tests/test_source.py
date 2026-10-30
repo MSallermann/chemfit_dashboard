@@ -52,6 +52,12 @@ def test_loads_context_written_by_chemfit(chemfit_json_path, chemfit_context):
     assert document.details(()).structure == chemfit_context.meta["chemfit.structure"]
 
 
+def test_repeated_details_reuses_bounded_derived_mapping(chemfit_document):
+    first = chemfit_document.details(())
+
+    assert chemfit_document.details(()) is first
+
+
 def test_loads_chemfit_checkpoint_and_reuses_cached_document(tmp_path, chemfit_context):
     path = tmp_path / "best.json"
     best = FitContext()

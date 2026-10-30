@@ -89,6 +89,9 @@ class ContextDocument:
         self._component_label_metadata_key = component_label_metadata_key.strip()
         self._nodes: dict[NodePath, _NodeRecord] = {}
         self._children: dict[NodePath, tuple[NodePath, ...]] = {}
+        self._details_cache: OrderedDict[NodePath, NodeDetails] = OrderedDict()
+        self._details_cache_capacity = 64
+        self._details_lock = threading.RLock()
         self._build_index()
 
     @property
@@ -107,6 +110,11 @@ class ContextDocument:
         return tuple(self._nodes[child].info for child in self._children.get(path, ()))
 
     def details(self, path: NodePath) -> NodeDetails:
+        with self._details_lock:
+            cached = self._details_cache.get(path)
+            if cached is not None:
+                self._details_cache.move_to_end(path)
+                return cached
         try:
             node = self._nodes[path]
         except KeyError as exc:
@@ -131,13 +139,18 @@ class ContextDocument:
             fields = {"value": value}
             raw = fields
 
-        return NodeDetails(
+        details = NodeDetails(
             info=node.info,
             fields=fields,
             metadata=metadata,
             structure=structure,
             raw=raw,
         )
+        with self._details_lock:
+            self._details_cache[path] = details
+            if len(self._details_cache) > self._details_cache_capacity:
+                self._details_cache.popitem(last=False)
+        return details
 
     @property
     def component_label_metadata_key(self) -> str:

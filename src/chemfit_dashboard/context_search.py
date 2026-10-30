@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 import re
 from dataclasses import dataclass
-from difflib import SequenceMatcher
+from functools import lru_cache
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from rapidfuzz.fuzz import ratio
 
 from chemfit_dashboard.appearance import active_color_scheme
 from chemfit_dashboard.source import ContextDocument, NodePath
@@ -34,6 +35,12 @@ SearchMode = Literal["fuzzy", "exact", "regex"]
 
 class SearchQueryError(ValueError):
     """A search expression that cannot be evaluated."""
+
+
+def clear_search_caches() -> None:
+    """Clear bounded process-wide scoring caches for cold-cache measurements."""
+    _normalize.cache_clear()
+    _similarity.cache_clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +94,7 @@ class ContextSearchIndex:
         if not normalized:
             return []
         matches: list[SearchHit] = []
+        threshold = _score_threshold(normalized) if mode == "fuzzy" else 0.0
         for entry in self.entries:
             if not include_metadata and entry.section == "metadata":
                 continue
@@ -99,7 +107,6 @@ class ContextSearchIndex:
                 mode=mode,
                 pattern=pattern,
             )
-            threshold = _score_threshold(normalized) if mode == "fuzzy" else 0.0
             is_match = score >= threshold if mode == "fuzzy" else score > 0.0
             if is_match:
                 matches.append(
@@ -559,7 +566,9 @@ def _entry_score(
     return max(full_score, token_score * 0.96)
 
 
+@lru_cache(maxsize=16_384)
 def _similarity(query: str, candidate: str) -> float:
+    """Score one normalized pair, retaining common collection-wide candidates."""
     if not query or not candidate:
         return 0.0
     if query == candidate:
@@ -573,7 +582,7 @@ def _similarity(query: str, candidate: str) -> float:
     words = candidate.split()
     word_ratio = max(
         (
-            SequenceMatcher(None, query, word).ratio()
+            ratio(query, word) / 100.0
             for word in words
             if abs(len(query) - len(word)) <= max(2, len(query) // 3)
         ),
@@ -594,7 +603,9 @@ def _similarity(query: str, candidate: str) -> float:
     return max(word_ratio, subsequence)
 
 
+@lru_cache(maxsize=16_384)
 def _normalize(value: str) -> str:
+    """Normalize search text with a bounded cache shared by transient indexes."""
     camel_spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
     return " ".join(re.findall(r"[a-z]+|[0-9]+(?:\.[0-9]+)?", camel_spaced.casefold()))
 
@@ -693,12 +704,12 @@ def _fuzzy_match_indexes(value: str, query: str) -> set[int]:
 
         closest = max(
             words,
-            key=lambda word: SequenceMatcher(None, token, word.group()).ratio(),
+            key=lambda word: ratio(token, word.group()),
             default=None,
         )
         if (
             closest is not None
-            and SequenceMatcher(None, token, closest.group()).ratio() >= 0.68
+            and ratio(token, closest.group()) >= 68.0
         ):
             indexes.update(
                 index

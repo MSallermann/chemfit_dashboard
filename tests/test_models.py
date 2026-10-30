@@ -6,7 +6,7 @@ from contextlib import suppress
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
 from PySide6.QtCore import QModelIndex, Qt
-from PySide6.QtWidgets import QGraphicsSimpleTextItem, QHeaderView, QLabel, QPushButton
+from PySide6.QtWidgets import QHeaderView, QLabel, QPushButton
 
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
@@ -238,9 +238,9 @@ def test_data_flow_node_shows_custom_name_and_component_type(tmp_path):
     graph.ensure_rendered()
 
     labels = {
-        item.text()
+        item.node.label
         for item in graph.view.scene().items()
-        if isinstance(item, QGraphicsSimpleTextItem)
+        if hasattr(item, "node")
     }
     assert "density observable" in labels
     assert any(
@@ -290,7 +290,8 @@ def test_data_flow_structural_nodes_have_distinct_shape_and_fill(tmp_path):
     assert structural.brush().color() != atomic.brush().color()
     assert structural.path().elementCount() != atomic.path().elementCount()
     assert structural.pen().widthF() > atomic.pen().widthF()
-    assert len(structural.childItems()) > len(atomic.childItems())
+    assert structural.node.nested
+    assert not atomic.node.nested
 
 
 def test_active_graph_rebuilds_when_evaluation_changes(tmp_path, chemfit_document):
@@ -630,9 +631,9 @@ def test_component_label_metadata_key_applies_across_views_and_persists(tmp_path
     assert window.tree_model.data(child) == "density"
     assert window.inspector.title.text() == "density"
     labels = {
-        item.text()
+        item.node.label
         for item in window.graph.view.scene().items()
-        if isinstance(item, QGraphicsSimpleTextItem)
+        if hasattr(item, "node")
     }
     assert "density" in labels
     assert any(

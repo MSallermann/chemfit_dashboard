@@ -236,6 +236,17 @@ def test_large_layout_contains_every_node():
     assert len(layout.edges) == 4_000
 
 
+def test_graph_batches_noninteractive_scene_items(chemfit_document):
+    panel = DataFlowPanel()
+    panel.set_document(chemfit_document)
+    panel.ensure_rendered()
+
+    # Nodes remain individually interactive, while all edges and arrowheads
+    # share two paths and labels/status decoration are painted by each node.
+    node_count = panel.view.rendered_node_count
+    assert len(panel.view.scene().items()) <= node_count + 3
+
+
 def test_breadcrumb_navigation_and_selection(tmp_path, capsys):
     inner = _context(
         {

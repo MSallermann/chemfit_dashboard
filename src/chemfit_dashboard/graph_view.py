@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -13,21 +13,18 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
-    QPolygonF,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsPathItem,
-    QGraphicsPolygonItem,
-    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSceneMouseEvent,
-    QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QStyleOptionGraphicsItem,
     QVBoxLayout,
     QWidget,
 )
@@ -46,6 +43,8 @@ if TYPE_CHECKING:
 NODE_WIDTH = 220.0
 NODE_HEIGHT = 76.0
 BACKGROUND_LAYOUT_THRESHOLD = 180
+INCREMENTAL_RENDER_THRESHOLD = 800
+RENDER_BATCH_SIZE = 250
 
 
 class _FlowNodeItem(QGraphicsPathItem):
@@ -54,11 +53,55 @@ class _FlowNodeItem(QGraphicsPathItem):
         shape: QPainterPath,
         node: DataFlowNode,
         open_nested: Callable[[NodePath], None],
+        title: str,
+        detail: str,
+        status_color: QColor,
+        text_color: QColor,
+        detail_color: QColor,
+        marker_color: QColor,
     ) -> None:
         super().__init__(shape)
         self.node = node
         self._open_nested = open_nested
+        self._title = title
+        self._detail = detail
+        self._status_color = status_color
+        self._text_color = text_color
+        self._detail_color = detail_color
+        self._marker_color = marker_color
         self.normal_pen = QPen()
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        """Paint node decoration without allocating child graphics items."""
+        super().paint(painter, option, widget)
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._status_color)
+        painter.drawRect(QRectF(0, 12, 5, NODE_HEIGHT - 24))
+        if self.node.nested:
+            center = QPointF(NODE_WIDTH - 18, 17)
+            marker = QPainterPath()
+            marker.moveTo(center + QPointF(0, -6))
+            marker.lineTo(center + QPointF(6, 0))
+            marker.lineTo(center + QPointF(0, 6))
+            marker.lineTo(center + QPointF(-6, 0))
+            marker.closeSubpath()
+            painter.fillPath(marker, self._marker_color)
+        painter.setFont(QFont())
+        painter.setPen(self._text_color)
+        painter.drawText(
+            QPointF(14, 29 if self._detail else 46),
+            self._title,
+        )
+        if self._detail:
+            painter.setPen(self._detail_color)
+            painter.drawText(QPointF(14, 59), self._detail)
+        painter.restore()
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # noqa: N802
         if self.node.nested and self.node.path is not None:
@@ -87,11 +130,15 @@ class DataFlowView(QGraphicsView):
         self._rendered = False
         self._nodes: dict[NodePath, _FlowNodeItem] = {}
         self._items_by_id: dict[str, _FlowNodeItem] = {}
+        self._styled_selected_item: _FlowNodeItem | None = None
+        self._graph_bounds = QRectF()
+        self._render_generation = 0
         self._clearing_scene = False
         self._tasks = TaskRunner(self)
         self._layout_generation = 0
         self._layout_cancellation: CancellationToken | None = None
         self._scheme = active_color_scheme()
+        self._font_metrics = QFontMetricsF(QFont())
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -300,14 +347,45 @@ class DataFlowView(QGraphicsView):
 
     def _finish_render(self, graph: DataFlowGraph, layout: GraphLayout) -> None:
         self._clear_scene()
+        self._font_metrics = QFontMetricsF(QFont())
+        render_generation = self._render_generation
         edge_color = QColor(self._scheme.accent)
         edge_pen = QPen(edge_color, 2.0)
+        edge_paths = QPainterPath()
+        arrowheads = QPainterPath()
         for edge in layout.edges:
             path = QPainterPath(QPointF(*edge.points[0]))
             path.cubicTo(*(QPointF(*point) for point in edge.points[1:]))
-            self._scene.addPath(path, edge_pen)
-            self._add_arrowhead(edge.points[-2], edge.points[-1], edge_color)
-        for node in graph.nodes:
+            edge_paths.addPath(path)
+            _append_arrowhead(arrowheads, edge.points[-2], edge.points[-1])
+        if not edge_paths.isEmpty():
+            self._scene.addPath(edge_paths, edge_pen)
+        if not arrowheads.isEmpty():
+            arrow_item = self._scene.addPath(
+                arrowheads,
+                QPen(edge_color),
+                QBrush(edge_color),
+            )
+            arrow_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._graph_bounds = _layout_bounds(layout)
+        if graph.message:
+            message = self._scene.addSimpleText(graph.message)
+            message.setBrush(QColor(self._scheme.muted))
+            message.setPos(0, -30)
+        if len(graph.nodes) >= INCREMENTAL_RENDER_THRESHOLD:
+            self._continue_node_render(graph, layout, 0, render_generation)
+            return
+        self._add_node_range(graph, layout, 0, len(graph.nodes))
+        self._complete_render(graph, render_generation)
+
+    def _add_node_range(
+        self,
+        graph: DataFlowGraph,
+        layout: GraphLayout,
+        start: int,
+        stop: int,
+    ) -> None:
+        for node in graph.nodes[start:stop]:
             position = layout.positions.get(node.id)
             if position is None:
                 continue
@@ -315,20 +393,74 @@ class DataFlowView(QGraphicsView):
             self._items_by_id[node.id] = item
             if node.path is not None:
                 self._nodes[node.path] = item
-        if graph.message:
-            message = self._scene.addSimpleText(graph.message)
-            message.setBrush(QColor(self._scheme.muted))
-            message.setPos(0, -30)
+
+    def _continue_node_render(
+        self,
+        graph: DataFlowGraph,
+        layout: GraphLayout,
+        start: int,
+        render_generation: int,
+    ) -> None:
+        if render_generation != self._render_generation:
+            return
+        stop = min(start + RENDER_BATCH_SIZE, len(graph.nodes))
+        self._add_node_range(graph, layout, start, stop)
+        if stop < len(graph.nodes):
+            QTimer.singleShot(
+                0,
+                lambda: self._continue_node_render(
+                    graph,
+                    layout,
+                    stop,
+                    render_generation,
+                ),
+            )
+            return
+        self._complete_render(graph, render_generation)
+
+    def _complete_render(
+        self, graph: DataFlowGraph, render_generation: int
+    ) -> None:
+        if render_generation != self._render_generation:
+            return
         self._apply_selection(reveal=False)
-        self.fit_graph()
+        if len(graph.nodes) >= INCREMENTAL_RENDER_THRESHOLD:
+            padded = self._graph_bounds.adjusted(-40, -40, 40, 40)
+            self.setSceneRect(padded)
+            self.resetTransform()
+            self.centerOn(
+                QPointF(
+                    self._graph_bounds.left() + NODE_WIDTH / 2,
+                    self._graph_bounds.center().y(),
+                )
+            )
+        else:
+            self.fit_graph()
         self.render_finished.emit(len(graph.nodes))
 
     def _add_node(self, node: DataFlowNode, position: QPointF) -> _FlowNodeItem:
         boundary = node.kind != "child"
         shape = _flow_node_shape(node)
-        item = _FlowNodeItem(shape, node, self.navigate_requested.emit)
-        item.setPos(position)
         status_color = QColor(_status_color(node, self._scheme))
+        detail_text = ""
+        if node.kind == "child":
+            detail_text = " · ".join(
+                part for part in (node.status, node.component_type) if part
+            )
+            if node.nested:
+                detail_text = f"{detail_text}  >"
+        item = _FlowNodeItem(
+            shape,
+            node,
+            self.navigate_requested.emit,
+            _elide(node.label, self._font_metrics, NODE_WIDTH - 28),
+            _elide(detail_text, self._font_metrics, NODE_WIDTH - 28),
+            status_color,
+            QColor(self._scheme.text_strong),
+            QColor(self._scheme.text),
+            QColor(self._scheme.accent),
+        )
+        item.setPos(position)
         fill = (
             QColor(self._scheme.accent_soft)
             if boundary or node.nested
@@ -354,32 +486,6 @@ class DataFlowView(QGraphicsView):
             details.append("double-click to open")
         item.setToolTip(" · ".join(details))
         self._scene.addItem(item)
-
-        status_bar = QGraphicsRectItem(0, 12, 5, NODE_HEIGHT - 24, item)
-        status_bar.setBrush(QBrush(status_color))
-        status_bar.setPen(QPen(Qt.PenStyle.NoPen))
-        status_bar.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        if node.nested:
-            _add_structural_marker(item, QColor(self._scheme.accent))
-        title = QGraphicsSimpleTextItem(
-            _elide(node.label, QFont(), NODE_WIDTH - 28),
-            item,
-        )
-        title.setBrush(QColor(self._scheme.text_strong))
-        title.setPos(14, 11 if node.component_type or node.kind == "child" else 25)
-        title.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        if node.kind == "child":
-            detail_text = " · ".join(
-                part for part in (node.status, node.component_type) if part
-            )
-            if node.nested:
-                detail_text = f"{detail_text}  >"
-            detail = QGraphicsSimpleTextItem(
-                _elide(detail_text, QFont(), NODE_WIDTH - 28), item
-            )
-            detail.setBrush(QColor(self._scheme.text))
-            detail.setPos(14, 43)
-            detail.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         return item
 
     def _apply_selection(self, *, reveal: bool = True) -> None:
@@ -392,36 +498,44 @@ class DataFlowView(QGraphicsView):
                 item.setSelected(True)
         finally:
             self._scene.blockSignals(signals_were_blocked)
-        self._update_node_pens()
+        self._style_selected_item(item)
         if reveal and item is not None and isValid(item):
             self.ensureVisible(item, 30, 30)
 
     def _selection_changed(self) -> None:
         if self._clearing_scene:
             return
-        self._update_node_pens()
         selected = self._scene.selectedItems()
         if not selected:
+            self._prune_deleted_items()
+        item = selected[0] if selected else None
+        selected_item = item if isinstance(item, _FlowNodeItem) else None
+        self._style_selected_item(selected_item)
+        if selected_item is None:
             return
-        path = selected[0].data(0)
+        path = selected_item.data(0)
         if isinstance(path, tuple):
             self._selected_path = path
             self.node_selected.emit(path)
 
-    def _update_node_pens(self) -> None:
-        for item in self._live_node_items():
-            if item.isSelected():
-                item.setPen(QPen(QColor(self._scheme.accent), 3.5))
-            else:
-                item.setPen(item.normal_pen)
+    def _style_selected_item(self, item: _FlowNodeItem | None) -> None:
+        previous = self._styled_selected_item
+        if previous is not None and previous is not item and isValid(previous):
+            previous.setPen(previous.normal_pen)
+        if item is not None and isValid(item):
+            item.setPen(QPen(QColor(self._scheme.accent), 3.5))
+        self._styled_selected_item = item
 
     def _clear_scene(self) -> None:
         """Drop Python item references before Qt destroys their C++ objects."""
+        self._render_generation += 1
         self._clearing_scene = True
         signals_were_blocked = self._scene.blockSignals(True)  # noqa: FBT003
         try:
             self._nodes.clear()
             self._items_by_id.clear()
+            self._styled_selected_item = None
+            self._graph_bounds = QRectF()
             self._scene.clear()
         finally:
             self._scene.blockSignals(signals_were_blocked)
@@ -437,7 +551,7 @@ class DataFlowView(QGraphicsView):
         stale_ids = {
             node_id
             for node_id, item in self._items_by_id.items()
-            if not isValid(item)
+            if not isValid(item) or item.scene() is not self._scene
         }
         if not stale_ids:
             return
@@ -449,36 +563,12 @@ class DataFlowView(QGraphicsView):
                 self._nodes.pop(path, None)
 
     def _node_bounds(self) -> QRectF:
+        if not self._graph_bounds.isEmpty():
+            return QRectF(self._graph_bounds)
         bounds = QRectF()
         for item in self._live_node_items():
             bounds = bounds.united(item.sceneBoundingRect())
         return bounds
-
-    def _add_arrowhead(
-        self,
-        previous: tuple[float, float],
-        target: tuple[float, float],
-        color: QColor,
-    ) -> None:
-        dx, dy = target[0] - previous[0], target[1] - previous[1]
-        length = math.hypot(dx, dy)
-        if not length:
-            return
-        ux, uy = dx / length, dy / length
-        px, py = -uy, ux
-        size = 8.0
-        base_x, base_y = target[0] - ux * size, target[1] - uy * size
-        polygon = QPolygonF(
-            [
-                QPointF(*target),
-                QPointF(base_x + px * size * 0.55, base_y + py * size * 0.55),
-                QPointF(base_x - px * size * 0.55, base_y - py * size * 0.55),
-            ]
-        )
-        arrow = QGraphicsPolygonItem(polygon)
-        arrow.setBrush(QBrush(color))
-        arrow.setPen(QPen(color))
-        self._scene.addItem(arrow)
 
     def _show_message(self, text: str) -> None:
         message = self._scene.addSimpleText(text)
@@ -661,25 +751,37 @@ def _flow_node_shape(node: DataFlowNode) -> QPainterPath:
     return shape
 
 
-def _add_structural_marker(item: QGraphicsItem, color: QColor) -> None:
-    center = QPointF(NODE_WIDTH - 18, 17)
-    marker = QGraphicsPolygonItem(
-        QPolygonF(
-            [
-                center + QPointF(0, -6),
-                center + QPointF(6, 0),
-                center + QPointF(0, 6),
-                center + QPointF(-6, 0),
-            ]
-        ),
-        item,
-    )
-    marker.setBrush(QBrush(color))
-    marker.setPen(QPen(Qt.PenStyle.NoPen))
-    marker.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+def _elide(text: str, metrics: QFontMetricsF, width: float) -> str:
+    return metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(width))
 
 
-def _elide(text: str, font: QFont, width: float) -> str:
-    return QFontMetricsF(font).elidedText(
-        text, Qt.TextElideMode.ElideRight, int(width)
+def _append_arrowhead(
+    path: QPainterPath,
+    previous: tuple[float, float],
+    target: tuple[float, float],
+) -> None:
+    dx, dy = target[0] - previous[0], target[1] - previous[1]
+    length = math.hypot(dx, dy)
+    if not length:
+        return
+    ux, uy = dx / length, dy / length
+    px, py = -uy, ux
+    size = 8.0
+    base_x, base_y = target[0] - ux * size, target[1] - uy * size
+    path.moveTo(QPointF(*target))
+    path.lineTo(QPointF(base_x + px * size * 0.55, base_y + py * size * 0.55))
+    path.lineTo(QPointF(base_x - px * size * 0.55, base_y - py * size * 0.55))
+    path.closeSubpath()
+
+
+def _layout_bounds(layout: GraphLayout) -> QRectF:
+    if not layout.positions:
+        return QRectF()
+    xs = [position[0] for position in layout.positions.values()]
+    ys = [position[1] for position in layout.positions.values()]
+    return QRectF(
+        min(xs),
+        min(ys),
+        max(xs) - min(xs) + NODE_WIDTH,
+        max(ys) - min(ys) + NODE_HEIGHT,
     )
