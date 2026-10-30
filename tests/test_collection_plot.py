@@ -4,6 +4,7 @@ import json
 
 from PySide6.QtCharts import QLogValueAxis, QScatterSeries
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -209,6 +210,34 @@ def test_multi_series_plot_normalizes_exports_and_selects_context(
     panel.export_image(svg_path)
     assert png_path.stat().st_size > 0
     assert svg_path.stat().st_size > 0
+
+
+def test_png_plot_export_is_rendered_at_300_dpi(tmp_path):
+    selector = NumberSelector((), "fields", ("loss",), "loss", "loss")
+    panel = CollectionPlotPanel()
+    panel.resize(640, 480)
+    panel.set_series(
+        CollectionSeries(
+            selector,
+            ("one.json", "two.json"),
+            (
+                SeriesPoint(0, "one.json", 1.0, "one"),
+                SeriesPoint(1, "two.json", 2.0, "two"),
+            ),
+            ("one", "two"),
+        )
+    )
+    panel.show()
+    QApplication.processEvents()
+    png_path = tmp_path / "high-resolution.png"
+
+    panel.export_image(png_path)
+
+    exported_image = QImage(str(png_path))
+    assert exported_image.width() == round(panel.chart_view.width() * (300 / 96))
+    assert exported_image.height() == round(panel.chart_view.height() * (300 / 96))
+    assert abs(exported_image.dotsPerMeterX() - round(300 / 0.0254)) <= 1
+    assert abs(exported_image.dotsPerMeterY() - round(300 / 0.0254)) <= 1
 
 
 def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():

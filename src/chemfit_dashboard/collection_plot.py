@@ -17,7 +17,7 @@ from PySide6.QtCharts import (
     QValueAxis,
 )
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -56,6 +56,8 @@ if TYPE_CHECKING:
     from chemfit_dashboard.source import RecordRef
 
 JsonPath = tuple[str | int, ...]
+RASTER_EXPORT_DPI = 300
+SCREEN_DPI = 96
 
 __all__ = [
     "CollectionPlotPanel",
@@ -528,16 +530,27 @@ class CollectionPlotPanel(QWidget):
             generator.setFileName(str(destination))
             generator.setSize(self.chart_view.size())
             generator.setViewBox(self.chart_view.rect())
+            generator.setResolution(RASTER_EXPORT_DPI)
             painter = QPainter(generator)
             self.chart_view.render(painter)
             painter.end()
             return
-        pixmap = QPixmap(self.chart_view.size())
-        pixmap.fill(QColor(self._scheme.chart))
-        painter = QPainter(pixmap)
+        scale = RASTER_EXPORT_DPI / SCREEN_DPI
+        source_size = self.chart_view.size()
+        image = QImage(
+            max(1, round(source_size.width() * scale)),
+            max(1, round(source_size.height() * scale)),
+            QImage.Format.Format_ARGB32,
+        )
+        dots_per_meter = round(RASTER_EXPORT_DPI / 0.0254)
+        image.setDotsPerMeterX(dots_per_meter)
+        image.setDotsPerMeterY(dots_per_meter)
+        image.fill(QColor(self._scheme.chart))
+        painter = QPainter(image)
+        painter.scale(scale, scale)
         self.chart_view.render(painter)
         painter.end()
-        pixmap.save(str(destination))
+        image.save(str(destination))
 
     def _transformed_points(self, data: CollectionSeries) -> tuple[SeriesPoint, ...]:
         if not self.normalize.isChecked() or not data.points:
