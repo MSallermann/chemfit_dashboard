@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QToolButton,
     QToolTip,
     QVBoxLayout,
@@ -192,6 +193,7 @@ class CollectionPlotPanel(QWidget):
         """Initialize an empty interactive collection chart."""
         super().__init__(parent)
         layout = QVBoxLayout(self)
+
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         self.selection_label = QLabel("Currently plotting: no value selected")
@@ -203,9 +205,7 @@ class CollectionPlotPanel(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.series_list = QListWidget()
-        self.series_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
+        self.series_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.series_list.setMaximumHeight(110)
         self.series_list.hide()
         layout.addWidget(self.series_list)
@@ -256,6 +256,12 @@ class CollectionPlotPanel(QWidget):
         self.chart_view.coordinate_changed.connect(self._cursor_moved)
         layout.addWidget(self.chart_view, 1)
         self.cursor_coordinates = QLabel("Cursor: —")
+        self.cursor_coordinates.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.cursor_coordinates.setMinimumWidth(0)
+        self.cursor_coordinates.setWordWrap(False)
         self.cursor_coordinates.setObjectName("plotCoordinates")
         self.cursor_coordinates.setToolTip(
             "Cursor position in chart coordinates; points include their context name"
@@ -382,10 +388,7 @@ class CollectionPlotPanel(QWidget):
                 contiguous.append(point)
             _append_line(chart, lines, contiguous, color)
             markers.hovered.connect(
-                lambda point,
-                state,
-                marker_series=markers,
-                label=series_data.selector.label: self._point_hovered(
+                lambda point, state, marker_series=markers, label=series_data.selector.label: self._point_hovered(
                     marker_series, point, state, label
                 )
             )
@@ -441,9 +444,11 @@ class CollectionPlotPanel(QWidget):
             axis.setGridLineColor(QColor(self._scheme.border))
             chart.addAxis(
                 axis,
-                Qt.AlignmentFlag.AlignBottom
-                if axis is x_axis
-                else Qt.AlignmentFlag.AlignLeft,
+                (
+                    Qt.AlignmentFlag.AlignBottom
+                    if axis is x_axis
+                    else Qt.AlignmentFlag.AlignLeft
+                ),
             )
         for chart_series in chart.series():
             chart_series.attachAxis(x_axis)
@@ -524,7 +529,7 @@ class CollectionPlotPanel(QWidget):
         layout.setSpacing(7)
         swatch = QLabel()
         swatch.setObjectName("seriesColorSwatch")
-        swatch.setFixedSize(10, 10)
+        swatch.setFixedSize(20, 20)
         swatch.setProperty("seriesIndex", index)
         self._set_swatch_color(swatch, index)
         layout.addWidget(swatch)
@@ -575,7 +580,7 @@ class CollectionPlotPanel(QWidget):
             else ""
         )
         self.cursor_coordinates.setText(
-            f"{context}X: {point.x():.6g} · Y: {point.y():.12g}"
+            f"{context}X: {point.x():.2e} · Y: {point.y():.2e}"
         )
 
     def _set_empty_chart(self, title: str) -> None:
@@ -782,9 +787,7 @@ class CollectionPlotPanel(QWidget):
                 marker_series, point, state
             )
         )
-        selection.clicked.connect(
-            self._selection_point_clicked
-        )
+        selection.clicked.connect(self._selection_point_clicked)
         chart.addSeries(selection)
         horizontal = chart.axes(Qt.Orientation.Horizontal)
         vertical = chart.axes(Qt.Orientation.Vertical)
@@ -838,7 +841,7 @@ class CollectionPlotPanel(QWidget):
         )
         self.cursor_coordinates.setText(
             f"Context {index:,} · {label} · {series_label} · "
-            f"X: {point.x():.6g} · Y: {point.y():.12g}"
+            f"X: {point.x():.2e} · Y: {point.y():.2e}"
         )
 
 
