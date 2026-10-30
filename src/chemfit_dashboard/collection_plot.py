@@ -16,8 +16,8 @@ from PySide6.QtCharts import (
     QScatterSeries,
     QValueAxis,
 )
-from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -185,6 +186,7 @@ class CollectionPlotPanel(QWidget):
     point_selected = Signal(str, object)
     remove_series_requested = Signal(object)
     clear_series_requested = Signal()
+    expand_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
         """Initialize an empty interactive collection chart."""
@@ -202,16 +204,12 @@ class CollectionPlotPanel(QWidget):
         layout.addWidget(self.status)
         self.series_list = QListWidget()
         self.series_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.NoSelection
         )
-        self.series_list.setMaximumHeight(86)
+        self.series_list.setMaximumHeight(110)
         self.series_list.hide()
         layout.addWidget(self.series_list)
         series_controls = QHBoxLayout()
-        self.remove_button = QPushButton("Remove series")
-        self.remove_button.setEnabled(False)
-        self.remove_button.clicked.connect(self._remove_selected_series)
-        series_controls.addWidget(self.remove_button)
         self.clear_button = QPushButton("Clear plot")
         self.clear_button.setEnabled(False)
         self.clear_button.clicked.connect(
@@ -240,16 +238,29 @@ class CollectionPlotPanel(QWidget):
         self.log_y.toggled.connect(self._log_y_toggled)
         view_controls.addWidget(self.log_y)
         self.reset_zoom_button = QPushButton("Reset zoom")
+        self.reset_zoom_button.setText("Fit data")
+        self.reset_zoom_button.setToolTip("Restore the full data range")
         self.reset_zoom_button.clicked.connect(self._reset_zoom)
         view_controls.addWidget(self.reset_zoom_button)
+        self.expand_button = QPushButton("Expand")
+        self.expand_button.setToolTip("Open Plot in a large separate window")
+        self.expand_button.clicked.connect(self.expand_requested.emit)
+        view_controls.addWidget(self.expand_button)
         layout.addLayout(view_controls)
-        self.chart_view = QChartView()
+        self.chart_view = CoordinateChartView()
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.chart_view.setRubberBand(
             QChartView.RubberBand.RectangleRubberBand
             | QChartView.RubberBand.ClickThroughRubberBand
         )
+        self.chart_view.coordinate_changed.connect(self._cursor_moved)
         layout.addWidget(self.chart_view, 1)
+        self.cursor_coordinates = QLabel("Cursor: —")
+        self.cursor_coordinates.setObjectName("plotCoordinates")
+        self.cursor_coordinates.setToolTip(
+            "Cursor position in chart coordinates; points include their context name"
+        )
+        layout.addWidget(self.cursor_coordinates)
         self._labels: tuple[str, ...] = ()
         self._data: tuple[CollectionSeries, ...] = ()
         self._selected_record_id: str | None = None
@@ -259,6 +270,7 @@ class CollectionPlotPanel(QWidget):
         self._rendered_point_selectors: dict[
             tuple[int, float], list[NumberSelector]
         ] = {}
+        self._hidden_selectors: set[NumberSelector] = set()
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
 
@@ -278,16 +290,20 @@ class CollectionPlotPanel(QWidget):
 
     def set_series_collection(self, data: tuple[CollectionSeries, ...]) -> None:
         self._data = data
+        available = {series.selector for series in data}
+        self._hidden_selectors.intersection_update(available)
+        self.series_list.blockSignals(True)  # noqa: FBT003
         self.series_list.clear()
-        for series in data:
-            item = QListWidgetItem(series.selector.label)
+        for index, series in enumerate(data):
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, series.selector)
             self.series_list.addItem(item)
+            row = self._series_row(index, series)
+            item.setSizeHint(row.sizeHint())
+            self.series_list.setItemWidget(item, row)
+        self.series_list.blockSignals(False)  # noqa: FBT003
         self.series_list.setVisible(bool(data))
-        if data:
-            self.series_list.setCurrentRow(len(data) - 1)
         enabled = bool(data)
-        self.remove_button.setEnabled(enabled)
         self.clear_button.setEnabled(enabled)
         self.export_csv_button.setEnabled(enabled)
         self.export_image_button.setEnabled(enabled)
@@ -298,20 +314,38 @@ class CollectionPlotPanel(QWidget):
         if not data_collection:
             return
         data = data_collection[0]
+        visible_collection = tuple(
+            series
+            for series in data_collection
+            if series.selector not in self._hidden_selectors
+        )
         self._labels = data.labels
         self.selection_label.setText(
             f"Currently plotting: {data.selector.label}"
             if len(data_collection) == 1
             else f"Currently plotting: {len(data_collection)} values"
         )
+        if not visible_collection:
+            self._rendered_points = {}
+            self._rendered_point_labels = {}
+            self._rendered_point_selectors = {}
+            self._selection_series = None
+            self.chart_view.setChart(_base_chart("All series hidden", self._scheme))
+            self.status.setText(
+                "All series are hidden; check one in the series list to show it."
+            )
+            self.cursor_coordinates.setText("Cursor: —")
+            return
+        axis_data = visible_collection[0]
         chart = _base_chart("Values across context collection", self._scheme)
         all_points: list[SeriesPoint] = []
-        rendered_by_series: list[tuple[CollectionSeries, tuple[SeriesPoint, ...]]] = []
         nonpositive = 0
         self._rendered_points = defaultdict(list)
         self._rendered_point_labels = defaultdict(list)
         self._rendered_point_selectors = defaultdict(list)
         for data_index, series_data in enumerate(data_collection):
+            if series_data.selector in self._hidden_selectors:
+                continue
             transformed = self._transformed_points(series_data)
             visible = tuple(
                 point
@@ -319,7 +353,6 @@ class CollectionPlotPanel(QWidget):
                 if not self.log_y.isChecked() or point.value > 0
             )
             nonpositive += len(transformed) - len(visible)
-            rendered_by_series.append((series_data, visible))
             all_points.extend(visible)
             series_colors = self._scheme.series
             color = QColor(series_colors[data_index % len(series_colors)])
@@ -375,9 +408,9 @@ class CollectionPlotPanel(QWidget):
         axis_label = (
             "Normalized value (0-1)"
             if self.normalize.isChecked()
-            else data.selector.value_label or data.selector.label
+            else axis_data.selector.value_label or axis_data.selector.label
         )
-        if len(data_collection) > 1 and not self.normalize.isChecked():
+        if len(visible_collection) > 1 and not self.normalize.isChecked():
             axis_label = "Value (multiple fields)"
         if self.log_y.isChecked():
             y_axis: QValueAxis | QLogValueAxis = QLogValueAxis()
@@ -415,13 +448,13 @@ class CollectionPlotPanel(QWidget):
         for chart_series in chart.series():
             chart_series.attachAxis(x_axis)
             chart_series.attachAxis(y_axis)
-        chart.legend().setVisible(len(data_collection) > 1)
+        chart.legend().setVisible(len(visible_collection) > 1)
         chart.legend().setLabelColor(QColor(self._scheme.text))
         self.chart_view.setChart(chart)
         self._selection_series = None
         self._update_selection_marker()
 
-        missing = sum(series.missing_count for series in data_collection)
+        missing = sum(series.missing_count for series in visible_collection)
         notes = []
         if missing:
             notes.append(f"{missing:,} missing or nonnumeric values")
@@ -430,7 +463,7 @@ class CollectionPlotPanel(QWidget):
         suffix = f" · {' · '.join(notes)}" if notes else ""
         self.status.setText(
             f"{len(all_points):,} points across {len(data.labels):,} contexts{suffix}"
-            if len(data_collection) > 1
+            if len(visible_collection) > 1
             else f"{len(all_points):,} of {len(data.labels):,} contexts in collection{suffix}"
         )
 
@@ -440,15 +473,25 @@ class CollectionPlotPanel(QWidget):
     def clear(self) -> None:
         """Remove every plotted series and restore the empty state."""
         self._data = ()
+        self._hidden_selectors.clear()
         self.series_list.clear()
         self.series_list.hide()
-        self.remove_button.setEnabled(False)
         self.clear_button.setEnabled(False)
         self.export_csv_button.setEnabled(False)
         self.export_image_button.setEnabled(False)
         self.selection_label.setText("Currently plotting: no value selected")
         self.status.setText("Select a numeric field in the inspector to plot it.")
+        self.cursor_coordinates.setText("Cursor: —")
         self._set_empty_chart("Collection plot")
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Reflect whether the plot is hosted in the expanded window."""
+        self.expand_button.setText("Collapse" if expanded else "Expand")
+        self.expand_button.setToolTip(
+            "Return Plot to the dashboard"
+            if expanded
+            else "Open Plot in a large separate window"
+        )
 
     def refresh_fonts(self) -> None:
         """Apply the current application font to non-widget chart text."""
@@ -474,12 +517,74 @@ class CollectionPlotPanel(QWidget):
     def _reset_zoom(self) -> None:
         self.chart_view.chart().zoomReset()
 
+    def _series_row(self, index: int, series: CollectionSeries) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(5, 2, 3, 2)
+        layout.setSpacing(7)
+        swatch = QLabel()
+        swatch.setObjectName("seriesColorSwatch")
+        swatch.setFixedSize(10, 10)
+        swatch.setProperty("seriesIndex", index)
+        self._set_swatch_color(swatch, index)
+        layout.addWidget(swatch)
+        visible = QCheckBox(series.selector.label)
+        visible.setObjectName("seriesVisibility")
+        visible.setChecked(series.selector not in self._hidden_selectors)
+        visible.setToolTip("Show or hide this series without removing it")
+        visible.toggled.connect(
+            lambda checked, selector=series.selector: self._set_series_visible(
+                selector, checked
+            )
+        )
+        layout.addWidget(visible, 1)
+        remove = QToolButton()
+        remove.setObjectName("removeSeriesAction")
+        remove.setText("\N{MULTIPLICATION SIGN}")
+        remove.setToolTip(f"Remove {series.selector.label} from the plot")
+        remove.clicked.connect(
+            lambda _checked=False, selector=series.selector: (
+                self.remove_series_requested.emit(selector)
+            )
+        )
+        layout.addWidget(remove)
+        return row
+
+    def _set_series_visible(self, selector: NumberSelector, visible: bool) -> None:
+        if visible:
+            self._hidden_selectors.discard(selector)
+        else:
+            self._hidden_selectors.add(selector)
+        self._render_series()
+
+    def _set_swatch_color(self, swatch: QLabel, index: int) -> None:
+        color = self._scheme.series[index % len(self._scheme.series)]
+        swatch.setStyleSheet(
+            f"background: {color}; border: 1px solid {self._scheme.text_strong}; "
+            "border-radius: 5px;"
+        )
+
+    def _cursor_moved(self, point: QPointF | None) -> None:
+        if point is None or not self.chart_view.chart().axes():
+            self.cursor_coordinates.setText("Cursor: —")
+            return
+        index = round(point.x())
+        context = (
+            f"Context {index:,} · {self._labels[index]} · "
+            if 0 <= index < len(self._labels)
+            else ""
+        )
+        self.cursor_coordinates.setText(
+            f"{context}X: {point.x():.6g} · Y: {point.y():.12g}"
+        )
+
     def _set_empty_chart(self, title: str) -> None:
         self._labels = ()
         self._rendered_points = {}
         self._rendered_point_labels = {}
         self._rendered_point_selectors = {}
         self._selection_series = None
+        self.cursor_coordinates.setText("Cursor: —")
         self.chart_view.setChart(_base_chart(title, self._scheme))
 
     def select_record(self, record_id: str | None) -> None:
@@ -571,11 +676,6 @@ class CollectionPlotPanel(QWidget):
             self.context_selected.emit(record_id)
             self.point_selected.emit(record_id, data.selector)
 
-    def _remove_selected_series(self) -> None:
-        item = self.series_list.currentItem()
-        if item is not None:
-            self.remove_series_requested.emit(item.data(Qt.ItemDataRole.UserRole))
-
     def _choose_csv_export(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self, "Export collection plot data", "collection_plot.csv", "CSV (*.csv)"
@@ -629,6 +729,13 @@ class CollectionPlotPanel(QWidget):
     def set_color_scheme(self, scheme: ColorScheme) -> None:
         """Apply a scheme to chart elements painted outside Qt stylesheets."""
         self._scheme = scheme
+        for index in range(self.series_list.count()):
+            row = self.series_list.itemWidget(self.series_list.item(index))
+            if row is None:
+                continue
+            swatch = row.findChild(QLabel, "seriesColorSwatch")
+            if swatch is not None:
+                self._set_swatch_color(swatch, index)
         if self._data:
             self._render_series()
         else:
@@ -729,6 +836,32 @@ class CollectionPlotPanel(QWidget):
             f"{label}\n{series_label}\n{point.y():.12g}",
             self.chart_view,
         )
+        self.cursor_coordinates.setText(
+            f"Context {index:,} · {label} · {series_label} · "
+            f"X: {point.x():.6g} · Y: {point.y():.12g}"
+        )
+
+
+class CoordinateChartView(QChartView):
+    """Chart view that exposes the current mouse position in axis coordinates."""
+
+    coordinate_changed = Signal(object)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        chart = self.chart()
+        scene_position = self.mapToScene(event.position().toPoint())
+        chart_position = chart.mapFromScene(scene_position)
+        self.coordinate_changed.emit(chart.mapToValue(chart_position))
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
+        self.coordinate_changed.emit(None)
+        super().leaveEvent(event)
 
 
 def _selected_value(document: ContextDocument, selector: NumberSelector) -> Any:

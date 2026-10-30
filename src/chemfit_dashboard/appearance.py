@@ -12,6 +12,12 @@ COMPONENT_LABEL_METADATA_KEY_SETTING = "display/component_label_metadata_key"
 COMBO_CHEVRON_PATH = (
     Path(__file__).with_name("icons").joinpath("chevron_down.svg").as_posix()
 )
+CHECKMARK_DARK_PATH = (
+    Path(__file__).with_name("icons").joinpath("check_dark.svg").as_posix()
+)
+CHECKMARK_LIGHT_PATH = (
+    Path(__file__).with_name("icons").joinpath("check_light.svg").as_posix()
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +255,9 @@ def application_settings(config_directory: str | Path | None = None) -> QSetting
 
 
 def stylesheet_for(scheme: ColorScheme) -> str:
+    checkmark_path = (
+        CHECKMARK_LIGHT_PATH if scheme.key == "light" else CHECKMARK_DARK_PATH
+    )
     return f"""
 QWidget {{
     background: {scheme.window};
@@ -263,10 +272,14 @@ QMenuBar::item:selected, QMenu::item:selected {{ background: {scheme.selection};
 #eyebrow, #sectionLabel {{ color: {scheme.accent}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
 #inspectorTitle {{ color: {scheme.text_strong}; font-size: 25px; font-weight: 650; }}
 #plotSelection {{ color: {scheme.text_strong}; font-size: 14px; font-weight: 650; }}
+#plotCoordinates {{ color: {scheme.text_strong}; font-family: monospace; padding: 3px 6px; }}
 #actionGroupLabel {{ color: {scheme.accent}; font-size: 10px; font-weight: 750; letter-spacing: 1px; }}
 #mutedLabel {{ color: {scheme.muted}; }}
 #sidePanel {{ background: {scheme.panel}; border-right: 1px solid {scheme.border}; }}
 #treePanel {{ background: {scheme.panel_alt}; border-right: 1px solid {scheme.border}; }}
+#hierarchySearchControls {{
+    background: {scheme.panel_alt}; border: 1px solid {scheme.border}; border-radius: 6px;
+}}
 #inspectorActions {{
     background: {scheme.panel_alt}; border: 1px solid {scheme.border}; border-radius: 7px;
 }}
@@ -301,13 +314,36 @@ QCheckBox:checked {{
     background: {scheme.accent_soft}; border-color: {scheme.accent}; color: {scheme.text_strong};
 }}
 QCheckBox::indicator {{
-    width: 15px; height: 15px; background: {scheme.chrome};
-    border: 2px solid {scheme.border_strong}; border-radius: 3px;
+    width: 17px; height: 17px; background: {scheme.input};
+    border: 2px solid {scheme.text}; border-radius: 3px;
 }}
-QCheckBox::indicator:hover {{ border-color: {scheme.text}; }}
-QCheckBox::indicator:checked {{ background: {scheme.accent}; border-color: {scheme.text_strong}; }}
+QCheckBox::indicator:hover {{ border-color: {scheme.accent}; }}
+QCheckBox::indicator:checked {{
+    background: {scheme.accent}; border-color: {scheme.text_strong};
+    image: url("{checkmark_path}");
+}}
 QCheckBox:disabled {{ color: {scheme.muted}; border-color: {scheme.border}; }}
 QCheckBox::indicator:disabled {{ background: {scheme.panel}; border-color: {scheme.border}; }}
+QListWidget::indicator {{
+    width: 17px; height: 17px; background: {scheme.input};
+    border: 2px solid {scheme.text}; border-radius: 3px;
+}}
+QListWidget::indicator:hover {{ border-color: {scheme.accent}; }}
+QListWidget::indicator:checked {{
+    background: {scheme.accent}; border-color: {scheme.text_strong};
+    image: url("{checkmark_path}");
+}}
+QListWidget::indicator:disabled {{ background: {scheme.panel}; border-color: {scheme.border}; }}
+QCheckBox#seriesVisibility {{
+    background: transparent; border: none; color: {scheme.text}; padding: 2px; spacing: 7px;
+}}
+QToolButton#removeSeriesAction {{
+    background: transparent; color: {scheme.text}; border: 1px solid transparent;
+    border-radius: 3px; font-size: 16px; font-weight: 700; padding: 2px 6px;
+}}
+QToolButton#removeSeriesAction:hover {{
+    background: {scheme.danger}; color: {scheme.danger_border}; border-color: {scheme.danger};
+}}
 QLineEdit, QComboBox {{
     background: {scheme.input}; border: 1px solid {scheme.border}; border-radius: 5px;
     padding: 8px 9px; selection-background-color: {scheme.selection};

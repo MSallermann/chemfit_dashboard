@@ -6,7 +6,7 @@ from PySide6.QtCharts import QLogValueAxis, QScatterSeries
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton, QToolButton
 
 from chemfit_dashboard.collection_plot import (
     CollectionPlotPanel,
@@ -106,14 +106,95 @@ def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
     assert inspector.extract_component_button.text() == "+ Component"
     assert inspector.plot_button.property("primaryAction") == "true"
     assert inspector.extract_button.property("extractAction") == "true"
+    assert not inspector.order_button.isHidden()
+    assert not inspector.extract_component_button.isHidden()
 
     output_index = inspector.summary.model().index(1, 1)
     inspector.summary.setCurrentIndex(output_index)
 
     assert inspector.plot_selection.text() == "Selected: output"
     assert inspector.field_selection.text() == "Selected: output"
+    assert inspector.order_button.isEnabled()
+    assert inspector.extract_component_button.isEnabled()
     assert "across the collection" in inspector.plot_button.toolTip()
     assert "Data Extraction" in inspector.extract_button.toolTip()
+
+
+def test_plot_reports_coordinates_and_can_hide_series():
+    labels = ("step_1.json", "step_2.json")
+    record_ids = ("first", "second")
+    first = CollectionSeries(
+        NumberSelector((), "fields", ("loss",), "loss", "loss"),
+        labels,
+        (SeriesPoint(0, labels[0], 2.0), SeriesPoint(1, labels[1], 4.0)),
+        record_ids,
+    )
+    second = CollectionSeries(
+        NumberSelector((), "fields", ("runtime",), "runtime", "runtime"),
+        labels,
+        (SeriesPoint(0, labels[0], 10.0), SeriesPoint(1, labels[1], 30.0)),
+        record_ids,
+    )
+    panel = CollectionPlotPanel()
+    panel.set_series_collection((first, second))
+
+    panel._cursor_moved(QPointF(0.2, 3.25))  # noqa: SLF001
+    assert "step_1.json" in panel.cursor_coordinates.text()
+    assert "X: 0.2" in panel.cursor_coordinates.text()
+    assert "Y: 3.25" in panel.cursor_coordinates.text()
+
+    second_row = panel.series_list.itemWidget(panel.series_list.item(1))
+    assert second_row is not None
+    second_visibility = second_row.findChild(QCheckBox, "seriesVisibility")
+    assert second_visibility is not None
+    second_visibility.setChecked(False)
+    assert len(panel.chart_view.chart().series()) == 2
+    assert not panel.chart_view.chart().legend().isVisible()
+    assert second_row.findChild(QLabel, "seriesColorSwatch") is not None
+
+    first_row = panel.series_list.itemWidget(panel.series_list.item(0))
+    assert first_row is not None
+    first_visibility = first_row.findChild(QCheckBox, "seriesVisibility")
+    assert first_visibility is not None
+    first_visibility.setChecked(False)
+    assert panel.status.text().startswith("All series are hidden")
+
+    removed = []
+    panel.remove_series_requested.connect(removed.append)
+    remove = second_row.findChild(QToolButton, "removeSeriesAction")
+    assert remove is not None
+    remove.click()
+    assert removed == [second.selector]
+
+
+def test_plot_can_expand_into_window_and_return(qapp):
+    window = MainWindow()
+    window.show()
+    qapp.processEvents()
+    window.hierarchy_tabs.setCurrentWidget(window.collection_plot)
+
+    window.collection_plot.expand_button.click()
+    qapp.processEvents()
+
+    dialog = window._expanded_plot_dialog  # noqa: SLF001
+    assert dialog is not None
+    assert window.hierarchy_tabs.indexOf(window.collection_plot) == -1
+    placeholder = window._plot_placeholder  # noqa: SLF001
+    assert placeholder is not None
+    message = placeholder.findChild(QLabel, "plotDetachedMessage")
+    assert message is not None
+    assert "detached window" in message.text()
+    assert window.collection_plot.expand_button.text() == "Collapse"
+
+    return_button = placeholder.findChild(QPushButton, "returnPlotButton")
+    assert return_button is not None
+    return_button.click()
+    qapp.processEvents()
+
+    assert window._expanded_plot_dialog is None  # noqa: SLF001
+    assert window.hierarchy_tabs.indexOf(window.collection_plot) == 2
+    assert window.collection_plot.expand_button.text() == "Expand"
+    window.close()
 
 
 def test_multi_series_plot_normalizes_exports_and_selects_context(

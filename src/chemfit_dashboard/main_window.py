@@ -109,7 +109,7 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         source: ContextSource | None = None,
         initial_paths: Sequence[str | Path] | None = None,
@@ -155,6 +155,9 @@ class MainWindow(QMainWindow):
         self._expanded_data_flow_dialog: QDialog | None = None
         self._data_flow_placeholder: QWidget | None = None
         self._data_flow_tab_index = 1
+        self._expanded_plot_dialog: QDialog | None = None
+        self._plot_placeholder: QWidget | None = None
+        self._plot_tab_index = 2
         saved_label_key = self._settings.value(
             COMPONENT_LABEL_METADATA_KEY_SETTING,
             DEFAULT_COMPONENT_LABEL_METADATA_KEY,
@@ -376,19 +379,14 @@ class MainWindow(QMainWindow):
         label.setObjectName("sectionLabel")
         top.addWidget(label)
         top.addStretch()
-        self.node_count = QLabel("—")
-        self.node_count.setObjectName("mutedLabel")
-        top.addWidget(self.node_count)
-        layout.addLayout(top)
-
-        label_controls = QHBoxLayout()
-        label_controls.setSpacing(8)
-        label_field_label = QLabel("Component label metadata")
+        label_field_label = QLabel("Labels")
         label_field_label.setObjectName("mutedLabel")
-        label_controls.addWidget(label_field_label)
+        label_field_label.setToolTip("Component label metadata key")
+        top.addWidget(label_field_label)
         self.component_label_key = QComboBox()
         self.component_label_key.setEditable(True)
         self.component_label_key.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.component_label_key.setMaximumWidth(150)
         self.component_label_key.setToolTip(
             "Metadata key used for component labels in every view. "
             "Leave blank to use structural component names."
@@ -401,8 +399,17 @@ class MainWindow(QMainWindow):
         self.component_label_key.activated.connect(
             lambda _index: self._component_label_key_changed()
         )
-        label_controls.addWidget(self.component_label_key, 1)
-        layout.addLayout(label_controls)
+        top.addWidget(self.component_label_key)
+        self.node_count = QLabel("—")
+        self.node_count.setObjectName("mutedLabel")
+        top.addWidget(self.node_count)
+        layout.addLayout(top)
+
+        search_options = QFrame()
+        search_options.setObjectName("hierarchySearchControls")
+        search_options_layout = QVBoxLayout(search_options)
+        search_options_layout.setContentsMargins(8, 8, 8, 8)
+        search_options_layout.setSpacing(7)
 
         self.field_search = QLineEdit()
         self.field_search.setPlaceholderText(
@@ -414,7 +421,7 @@ class MainWindow(QMainWindow):
         self._search_timer.setInterval(120)
         self._search_timer.timeout.connect(self._run_field_search)
         self.field_search.textChanged.connect(self._field_search_changed)
-        layout.addWidget(self.field_search)
+        search_options_layout.addWidget(self.field_search)
         search_controls = QHBoxLayout()
         search_controls.setSpacing(8)
         self.search_mode = QComboBox()
@@ -435,7 +442,7 @@ class MainWindow(QMainWindow):
         self.search_scope.currentIndexChanged.connect(self._search_scope_changed)
         search_controls.addWidget(self.search_scope)
         search_controls.addStretch()
-        layout.addLayout(search_controls)
+        search_options_layout.addLayout(search_controls)
         search_dimensions = QGridLayout()
         search_dimensions.setSpacing(8)
         self.search_keys = QCheckBox("Include keys")
@@ -466,7 +473,7 @@ class MainWindow(QMainWindow):
         search_dimensions.addWidget(self.search_components, 1, 1)
         search_dimensions.setColumnStretch(0, 1)
         search_dimensions.setColumnStretch(1, 1)
-        layout.addLayout(search_dimensions)
+        search_options_layout.addLayout(search_dimensions)
 
         self.tree_model = ContextTreeModel(self)
         self.tree = QTreeView()
@@ -496,15 +503,22 @@ class MainWindow(QMainWindow):
         self.collection_plot.point_selected.connect(self._plot_point_selected)
         self.collection_plot.remove_series_requested.connect(self._remove_plot_series)
         self.collection_plot.clear_series_requested.connect(self._clear_plot_series)
+        self.collection_plot.expand_requested.connect(self._toggle_plot_expansion)
         self.search_panel = ContextSearchPanel()
         self.search_panel.hit_selected.connect(self._search_hit_selected)
+        self.search_workspace = QWidget()
+        search_workspace_layout = QVBoxLayout(self.search_workspace)
+        search_workspace_layout.setContentsMargins(0, 0, 0, 0)
+        search_workspace_layout.setSpacing(8)
+        search_workspace_layout.addWidget(search_options)
+        search_workspace_layout.addWidget(self.search_panel, 1)
         self.hierarchy_tabs = QTabWidget()
         self.hierarchy_tabs.addTab(self.tree, "Tree")
         self._data_flow_tab_index = self.hierarchy_tabs.addTab(
             self.graph, "Data Flow"
         )
-        self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
-        self.hierarchy_tabs.addTab(self.search_panel, "Search")
+        self._plot_tab_index = self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
+        self.hierarchy_tabs.addTab(self.search_workspace, "Search")
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
         layout.addWidget(self.hierarchy_tabs, 1)
         return panel
@@ -553,6 +567,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
         self._restore_data_flow_panel()
+        self._restore_plot_panel()
         for token in self._operation_tokens.values():
             token.cancel()
         self.graph.view.cancel_pending_layout()
@@ -692,6 +707,7 @@ class MainWindow(QMainWindow):
         if not self.file_model.records:
             return
         self._restore_data_flow_panel()
+        self._restore_plot_panel()
         for token in self._operation_tokens.values():
             token.cancel()
         self.tasks.cancel_pending()
@@ -1003,6 +1019,80 @@ class MainWindow(QMainWindow):
         expanded.hide()
         expanded.deleteLater()
 
+    def _toggle_plot_expansion(self) -> None:
+        if self._expanded_plot_dialog is not None:
+            self._restore_plot_panel()
+            return
+        tab_index = self.hierarchy_tabs.indexOf(self.collection_plot)
+        if tab_index >= 0:
+            self._plot_tab_index = tab_index
+            self.hierarchy_tabs.removeTab(tab_index)
+        placeholder = QWidget()
+        placeholder.setObjectName("plotDetachedPlaceholder")
+        placeholder_layout = QVBoxLayout(placeholder)
+        placeholder_layout.addStretch()
+        message = QLabel("Plot is currently open in a detached window.")
+        message.setObjectName("plotDetachedMessage")
+        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_layout.addWidget(message)
+        return_button = QPushButton("Return Plot to dashboard")
+        return_button.setObjectName("returnPlotButton")
+        return_button.clicked.connect(
+            lambda _checked=False: self._restore_plot_panel()
+        )
+        placeholder_layout.addWidget(
+            return_button, alignment=Qt.AlignmentFlag.AlignHCenter
+        )
+        placeholder_layout.addStretch()
+        self._plot_placeholder = placeholder
+        self.hierarchy_tabs.insertTab(self._plot_tab_index, placeholder, "Plot")
+        self.hierarchy_tabs.setCurrentWidget(placeholder)
+
+        dialog = QDialog(self, Qt.WindowType.Window)
+        dialog.setWindowTitle("ChemFit Collection Plot")
+        dialog.setModal(False)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(12, 12, 12, 12)
+        dialog_layout.addWidget(self.collection_plot)
+        self.collection_plot.show()
+        dialog.finished.connect(
+            lambda _result, target=dialog: self._restore_plot_panel(target)
+        )
+        self._expanded_plot_dialog = dialog
+        self.collection_plot.set_expanded(True)
+        dialog.resize(max(1100, self.width() - 80), max(720, self.height() - 80))
+        dialog.showMaximized()
+
+    def _restore_plot_panel(self, dialog: QDialog | None = None) -> None:
+        expanded = self._expanded_plot_dialog
+        if expanded is None or (dialog is not None and dialog is not expanded):
+            return
+        self._expanded_plot_dialog = None
+        layout = expanded.layout()
+        if layout is not None:
+            layout.removeWidget(self.collection_plot)
+        placeholder = self._plot_placeholder
+        placeholder_was_current = (
+            placeholder is not None
+            and self.hierarchy_tabs.currentWidget() is placeholder
+        )
+        if placeholder is not None:
+            placeholder_index = self.hierarchy_tabs.indexOf(placeholder)
+            if placeholder_index >= 0:
+                self._plot_tab_index = placeholder_index
+                self.hierarchy_tabs.removeTab(placeholder_index)
+            placeholder.deleteLater()
+        self._plot_placeholder = None
+        insert_at = min(self._plot_tab_index, self.hierarchy_tabs.count())
+        self._plot_tab_index = self.hierarchy_tabs.insertTab(
+            insert_at, self.collection_plot, "Plot"
+        )
+        if placeholder_was_current:
+            self.hierarchy_tabs.setCurrentWidget(self.collection_plot)
+        self.collection_plot.set_expanded(False)
+        expanded.hide()
+        expanded.deleteLater()
+
     def _graph_context_selected(self, path: NodePath) -> None:
         if self._current_document is not None:
             self._select_context_path(path, remember=True)
@@ -1171,9 +1261,9 @@ class MainWindow(QMainWindow):
         self._cancel_operation("search")
         if text.strip():
             self._search_generation += 1
-            if self.hierarchy_tabs.currentWidget() is not self.search_panel:
+            if self.hierarchy_tabs.currentWidget() is not self.search_workspace:
                 self._tab_before_search = self.hierarchy_tabs.currentWidget()
-            self.hierarchy_tabs.setCurrentWidget(self.search_panel)
+            self.hierarchy_tabs.setCurrentWidget(self.search_workspace)
             self._search_timer.start()
         else:
             self._search_timer.stop()
@@ -1182,7 +1272,7 @@ class MainWindow(QMainWindow):
                 "Type above to search context fields and values."
             )
             if (
-                self.hierarchy_tabs.currentWidget() is self.search_panel
+                self.hierarchy_tabs.currentWidget() is self.search_workspace
                 and self._tab_before_search is not None
             ):
                 self.hierarchy_tabs.setCurrentWidget(self._tab_before_search)
