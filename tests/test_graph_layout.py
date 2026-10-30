@@ -247,6 +247,33 @@ def test_graph_batches_noninteractive_scene_items(chemfit_document):
     assert len(panel.view.scene().items()) <= node_count + 3
 
 
+def test_graph_refuses_oversized_declared_flow_before_building(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("chemfit_dashboard.graph_view.MAX_FLOW_COMPONENTS", 2)
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [
+                    {"index": 0, "name": "one"},
+                    {"index": 1, "name": "two"},
+                    {"index": 2, "name": "three"},
+                ],
+                "inputs": [[], [], []],
+                "outputs": [],
+            }
+        ),
+    )
+    panel = DataFlowPanel()
+    panel.set_document(document)
+
+    panel.ensure_rendered()
+
+    assert panel.view.rendered_node_count == 0
+    assert "rendering is limited to 2" in panel.status.text()
+
+
 def test_breadcrumb_navigation_and_selection(tmp_path, capsys):
     inner = _context(
         {

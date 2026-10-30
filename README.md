@@ -78,7 +78,7 @@ You can also pass multiple files and directories at once. Directories are scanne
 
 Select an evaluation from the file browser to inspect its component hierarchy. Clicking a component shows its inputs, outputs, metadata, and other recorded information.
 
-The **Data Flow** view shows how data moves between the immediate children of a structural component. Double-click a nested component to explore its internal flow, and use the breadcrumbs to navigate back. Selecting a component stays synchronized with the tree and inspector.
+The **Data Flow** view shows how data moves between the immediate children of a structural component. Double-click a nested component to explore its internal flow, and use the breadcrumbs to navigate back. Selecting a component stays synchronized with the tree and inspector. To protect GUI responsiveness and native memory, a single level containing more than 5,000 components is summarized instead of rendered.
 
 Use the search field to find particular components or values. You can search the current evaluation or the entire loaded collection.
 
@@ -236,8 +236,9 @@ PYTHONPATH=src python benchmark/benchmark.py --profile stress
 ```
 
 The stress profile generates 50,000 evaluation files, indexes roughly two
-million runtime component nodes, builds and renders a 25,000-node declared
-graph, searches several dimensions, and exports 82 selected fields. It can use
+million runtime component nodes, builds and lays out a 25,000-node declared
+graph, verifies that the GUI rendering limit rejects it, searches several
+dimensions, and exports 82 selected fields. It can use
 substantial CPU time, memory, and temporary disk space. Every scale dimension
 can be overridden independently; see `--help`.
 

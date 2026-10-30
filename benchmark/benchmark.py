@@ -45,7 +45,7 @@ from chemfit_dashboard.extraction import (
     extract_fields,
 )
 from chemfit_dashboard.graph_layout import data_flow_layout
-from chemfit_dashboard.graph_view import DataFlowPanel
+from chemfit_dashboard.graph_view import MAX_FLOW_COMPONENTS, DataFlowPanel
 from chemfit_dashboard.models import EvaluationListModel
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import iter_collection
@@ -398,7 +398,7 @@ def run(  # noqa: PLR0915
         def render() -> _GuiMeasurementResult:
             panel = DataFlowPanel()
             panel.set_document(document)
-            expected_nodes = graph_nodes + 2
+            expected_nodes = graph_nodes + 2 if graph_nodes <= MAX_FLOW_COMPONENTS else 0
             finished = False
             heartbeat_times: list[float] = []
             last_heartbeat = time.perf_counter()

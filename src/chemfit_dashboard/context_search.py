@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import heapq
 import re
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
@@ -29,6 +30,7 @@ MAX_INDEX_ENTRIES = 20_000
 MAX_LIST_ITEMS = 100
 MAX_VALUE_DEPTH = 10
 MAX_RESULTS = 120
+COOPERATIVE_SEARCH_INTERVAL = 256
 HIT_ROLE = Qt.ItemDataRole.UserRole.value
 SearchMode = Literal["fuzzy", "exact", "regex"]
 
@@ -62,9 +64,21 @@ class SearchHit:
 class ContextSearchIndex:
     """Bounded fuzzy-search index for one context document."""
 
-    def __init__(self, document: ContextDocument):
+    def __init__(
+        self,
+        document: ContextDocument,
+        *,
+        cooperative: bool = False,
+        cancelled: Callable[[], bool] | None = None,
+    ):
         """Index context identities and nested fields without mutating the document."""
-        self.entries = tuple(_index_document(document))
+        self.entries = tuple(
+            _index_document(
+                document,
+                cooperative=cooperative,
+                cancelled=cancelled,
+            )
+        )
 
     def search(
         self,
@@ -76,6 +90,8 @@ class ContextSearchIndex:
         include_metadata: bool = True,
         include_components: bool = True,
         mode: SearchMode = "fuzzy",
+        cooperative: bool = False,
+        cancelled: Callable[[], bool] | None = None,
     ) -> list[SearchHit]:
         """Return ranked matches for field, hierarchy, section, and value."""
         query = query.strip()
@@ -95,7 +111,11 @@ class ContextSearchIndex:
             return []
         matches: list[SearchHit] = []
         threshold = _score_threshold(normalized) if mode == "fuzzy" else 0.0
-        for entry in self.entries:
+        for entry_index, entry in enumerate(self.entries, start=1):
+            if cooperative and entry_index % COOPERATIVE_SEARCH_INTERVAL == 0:
+                if cancelled is not None and cancelled():
+                    return []
+                time.sleep(0)
             if not include_metadata and entry.section == "metadata":
                 continue
             score = _entry_score(
@@ -238,7 +258,7 @@ class ContextSearchPanel(QWidget):
         )
 
     def show_loading(self, text: str) -> None:
-        self.results.clear()
+        """Report replacement work without synchronously destroying result widgets."""
         self.status.setText(text)
 
     def show_message(self, text: str) -> None:
@@ -406,7 +426,12 @@ class ContextSearchPanel(QWidget):
             self.hit_selected.emit(hit)
 
 
-def _index_document(document: ContextDocument):
+def _index_document(
+    document: ContextDocument,
+    *,
+    cooperative: bool = False,
+    cancelled: Callable[[], bool] | None = None,
+):
     count = 0
     for node in document.nodes:
         breadcrumb = _breadcrumb(document, node.path)
@@ -422,6 +447,10 @@ def _index_document(document: ContextDocument):
             record_name=document.record.name,
         )
         count += 1
+        if cooperative and count % COOPERATIVE_SEARCH_INTERVAL == 0:
+            if cancelled is not None and cancelled():
+                return
+            time.sleep(0)
         details = document.details(node.path)
         for section, value in (
             ("fields", details.fields),
@@ -442,6 +471,10 @@ def _index_document(document: ContextDocument):
                     record_name=document.record.name,
                 )
                 count += 1
+                if cooperative and count % COOPERATIVE_SEARCH_INTERVAL == 0:
+                    if cancelled is not None and cancelled():
+                        return
+                    time.sleep(0)
 
 
 def _walk_values(

@@ -445,6 +445,11 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
 
     assert len(submitted) == 1
     assert "in the background" in window.search_panel.status.text()
+    function, _on_success, _on_error = submitted[0]
+    hits, failed_records, cancelled = function()
+    assert hits
+    assert failed_records == 0
+    assert not cancelled
 
 
 def test_series_follows_component_identity_when_runtime_tree_shifts(tmp_path):

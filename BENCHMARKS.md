@@ -84,8 +84,9 @@ decoration no longer creates child graphics objects.
 
 The opt-in maximum profile contains 50,000 evaluation files, 40 runtime
 components per evaluation, a 25,000-component first context, 80 numeric root
-fields (82 exported fields), three searches, and a 25,000-node render with a
-five-minute deadline:
+fields (82 exported fields), three searches, and a 25,000-node construction and
+layout. The GUI phase verifies that the built-in 5,000-component rendering
+limit rejects the oversized scene immediately:
 
 ```bash
 PYTHONPATH=src python benchmark/benchmark.py --profile stress
@@ -115,7 +116,8 @@ not reported as measurements.
   slower. It was not adopted.
 - Graphviz `dot` took 0.226s for a 1,000-node linear layout versus 0.016s for the
   existing layout, before integration/IPC overhead. It was not adopted.
-- A 25,000-node scene still retains one interactive Qt graphics item per node.
-  Edges and decoration are batched, but native Qt memory remains material.
+- A data-flow level above 5,000 components is intentionally not rendered.
+  Smaller graphs retain one interactive Qt item per node; edges and decoration
+  are batched, but native Qt memory remains material.
 - Search indexes are cached for the 32 most recent documents and scoring caches
   are bounded at 16,384 entries, keeping retained memory predictable.

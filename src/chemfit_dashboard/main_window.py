@@ -100,7 +100,7 @@ from chemfit_dashboard.traversal import (
 from chemfit_dashboard.workers import TaskRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -1161,7 +1161,13 @@ class MainWindow(QMainWindow):
                         and current_document.record.id == record.id
                         else self.source.configure_document(self.source.load(record))
                     )
-                    index = self._cached_search_index(document)
+                    index = self._cached_search_index(
+                        document,
+                        cooperative=True,
+                        cancelled=lambda: cancellation.cancelled,
+                    )
+                    if cancellation.cancelled:
+                        return [], failed_records, True
                     hits.extend(
                         index.search(
                             query,
@@ -1170,6 +1176,8 @@ class MainWindow(QMainWindow):
                             include_metadata=include_metadata,
                             include_components=include_components,
                             mode=mode,
+                            cooperative=True,
+                            cancelled=lambda: cancellation.cancelled,
                         )
                     )
                 except ContextSourceError:
@@ -1211,7 +1219,13 @@ class MainWindow(QMainWindow):
             self._search_generation += 1
             self._search_timer.start()
 
-    def _cached_search_index(self, document: ContextDocument) -> ContextSearchIndex:
+    def _cached_search_index(
+        self,
+        document: ContextDocument,
+        *,
+        cooperative: bool = False,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ContextSearchIndex:
         try:
             stat = document.record.path.stat()
             signature = (stat.st_mtime_ns, stat.st_size)
@@ -1222,7 +1236,13 @@ class MainWindow(QMainWindow):
             if cached is not None and cached[0] == signature:
                 self._search_index_cache.move_to_end(document.record.id)
                 return cached[1]
-        index = ContextSearchIndex(document)
+        index = ContextSearchIndex(
+            document,
+            cooperative=cooperative,
+            cancelled=cancelled,
+        )
+        if cancelled is not None and cancelled():
+            return index
         with self._search_index_lock:
             self._search_index_cache[document.record.id] = (signature, index)
             self._search_index_cache.move_to_end(document.record.id)

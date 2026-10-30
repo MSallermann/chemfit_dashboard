@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import weakref
 from pathlib import Path
 
@@ -272,3 +273,23 @@ def test_search_index_does_not_retain_document(chemfit_json_path):
 
     assert reference() is None
     assert index.search("output")
+
+
+def test_large_background_search_cooperatively_yields(tmp_path, monkeypatch):
+    path = tmp_path / "wide.json"
+    path.write_text(
+        json.dumps({f"field_{index}": index for index in range(300)}),
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+    document = source.load(source.discover([path])[0])
+    yields: list[int] = []
+    monkeypatch.setattr(
+        "chemfit_dashboard.context_search.time.sleep",
+        lambda _duration: yields.append(1),
+    )
+
+    index = ContextSearchIndex(document, cooperative=True)
+    index.search("field", cooperative=True)
+
+    assert yields

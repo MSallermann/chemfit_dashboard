@@ -45,6 +45,7 @@ NODE_HEIGHT = 76.0
 BACKGROUND_LAYOUT_THRESHOLD = 180
 INCREMENTAL_RENDER_THRESHOLD = 800
 RENDER_BATCH_SIZE = 250
+MAX_FLOW_COMPONENTS = 5_000
 
 
 class _FlowNodeItem(QGraphicsPathItem):
@@ -128,6 +129,7 @@ class DataFlowView(QGraphicsView):
         self._current_path: NodePath = ()
         self._selected_path: NodePath | None = None
         self._rendered = False
+        self._render_status_message: str | None = None
         self._nodes: dict[NodePath, _FlowNodeItem] = {}
         self._items_by_id: dict[str, _FlowNodeItem] = {}
         self._styled_selected_item: _FlowNodeItem | None = None
@@ -159,12 +161,17 @@ class DataFlowView(QGraphicsView):
     def rendered_node_count(self) -> int:
         return len(self._items_by_id)
 
+    @property
+    def render_status_message(self) -> str | None:
+        return self._render_status_message
+
     def set_document(self, document: ContextDocument | None) -> None:
         self._cancel_layout()
         self._document = document
         self._current_path = ()
         self._selected_path = None
         self._rendered = False
+        self._render_status_message = None
         self._clear_scene()
         if document is None:
             self._show_message("Select an evaluation to inspect its declared data flow.")
@@ -281,10 +288,32 @@ class DataFlowView(QGraphicsView):
         self._cancel_layout()
         self._layout_generation += 1
         generation = self._layout_generation
-        graph = build_data_flow(document, self._current_path)
         self._clear_scene()
+        self._render_status_message = None
+        component_hint = _declared_component_count_hint(document, self._current_path)
+        if component_hint > MAX_FLOW_COMPONENTS:
+            self._render_status_message = (
+                f"Data flow has at least {component_hint:,} components; "
+                f"rendering is limited to {MAX_FLOW_COMPONENTS:,}."
+            )
+            self._show_message(self._render_status_message)
+            self.render_finished.emit(0)
+            return
+        graph = build_data_flow(document, self._current_path)
         if not graph.available:
-            self._show_message(graph.message or "No declared data flow is available.")
+            self._render_status_message = (
+                graph.message or "No declared data flow is available."
+            )
+            self._show_message(self._render_status_message)
+            self.render_finished.emit(0)
+            return
+        component_count = sum(node.kind == "child" for node in graph.nodes)
+        if component_count > MAX_FLOW_COMPONENTS:
+            self._render_status_message = (
+                f"Data flow has {component_count:,} components; "
+                f"rendering is limited to {MAX_FLOW_COMPONENTS:,}."
+            )
+            self._show_message(self._render_status_message)
             self.render_finished.emit(0)
             return
         edge_pairs = tuple((edge.source, edge.target) for edge in graph.edges)
@@ -624,11 +653,7 @@ class DataFlowPanel(QWidget):
         self.view.node_selected.connect(self.node_selected.emit)
         self.view.navigate_requested.connect(self._enter)
         self.view.level_changed.connect(self._update_breadcrumbs)
-        self.view.render_finished.connect(
-            lambda count: self.status.setText(
-                f"{count:,} declared flow node{'s' if count != 1 else ''}"
-            )
-        )
+        self.view.render_finished.connect(self._render_finished)
         self.back_button.clicked.connect(self._back)
         self.fit_button.clicked.connect(self.view.fit_graph)
         self.zoom_out_button.clicked.connect(self.view.zoom_out)
@@ -645,6 +670,13 @@ class DataFlowPanel(QWidget):
 
     def ensure_rendered(self) -> None:
         self.view.ensure_rendered()
+
+    def _render_finished(self, count: int) -> None:
+        message = self.view.render_status_message
+        self.status.setText(
+            message
+            or f"{count:,} declared flow node{'s' if count != 1 else ''}"
+        )
 
     def select_path(self, path: NodePath) -> None:
         self.view.select_path(path)
@@ -728,6 +760,24 @@ def _status_color(node: DataFlowNode, scheme: ColorScheme) -> str:
         "failed": scheme.danger,
         "skipped": scheme.status_skipped,
     }.get(node.status, scheme.status_missing)
+
+
+def _declared_component_count_hint(
+    document: ContextDocument, path: NodePath
+) -> int:
+    """Return an O(1) lower-bound hint for common serialized structures."""
+    try:
+        structure = document.details(path).structure
+    except ContextSourceError:
+        return 0
+    if structure is None:
+        return 0
+    children = structure.get("children")
+    inputs = structure.get("inputs")
+    return max(
+        len(children) if isinstance(children, list) else 0,
+        len(inputs) if isinstance(inputs, list) else 0,
+    )
 
 
 def _flow_node_shape(node: DataFlowNode) -> QPainterPath:
