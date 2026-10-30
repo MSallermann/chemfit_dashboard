@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 
 from chemfit_dashboard.collection_analysis import analyze_collection
 from chemfit_dashboard.context_search import ContextSearchIndex, TopKSearchHits
+from chemfit_dashboard.data_flow import INPUT_NODE, OUTPUT_NODE, child_node
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
     FieldSelector,
@@ -26,8 +27,8 @@ from chemfit_dashboard.extraction import (
     export_jsonl,
     extract_fields,
 )
-from chemfit_dashboard.graph_layout import LayoutNode, dependency_layered_layout
-from chemfit_dashboard.graph_view import ContextGraphPanel
+from chemfit_dashboard.graph_layout import data_flow_layout
+from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import iter_collection
 
@@ -59,6 +60,19 @@ def create_collection(directory: Path, count: int, graph_nodes: int) -> Path:
         "dependencies": [
             ([] if index == 0 else [index - 1]) for index in range(graph_nodes)
         ],
+        "inputs": [
+            [
+                {"kind": "parent_input"}
+                if index == 0
+                else {"kind": "child", "index": index - 1}
+            ]
+            for index in range(graph_nodes)
+        ],
+        "outputs": (
+            [{"kind": "child", "index": graph_nodes - 1}]
+            if graph_nodes
+            else [{"kind": "parent_input"}]
+        ),
     }
     for index in range(count):
         value = {
@@ -145,32 +159,41 @@ def run(count: int, graph_nodes: int) -> list[Measurement]:
             )
         )
         document = source.load(records[0])
-        paths = [node.path for node in document.nodes]
-        hierarchy = [(path[:-1], path) for path in paths if path]
-        dependencies = [((index - 1,), (index,)) for index in range(1, graph_nodes)]
+        flow_nodes = [
+            INPUT_NODE,
+            *(child_node(index) for index in range(graph_nodes)),
+            OUTPUT_NODE,
+        ]
+        flow_edges = (
+            [
+                (INPUT_NODE, child_node(0)),
+                *(
+                    (child_node(index - 1), child_node(index))
+                    for index in range(1, graph_nodes)
+                ),
+                (child_node(graph_nodes - 1), OUTPUT_NODE),
+            ]
+            if graph_nodes
+            else [(INPUT_NODE, OUTPUT_NODE)]
+        )
         measurements.append(
             measure(
-                "graph layout",
-                lambda: dependency_layered_layout(
-                    [LayoutNode(path, path[:-1] if path else None) for path in paths],
-                    hierarchy,
-                    dependencies,
-                ),
+                "data-flow layout",
+                lambda: data_flow_layout(flow_nodes, flow_edges),
             )
         )
 
         application = QApplication.instance() or QApplication([])
 
         def render() -> None:
-            panel = ContextGraphPanel()
+            panel = DataFlowPanel()
             panel.set_document(document)
-            panel.view.expand_all()
             panel.ensure_rendered()
             deadline = time.monotonic() + 30
             while panel.view.rendered_node_count == 0 and time.monotonic() < deadline:
                 application.processEvents()
 
-        measurements.append(measure("graph rendering", render))
+        measurements.append(measure("data-flow rendering", render))
     return measurements
 
 

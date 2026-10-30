@@ -8,6 +8,9 @@ from PySide6.QtCore import QSettings, QStandardPaths
 SETTINGS_FILENAME = "settings.ini"
 COLOR_SCHEME_SETTING = "appearance/color_scheme"
 FONT_SCALE_SETTING = "appearance/font_scale"
+COMBO_CHEVRON_PATH = (
+    Path(__file__).with_name("icons").joinpath("chevron_down.svg").as_posix()
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,9 +262,29 @@ QMenuBar::item:selected, QMenu::item:selected {{ background: {scheme.selection};
 #eyebrow, #sectionLabel {{ color: {scheme.accent}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
 #inspectorTitle {{ color: {scheme.text_strong}; font-size: 25px; font-weight: 650; }}
 #plotSelection {{ color: {scheme.text_strong}; font-size: 14px; font-weight: 650; }}
+#actionGroupLabel {{ color: {scheme.accent}; font-size: 10px; font-weight: 750; letter-spacing: 1px; }}
 #mutedLabel {{ color: {scheme.muted}; }}
 #sidePanel {{ background: {scheme.panel}; border-right: 1px solid {scheme.border}; }}
 #treePanel {{ background: {scheme.panel_alt}; border-right: 1px solid {scheme.border}; }}
+#inspectorActions {{
+    background: {scheme.panel_alt}; border: 1px solid {scheme.border}; border-radius: 7px;
+}}
+#inspectorActions QPushButton {{
+    background: {scheme.panel}; color: {scheme.text_strong}; border-color: {scheme.border_strong};
+    padding: 7px 11px;
+}}
+#inspectorActions QPushButton:hover {{
+    background: {scheme.input}; border-color: {scheme.accent};
+}}
+#inspectorActions QPushButton[primaryAction="true"] {{
+    background: {scheme.button}; color: {scheme.accent_text}; border-color: {scheme.button_border};
+}}
+#inspectorActions QPushButton[extractAction="true"] {{
+    background: {scheme.accent_soft}; color: {scheme.text_strong}; border-color: {scheme.accent};
+}}
+#inspectorActions QPushButton:disabled {{
+    background: {scheme.panel}; color: {scheme.muted}; border-color: {scheme.border};
+}}
 QPushButton {{
     background: {scheme.button}; border: 1px solid {scheme.button_border}; border-radius: 5px;
     color: {scheme.accent_text}; font-weight: 600; padding: 8px 13px;
@@ -288,11 +311,14 @@ QLineEdit, QComboBox {{
     background: {scheme.input}; border: 1px solid {scheme.border}; border-radius: 5px;
     padding: 8px 9px; selection-background-color: {scheme.selection};
 }}
-QComboBox:hover {{ border-color: {scheme.border_strong}; }}
+QComboBox {{ padding-right: 36px; }}
+QComboBox:hover {{ border-color: {scheme.accent}; }}
 QComboBox::drop-down {{
     background: {scheme.panel_alt}; border: none; border-left: 1px solid {scheme.border};
-    border-top-right-radius: 5px; border-bottom-right-radius: 5px; width: 22px;
+    border-top-right-radius: 5px; border-bottom-right-radius: 5px; width: 30px;
 }}
+QComboBox::drop-down:hover {{ background: {scheme.accent_soft}; }}
+QComboBox::down-arrow {{ image: url("{COMBO_CHEVRON_PATH}"); width: 11px; height: 7px; }}
 QComboBox QAbstractItemView {{
     background: {scheme.input}; border: 1px solid {scheme.border_strong};
     selection-background-color: {scheme.selection}; selection-color: {scheme.text_strong};
@@ -308,6 +334,16 @@ QTableWidget#extractionSelections QLineEdit {{
     background: {scheme.input}; border: 1px solid {scheme.accent}; border-radius: 2px;
     padding: 1px 4px; margin: 0;
 }}
+QTableWidget#extractionSelections QToolButton {{
+    background: transparent; color: {scheme.text}; border: 1px solid transparent;
+    border-radius: 3px; padding: 3px 5px;
+}}
+QTableWidget#extractionSelections QToolButton:hover {{
+    background: {scheme.input}; border-color: {scheme.border_strong};
+}}
+QTableWidget#extractionSelections QToolButton:checked {{
+    background: {scheme.accent_soft}; color: {scheme.accent}; border-color: {scheme.accent};
+}}
 QHeaderView::section {{
     background: {scheme.input}; color: {scheme.muted}; border: none;
     border-right: 1px solid {scheme.border}; border-bottom: 1px solid {scheme.border};
@@ -319,6 +355,25 @@ QTabBar::tab {{
     border: 1px solid {scheme.border}; border-bottom: none;
 }}
 QTabBar::tab:selected {{ background: {scheme.panel_alt}; color: {scheme.accent}; }}
+QTabWidget#workspaceTabs::pane {{
+    background: {scheme.panel_alt}; border: 1px solid {scheme.border_strong};
+    border-top: 3px solid {scheme.accent}; border-radius: 6px;
+}}
+QTabBar#workspaceTabBar::tab {{
+    background: {scheme.panel}; color: {scheme.text};
+    border: 1px solid {scheme.border_strong}; border-bottom: none;
+    border-top-left-radius: 6px; border-top-right-radius: 6px;
+    font-size: 14px; font-weight: 700; min-width: 150px;
+    padding: 12px 20px; margin-right: 4px;
+}}
+QTabBar#workspaceTabBar::tab:hover {{
+    background: {scheme.input}; color: {scheme.text_strong}; border-color: {scheme.accent};
+}}
+QTabBar#workspaceTabBar::tab:selected {{
+    background: {scheme.accent_soft}; color: {scheme.accent};
+    border: 2px solid {scheme.accent}; border-bottom: none;
+    padding-top: 13px;
+}}
 QSplitter::handle {{ background: {scheme.border}; width: 1px; }}
 QFrame[frameShape="4"], QFrame[frameShape="5"] {{ color: {scheme.border}; }}
 """

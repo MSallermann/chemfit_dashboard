@@ -5,7 +5,7 @@ import json
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLineEdit, QToolButton
+from PySide6.QtWidgets import QApplication, QHeaderView, QLineEdit, QToolButton
 
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
@@ -24,6 +24,14 @@ from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import CancellationToken, OperationCancelled
+
+
+def _inline_action(panel: DataExtractionPanel, row: int, name: str) -> QToolButton:
+    actions = panel.selections.cellWidget(row, 2)
+    assert actions is not None
+    button = actions.findChild(QToolButton, name)
+    assert button is not None
+    return button
 
 
 def _write_semantic_collection(tmp_path):
@@ -201,14 +209,14 @@ def test_inspector_and_workspace_manage_arbitrary_field_selection(chemfit_docume
     panel.add_selector(requested[0])
     panel.add_selector(components[0])
     panel.selections.setCurrentCell(1, 0)
-    panel.up_button.click()
+    _inline_action(panel, 1, "moveUpAction").click()
     panel.selections.item(0, 0).setText("whole_component")
 
     assert [selector.column for selector in panel.selectors] == [
         "whole_component",
         "chemfit.structure",
     ]
-    panel.remove_button.click()
+    _inline_action(panel, 0, "removeAction").click()
     assert len(panel.selectors) == 1
 
 
@@ -222,7 +230,11 @@ def test_extraction_options_immediately_rebuild_preview_shape():
             "record.json",
             (
                 ExtractionValue(
-                    [{"energy": 1}, {"energy": 2}], ExtractionStatus.AVAILABLE
+                    [
+                        {"metrics": {"energy": 1}},
+                        {"metrics": {"energy": 2}},
+                    ],
+                    ExtractionStatus.AVAILABLE,
                 ),
             ),
         ),
@@ -230,17 +242,24 @@ def test_extraction_options_immediately_rebuild_preview_shape():
     panel.set_preview(rows, 1)
     panel.selectors_changed.connect(lambda _selectors: panel.set_preview(rows, 1))
 
-    panel.expand.click()
+    _inline_action(panel, 0, "expandAction").click()
 
     assert panel.preview_model.rowCount() == 2
-    assert panel.preview_model.data(panel.preview_model.index(0, 3)) == '{"energy":1}'
-    assert panel.preview_model.data(panel.preview_model.index(1, 3)) == '{"energy":2}'
+    assert panel.preview_model.data(panel.preview_model.index(0, 3)) == (
+        '{"metrics":{"energy":1}}'
+    )
+    assert panel.preview_model.data(panel.preview_model.index(1, 3)) == (
+        '{"metrics":{"energy":2}}'
+    )
 
-    panel.flatten.click()
+    flatten = _inline_action(panel, 0, "flattenAction")
+    assert flatten.text() == "Flatten all"
+    assert "Recursively" in flatten.toolTip()
+    flatten.click()
 
     assert panel.preview_model.columnCount() == 4
     assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == (
-        "payload.energy"
+        "payload.metrics/energy"
     )
     assert panel.preview_model.data(panel.preview_model.index(0, 3)) == "1"
     assert panel.preview_model.data(panel.preview_model.index(1, 3)) == "2"
@@ -250,13 +269,40 @@ def test_each_extraction_field_has_an_inline_remove_control():
     panel = DataExtractionPanel()
     panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
     panel.add_selector(FieldSelector((), "fields", ("force",), "force"))
-    remove_force = panel.selections.cellWidget(1, 2)
+    remove_force = _inline_action(panel, 1, "removeAction")
 
-    assert isinstance(remove_force, QToolButton)
     remove_force.click()
 
     assert [selector.column for selector in panel.selectors] == ["energy"]
     assert panel.selections.rowCount() == 1
+
+
+def test_field_specific_extraction_controls_are_inline():
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
+    panel.add_selector(FieldSelector((), "fields", ("force",), "force"))
+
+    assert not _inline_action(panel, 0, "moveUpAction").isEnabled()
+    assert _inline_action(panel, 0, "moveDownAction").isEnabled()
+    assert _inline_action(panel, 1, "moveUpAction").isEnabled()
+    assert not _inline_action(panel, 1, "moveDownAction").isEnabled()
+    assert _inline_action(panel, 0, "flattenAction").isCheckable()
+    assert _inline_action(panel, 0, "expandAction").isCheckable()
+    assert (
+        panel.selections.horizontalHeader().sectionResizeMode(2)
+        == QHeaderView.ResizeMode.Interactive
+    )
+    assert all(
+        panel.selections.horizontalHeader().sectionResizeMode(column)
+        == QHeaderView.ResizeMode.Interactive
+        for column in range(3)
+    )
+    assert not panel.selections.horizontalHeader().stretchLastSection()
+    assert panel.selections.columnWidth(2) >= 400
+
+    panel.selections.horizontalHeader().resizeSection(2, 480)
+
+    assert panel.selections.columnWidth(2) == 480
 
 
 def test_extraction_column_editor_fits_inside_table_row():

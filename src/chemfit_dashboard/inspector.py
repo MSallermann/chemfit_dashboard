@@ -7,6 +7,7 @@ from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QGridLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -180,32 +181,56 @@ class Inspector(QWidget):
         divider.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(divider)
 
-        self.plot_selection = QLabel("Numeric selection: none")
+        actions = QFrame()
+        actions.setObjectName("inspectorActions")
+        action_layout = QGridLayout(actions)
+        action_layout.setContentsMargins(12, 10, 12, 10)
+        action_layout.setHorizontalSpacing(8)
+        action_layout.setVerticalSpacing(7)
+
+        number_label = QLabel("NUMBER")
+        number_label.setObjectName("actionGroupLabel")
+        action_layout.addWidget(number_label, 0, 0)
+        self.plot_selection = QLabel("No number selected")
         self.plot_selection.setObjectName("mutedLabel")
-        self.plot_selection.setWordWrap(True)
-        layout.addWidget(self.plot_selection)
-        self.plot_button = QPushButton("Plot selected number across collection")
+        action_layout.addWidget(self.plot_selection, 0, 1, 1, 4)
+        self.plot_button = QPushButton("Plot")
+        self.plot_button.setProperty("primaryAction", "true")
         self.plot_button.setEnabled(False)
         self.plot_button.clicked.connect(self._request_plot)
-        layout.addWidget(self.plot_button)
-        self.plot_add_button = QPushButton("Add selected number to current plot")
+        action_layout.addWidget(self.plot_button, 1, 1)
+        self.plot_add_button = QPushButton("+ Series")
         self.plot_add_button.setEnabled(False)
         self.plot_add_button.clicked.connect(self._request_plot_add)
-        layout.addWidget(self.plot_add_button)
-        self.order_button = QPushButton("Order collection by selected number ↑")
+        action_layout.addWidget(self.plot_add_button, 1, 2)
+        self.order_button = QPushButton("Sort ↑")
         self.order_button.setEnabled(False)
         self.order_button.clicked.connect(self._request_order)
-        layout.addWidget(self.order_button)
-        self.extract_button = QPushButton("Add selected field to extraction")
+        action_layout.addWidget(self.order_button, 1, 3)
+
+        extraction_label = QLabel("EXTRACTION")
+        extraction_label.setObjectName("actionGroupLabel")
+        action_layout.addWidget(extraction_label, 2, 0)
+        self.field_selection = QLabel("No field selected")
+        self.field_selection.setObjectName("mutedLabel")
+        action_layout.addWidget(self.field_selection, 2, 1, 1, 4)
+        self.extract_button = QPushButton("+ Field")
+        self.extract_button.setProperty("extractAction", "true")
         self.extract_button.setEnabled(False)
         self.extract_button.clicked.connect(self._request_extraction)
-        layout.addWidget(self.extract_button)
-        self.extract_component_button = QPushButton("Add component to extraction")
+        action_layout.addWidget(self.extract_button, 3, 1)
+        self.extract_component_button = QPushButton("+ Component")
+        self.extract_component_button.setProperty("extractAction", "true")
         self.extract_component_button.setEnabled(False)
+        self.extract_component_button.setToolTip(
+            "Add the entire selected component to Data Extraction."
+        )
         self.extract_component_button.clicked.connect(
             self._request_component_extraction
         )
-        layout.addWidget(self.extract_component_button)
+        action_layout.addWidget(self.extract_component_button, 3, 2)
+        action_layout.setColumnStretch(4, 1)
+        layout.addWidget(actions)
 
         self.tabs = QTabWidget()
         self.summary = JsonView()
@@ -250,6 +275,9 @@ class Inspector(QWidget):
         self._set_number_selector(None)
         self._set_field_selector(None)
         self.extract_component_button.setEnabled(False)
+        self.extract_component_button.setToolTip(
+            "Add the entire selected component to Data Extraction."
+        )
         self.eyebrow.setText("SELECT A CONTEXT")
         self.title.setText("Context details")
         self.subtitle.setText("Choose an evaluation and context to inspect its data.")
@@ -263,6 +291,9 @@ class Inspector(QWidget):
         self._set_number_selector(None)
         self._set_field_selector(None)
         self.extract_component_button.setEnabled(True)
+        self.extract_component_button.setToolTip(
+            f"Add the entire {details.info.label} component to Data Extraction."
+        )
         info = details.info
         self.eyebrow.setText(info.kind.upper())
         self.title.setText(info.label)
@@ -316,20 +347,23 @@ class Inspector(QWidget):
         self.plot_button.setEnabled(selector is not None)
         self.plot_add_button.setEnabled(selector is not None)
         self.order_button.setEnabled(selector is not None)
-        self.plot_button.setToolTip(selector.label if selector is not None else "")
+        selected = f"\nSelected: {selector.label}" if selector is not None else ""
+        self.plot_button.setToolTip(
+            f"Create a plot of this number across the collection.{selected}"
+        )
         self.plot_add_button.setToolTip(
-            f"Add {selector.label} as another series" if selector is not None else ""
+            f"Add this number as another series in the current plot.{selected}"
         )
         self.order_button.setToolTip(
-            f"Order contexts ascending by {selector.label}; missing values go last"
-            if selector is not None
-            else ""
+            "Sort contexts ascending by this number; missing values go last."
+            f"{selected}"
         )
         self.plot_selection.setText(
-            f"Numeric selection: {selector.label}"
+            f"Selected: {selector.value_label}"
             if selector is not None
-            else "Numeric selection: none"
+            else "No number selected"
         )
+        self.plot_selection.setToolTip(selector.label if selector is not None else "")
 
     def _value_selected(self, section: str, selection: object) -> None:
         if self._details is None or not isinstance(selection, tuple):
@@ -353,6 +387,16 @@ class Inspector(QWidget):
         self._field_selector = selector
         self.extract_button.setEnabled(selector is not None)
         self.extract_button.setToolTip(
+            f"Add this field to Data Extraction.\nSelected: {selector.path_label}"
+            if selector is not None
+            else "Add a selected field to Data Extraction."
+        )
+        self.field_selection.setText(
+            f"Selected: {selector.column}"
+            if selector is not None
+            else "No field selected"
+        )
+        self.field_selection.setToolTip(
             selector.path_label if selector is not None else ""
         )
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCharts import QLogValueAxis
+from PySide6.QtCharts import QLogValueAxis, QScatterSeries
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
 from chemfit_dashboard.collection_plot import (
     CollectionPlotPanel,
@@ -92,7 +94,30 @@ def test_inspector_requests_plot_for_selected_intermediate_number(
     assert order_requested == requested
 
 
-def test_multi_series_plot_normalizes_exports_and_selects_context(tmp_path):
+def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
+    inspector = Inspector()
+    inspector.set_details(chemfit_document.details((1,)))
+
+    assert inspector.plot_button.text() == "Plot"
+    assert inspector.plot_add_button.text() == "+ Series"
+    assert inspector.order_button.text() == "Sort ↑"
+    assert inspector.extract_button.text() == "+ Field"
+    assert inspector.extract_component_button.text() == "+ Component"
+    assert inspector.plot_button.property("primaryAction") == "true"
+    assert inspector.extract_button.property("extractAction") == "true"
+
+    output_index = inspector.summary.model().index(1, 1)
+    inspector.summary.setCurrentIndex(output_index)
+
+    assert inspector.plot_selection.text() == "Selected: output"
+    assert inspector.field_selection.text() == "Selected: output"
+    assert "across the collection" in inspector.plot_button.toolTip()
+    assert "Data Extraction" in inspector.extract_button.toolTip()
+
+
+def test_multi_series_plot_normalizes_exports_and_selects_context(
+    tmp_path, monkeypatch
+):
     selector_a = NumberSelector((), "fields", ("loss",), "loss", "loss")
     selector_b = NumberSelector((), "fields", ("runtime",), "runtime", "runtime")
     labels = ("step_1.json", "step_2.json")
@@ -117,7 +142,11 @@ def test_multi_series_plot_normalizes_exports_and_selects_context(tmp_path):
     )
     panel = CollectionPlotPanel()
     selected = []
+    selected_points = []
     panel.context_selected.connect(selected.append)
+    panel.point_selected.connect(
+        lambda record_id, selector: selected_points.append((record_id, selector))
+    )
 
     panel.set_series_collection((first, second))
     assert panel.series_list.count() == 2
@@ -128,10 +157,35 @@ def test_multi_series_plot_normalizes_exports_and_selects_context(tmp_path):
     assert y_axis.titleText() == "Normalized value (0-1)"
     assert not panel.log_y.isEnabled()
 
+    panel.normalize.setChecked(False)
     panel.select_record("second")
     assert len(panel.chart_view.chart().series()) == 5
-    panel._point_clicked(QPointF(1, 1), first)  # noqa: SLF001
-    assert selected == ["second"]
+    plotted_marker = next(
+        series
+        for series in panel.chart_view.chart().series()
+        if isinstance(series, QScatterSeries)
+        and series is not panel._selection_series  # noqa: SLF001
+    )
+    plotted_marker.clicked.emit(QPointF(0, 0))
+    assert selected == ["first"]
+
+    selection_marker = panel._selection_series  # noqa: SLF001
+    assert selection_marker is not None
+    hovered = []
+    monkeypatch.setattr(
+        panel,
+        "_point_hovered",
+        lambda series, point, state, label="": hovered.append(
+            (series, point, state, label)
+        ),
+    )
+    selection_marker.hovered.emit(QPointF(1, 30), True)  # noqa: FBT003
+    selection_marker.clicked.emit(QPointF(1, 30))
+
+    assert selected == ["first", "second"]
+    assert selected_points == [("first", selector_a), ("second", selector_b)]
+    assert hovered[0][:3] == (selection_marker, QPointF(1, 30), True)
+    assert hovered[0][3] == "runtime"
 
     export_path = tmp_path / "plot.csv"
     panel.export_csv(export_path)
@@ -155,6 +209,64 @@ def test_multi_series_plot_normalizes_exports_and_selects_context(tmp_path):
     panel.export_image(svg_path)
     assert png_path.stat().st_size > 0
     assert svg_path.stat().st_size > 0
+
+
+def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
+    selector = NumberSelector((), "fields", ("loss",), "loss", "loss")
+    labels = ("one.json", "two.json", "three.json")
+    record_ids = ("one", "two", "three")
+    data = CollectionSeries(
+        selector,
+        labels,
+        tuple(
+            SeriesPoint(index, label, float(index + 1), record_ids[index])
+            for index, label in enumerate(labels)
+        ),
+        record_ids,
+    )
+    panel = CollectionPlotPanel()
+    panel.resize(900, 600)
+    panel.set_series(data)
+    panel.show()
+    QApplication.processEvents()
+    selected = []
+    panel.context_selected.connect(selected.append)
+    chart = panel.chart_view.chart()
+    markers = next(
+        series
+        for series in chart.series()
+        if isinstance(series, QScatterSeries) and series.name() == "loss"
+    )
+
+    for point in data.points:
+        chart_position = chart.mapToPosition(
+            QPointF(point.index, point.value), markers
+        )
+        viewport_position = panel.chart_view.mapFromScene(chart_position)
+        QTest.mouseClick(
+            panel.chart_view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            viewport_position,
+        )
+        QApplication.processEvents()
+
+    panel.select_record("two")
+    QApplication.processEvents()
+    selection = panel._selection_series  # noqa: SLF001
+    assert selection is not None
+    selected_position = panel.chart_view.mapFromScene(
+        chart.mapToPosition(QPointF(1, 2), selection)
+    )
+    QTest.mouseClick(
+        panel.chart_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        selected_position,
+    )
+    QApplication.processEvents()
+
+    assert selected == ["one", "two", "three", "two"]
 
 
 def test_main_window_orders_collection_by_selected_numeric_value(tmp_path):
@@ -266,11 +378,20 @@ def test_main_window_adds_plot_series_and_plot_click_selects_evaluation(
     assert len(window._active_plot_selectors) == 2  # noqa: SLF001
     assert window.collection_plot.series_list.count() == 2
 
-    window.collection_plot.context_selected.emit(records[1].id)
+    plotted_markers = [
+        series
+        for series in window.collection_plot.chart_view.chart().series()
+        if isinstance(series, QScatterSeries)
+        and series is not window.collection_plot._selection_series  # noqa: SLF001
+    ]
+    plotted_markers[1].clicked.emit(QPointF(1, 20))
 
     assert window._selected_record_id() == records[1].id  # noqa: SLF001
     assert window._current_document is not None  # noqa: SLF001
     assert window._current_document.record.id == records[1].id  # noqa: SLF001
+    assert window.inspector.title.text() == "step_2"
+    assert window.inspector.plot_selection.text() == "Selected: runtime"
+    assert window.inspector.summary.currentIndex().data() == "20"
 
 
 def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
@@ -278,6 +399,7 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
         (tmp_path / name).write_text('{"output": 1}', encoding="utf-8")
     source = JsonFileSource()
     window = MainWindow(source=source)
+    assert not window.search_components.isChecked()
     window.file_model.set_records(source.discover([tmp_path]))
     window.search_scope.setCurrentIndex(window.search_scope.findData("collection"))
     window.field_search.setText("output")

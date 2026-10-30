@@ -66,6 +66,8 @@ class ContextSearchIndex:
         *,
         include_keys: bool = True,
         include_values: bool = True,
+        include_metadata: bool = True,
+        include_components: bool = True,
         mode: SearchMode = "fuzzy",
     ) -> list[SearchHit]:
         """Return ranked matches for field, hierarchy, section, and value."""
@@ -86,11 +88,14 @@ class ContextSearchIndex:
             return []
         matches: list[SearchHit] = []
         for entry in self.entries:
+            if not include_metadata and entry.section == "metadata":
+                continue
             score = _entry_score(
                 normalized,
                 entry,
                 include_keys=include_keys,
                 include_values=include_values,
+                include_components=include_components,
                 mode=mode,
                 pattern=pattern,
             )
@@ -239,6 +244,8 @@ class ContextSearchPanel(QWidget):
         *,
         include_keys: bool = True,
         include_values: bool = True,
+        include_metadata: bool = True,
+        include_components: bool = True,
         mode: SearchMode = "fuzzy",
     ) -> None:
         self.results.clear()
@@ -253,6 +260,8 @@ class ContextSearchPanel(QWidget):
                 query,
                 include_keys=include_keys,
                 include_values=include_values,
+                include_metadata=include_metadata,
+                include_components=include_components,
                 mode=mode,
             )
         except SearchQueryError as error:
@@ -263,6 +272,8 @@ class ContextSearchPanel(QWidget):
             query,
             include_keys=include_keys,
             include_values=include_values,
+            include_metadata=include_metadata,
+            include_components=include_components,
             mode=mode,
         )
 
@@ -274,6 +285,8 @@ class ContextSearchPanel(QWidget):
         include_keys: bool,
         include_values: bool,
         mode: SearchMode,
+        include_metadata: bool = True,
+        include_components: bool = True,
         scope_label: str = "current evaluation",
         searched_records: int = 1,
         failed_records: int = 0,
@@ -308,7 +321,11 @@ class ContextSearchPanel(QWidget):
             )
             for column in range(self.results.columnCount()):
                 item.setSizeHint(column, QSize(0, row_height))
-        dimensions = ["hierarchy"]
+        dimensions = ["fields"]
+        if include_components:
+            dimensions.append("component names")
+        if include_metadata:
+            dimensions.append("metadata")
         if include_keys:
             dimensions.append("keys")
         if include_values:
@@ -490,10 +507,11 @@ def _entry_score(
     *,
     include_keys: bool,
     include_values: bool,
+    include_components: bool,
     mode: SearchMode,
     pattern: re.Pattern[str] | None,
 ) -> float:
-    hierarchy = [(entry.breadcrumb, 0.92)]
+    hierarchy = [(entry.breadcrumb, 0.92)] if include_components else []
     direct: list[tuple[str, float]] = []
     if include_keys:
         direct.extend(

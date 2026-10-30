@@ -42,6 +42,40 @@ def test_value_search_can_be_toggled_off():
     assert key_hits == []
 
 
+def test_metadata_search_can_be_toggled_off(chemfit_document):
+    index = ContextSearchIndex(chemfit_document)
+
+    included = index.search(
+        "chemfit.structure", mode="exact", include_values=False
+    )
+    excluded = index.search(
+        "chemfit.structure",
+        mode="exact",
+        include_values=False,
+        include_metadata=False,
+    )
+
+    assert any(hit.section == "metadata" for hit in included)
+    assert all(hit.section != "metadata" for hit in excluded)
+
+
+def test_component_name_search_can_be_toggled_off(chemfit_document):
+    index = ContextSearchIndex(chemfit_document)
+
+    included = index.search(
+        "compute_quantities", mode="exact", include_values=False
+    )
+    excluded = index.search(
+        "compute_quantities",
+        mode="exact",
+        include_values=False,
+        include_components=False,
+    )
+
+    assert included
+    assert excluded == []
+
+
 def test_key_search_can_be_toggled_off(chemfit_document):
     index = ContextSearchIndex(chemfit_document)
 

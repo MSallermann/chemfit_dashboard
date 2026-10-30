@@ -180,6 +180,7 @@ class CollectionPlotPanel(QWidget):
     """Interactive multi-series chart across loaded evaluations."""
 
     context_selected = Signal(str)
+    point_selected = Signal(str, object)
     remove_series_requested = Signal(object)
     clear_series_requested = Signal()
 
@@ -242,13 +243,20 @@ class CollectionPlotPanel(QWidget):
         layout.addLayout(view_controls)
         self.chart_view = QChartView()
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.chart_view.setRubberBand(QChartView.RubberBand.RectangleRubberBand)
+        self.chart_view.setRubberBand(
+            QChartView.RubberBand.RectangleRubberBand
+            | QChartView.RubberBand.ClickThroughRubberBand
+        )
         layout.addWidget(self.chart_view, 1)
         self._labels: tuple[str, ...] = ()
         self._data: tuple[CollectionSeries, ...] = ()
         self._selected_record_id: str | None = None
         self._selection_series: QScatterSeries | None = None
         self._rendered_points: dict[int, list[QPointF]] = {}
+        self._rendered_point_labels: dict[tuple[int, float], list[str]] = {}
+        self._rendered_point_selectors: dict[
+            tuple[int, float], list[NumberSelector]
+        ] = {}
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
 
@@ -299,6 +307,8 @@ class CollectionPlotPanel(QWidget):
         rendered_by_series: list[tuple[CollectionSeries, tuple[SeriesPoint, ...]]] = []
         nonpositive = 0
         self._rendered_points = defaultdict(list)
+        self._rendered_point_labels = defaultdict(list)
+        self._rendered_point_selectors = defaultdict(list)
         for data_index, series_data in enumerate(data_collection):
             transformed = self._transformed_points(series_data)
             visible = tuple(
@@ -320,6 +330,12 @@ class CollectionPlotPanel(QWidget):
                 markers.append(point.index, point.value)
                 self._rendered_points[point.index].append(
                     QPointF(point.index, point.value)
+                )
+                self._rendered_point_labels[(point.index, point.value)].append(
+                    series_data.selector.label
+                )
+                self._rendered_point_selectors[(point.index, point.value)].append(
+                    series_data.selector
                 )
             lines: list[QLineSeries] = []
             contiguous: list[SeriesPoint] = []
@@ -458,6 +474,8 @@ class CollectionPlotPanel(QWidget):
     def _set_empty_chart(self, title: str) -> None:
         self._labels = ()
         self._rendered_points = {}
+        self._rendered_point_labels = {}
+        self._rendered_point_selectors = {}
         self._selection_series = None
         self.chart_view.setChart(_base_chart(title, self._scheme))
 
@@ -535,7 +553,9 @@ class CollectionPlotPanel(QWidget):
     def _point_clicked(self, point: QPointF, data: CollectionSeries) -> None:
         index = round(point.x())
         if 0 <= index < len(data.record_ids):
-            self.context_selected.emit(data.record_ids[index])
+            record_id = data.record_ids[index]
+            self.context_selected.emit(record_id)
+            self.point_selected.emit(record_id, data.selector)
 
     def _remove_selected_series(self) -> None:
         item = self.series_list.currentItem()
@@ -637,6 +657,14 @@ class CollectionPlotPanel(QWidget):
         selection.setBorderColor(QColor(self._scheme.danger_border))
         for point in points:
             selection.append(point)
+        selection.hovered.connect(
+            lambda point, state, marker_series=selection: self._selection_point_hovered(
+                marker_series, point, state
+            )
+        )
+        selection.clicked.connect(
+            self._selection_point_clicked
+        )
         chart.addSeries(selection)
         horizontal = chart.axes(Qt.Orientation.Horizontal)
         vertical = chart.axes(Qt.Orientation.Vertical)
@@ -648,6 +676,26 @@ class CollectionPlotPanel(QWidget):
         if markers:
             markers[0].setVisible(False)
         self._selection_series = selection
+
+    def _selection_point_clicked(self, point: QPointF) -> None:
+        if not self._data:
+            return
+        index = round(point.x())
+        record_ids = self._data[0].record_ids
+        if not 0 <= index < len(record_ids):
+            return
+        selectors = self._rendered_point_selectors.get((index, point.y()), ())
+        selector = selectors[0] if selectors else self._data[0].selector
+        record_id = record_ids[index]
+        self.context_selected.emit(record_id)
+        self.point_selected.emit(record_id, selector)
+
+    def _selection_point_hovered(
+        self, series: QScatterSeries, point: QPointF, state: bool
+    ) -> None:
+        labels = self._rendered_point_labels.get((round(point.x()), point.y()), ())
+        series_label = " · ".join(labels) if labels else "Selected context"
+        self._point_hovered(series, point, state, series_label)
 
     def _point_hovered(
         self,

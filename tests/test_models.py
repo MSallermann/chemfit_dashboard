@@ -102,14 +102,14 @@ def test_context_tree_model_fetches_chemfit_children_only_on_demand(
     assert model.parent(first) == root
 
 
-def test_graph_view_renders_chemfit_context_hierarchy(chemfit_document):
+def test_data_flow_view_renders_one_structural_level(chemfit_document):
     graph = ContextGraphPanel()
     graph.set_document(chemfit_document)
 
     assert graph.view.rendered_node_count == 0
     graph.ensure_rendered()
 
-    assert graph.view.rendered_node_count == chemfit_document.node_count
+    assert graph.view.rendered_node_count == len(chemfit_document.children(())) + 2
 
 
 def test_graph_applies_selection_requested_before_deferred_render(chemfit_document):
@@ -123,7 +123,7 @@ def test_graph_applies_selection_requested_before_deferred_render(chemfit_docume
     assert selected_paths == [(0,)]
 
 
-def test_graph_node_shows_static_name_beside_structural_name(tmp_path):
+def test_data_flow_node_shows_custom_name_and_component_type(tmp_path):
     path = tmp_path / "named.json"
     path.write_text(
         json.dumps(
@@ -149,8 +149,10 @@ def test_graph_node_shows_static_name_beside_structural_name(tmp_path):
         for item in graph.view.scene().items()
         if isinstance(item, QGraphicsSimpleTextItem)
     }
-    assert "WrappedComponent" in labels
-    assert any("name: density observable" in label for label in labels)
+    assert "density observable" in labels
+    assert any(
+        "WrappedComponent" in item.toolTip() for item in graph.view.scene().items()
+    )
     assert not any("STRUCTURE" in label or "ATOMIC NODE" in label for label in labels)
 
 
@@ -165,12 +167,12 @@ def test_active_graph_rebuilds_when_evaluation_changes(tmp_path, chemfit_documen
     window._load_generation = 1  # noqa: SLF001
     window._document_loaded(1, chemfit_document)  # noqa: SLF001
     assert window.graph.view.document is chemfit_document
-    assert window.graph.view.rendered_node_count == chemfit_document.node_count
+    assert window.graph.view.rendered_node_count == len(chemfit_document.children(())) + 2
 
     window._load_generation = 2  # noqa: SLF001
     window._document_loaded(2, partial_document)  # noqa: SLF001
     assert window.graph.view.document is partial_document
-    assert window.graph.view.rendered_node_count == partial_document.node_count == 1
+    assert window.graph.view.rendered_node_count == 0
 
 
 def test_child_selection_follows_component_identity_across_evaluations(
@@ -370,6 +372,55 @@ def test_collection_overview_is_a_top_level_workspace():
     ]
     assert window.collection_analysis not in hierarchy_widgets
     assert window.workspace_tabs.indexOf(window.collection_analysis) >= 0
+
+
+def test_evaluation_sidebar_persists_across_top_level_workspaces(qapp):
+    window = MainWindow()
+    window.show()
+
+    assert window.main_workspace.indexOf(window.evaluation_panel) == 0
+    assert window.context_workspace.indexOf(window.evaluation_panel) == -1
+    assert window.workspace_tabs.objectName() == "workspaceTabs"
+    assert window.workspace_tabs.tabBar().objectName() == "workspaceTabBar"
+    for workspace in (
+        window.context_workspace,
+        window.collection_analysis,
+        window.extraction,
+    ):
+        window.workspace_tabs.setCurrentWidget(workspace)
+        qapp.processEvents()
+        assert window.evaluation_panel.isVisibleTo(window)
+
+
+def test_extraction_preview_tracks_visible_collection_order(tmp_path, monkeypatch):
+    for index, name in enumerate(("step_1.json", "step_2.json", "step_10.json")):
+        (tmp_path / name).write_text(
+            json.dumps({"loss": index + 1}), encoding="utf-8"
+        )
+    source = JsonFileSource()
+    window = MainWindow(source=source)
+    window.file_model.set_records(source.discover([tmp_path]))
+    window.reverse_order_button.setEnabled(True)
+    monkeypatch.setattr(
+        window.tasks,
+        "submit",
+        lambda function, on_success, _on_error: on_success(function()),
+    )
+    window.extraction.add_selector(
+        FieldSelector((), "fields", ("loss",), "loss")
+    )
+
+    def preview_names():
+        model = window.extraction.preview_model
+        return [
+            model.data(model.index(row, 1)) for row in range(model.rowCount())
+        ]
+
+    assert preview_names() == ["step_1.json", "step_2.json", "step_10.json"]
+
+    window.reverse_order_button.click()
+
+    assert preview_names() == ["step_10.json", "step_2.json", "step_1.json"]
 
 
 def test_adding_extraction_field_keeps_workspace_and_updates_tab_counter():

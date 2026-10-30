@@ -15,7 +15,7 @@ Built with Python and PySide6, it works directly with serialized evaluation cont
 ## Features
 
 - **Explore evaluations:** Browse individual contexts or entire collections, including nested components, inputs, outputs, metadata, and errors.
-- **Visualize component graphs:** Explore component hierarchies and dependencies in an interactive graph. Expand and collapse structural components to navigate complex evaluations.
+- **Follow declared data flow:** See how data moves from a structural component's input, through its immediate children, to its output.
 - **Search contexts:** Find components, fields, and values using text searches or regular expressions, within an evaluation or across a collection.
 - **Plot numerical data:** Follow numerical values across evaluations, compare multiple quantities, and export plots as PNG, SVG, or CSV.
 - **Investigate failures:** Identify failed evaluations and navigate directly to the components responsible.
@@ -78,7 +78,7 @@ You can also pass multiple files and directories at once. Directories are scanne
 
 Select an evaluation from the file browser to inspect its component hierarchy. Clicking a component shows its inputs, outputs, metadata, and other recorded information.
 
-The **Graph** view provides an alternative way to navigate the hierarchy, including dependencies between components. Structural components can be expanded or collapsed, and selections are synchronized with the inspector.
+The **Data Flow** view shows how data moves between the immediate children of a structural component. Double-click a nested component to explore its internal flow, and use the breadcrumbs to navigate back. Selecting a component stays synchronized with the tree and inspector.
 
 Use the search field to find particular components or values. You can search the current evaluation or the entire loaded collection.
 
@@ -110,7 +110,7 @@ Unlike plotting, data extraction is not limited to numerical values. You can ext
 
 By default, each evaluation becomes one row, and each selected field becomes a column.
 
-In the extraction tab, you can rename, reorder, or remove columns. Nested dictionaries can optionally be flattened into separate columns, and a selected array can be expanded into multiple rows.
+In the extraction tab, you can rename, reorder, or remove columns. **Flatten all** recursively turns nested dictionary leaves into separate columns, while **Expand** turns a selected array into multiple rows.
 
 The preview shows up to 200 evaluations, but exports include the complete collection.
 
@@ -222,7 +222,7 @@ pyright
 
 ### Benchmarks
 
-A small benchmark suite is included to evaluate collection processing, searching, extraction, and graph rendering.
+A small benchmark suite is included to evaluate collection processing, searching, extraction, and Data Flow rendering.
 
 Run it with:
 

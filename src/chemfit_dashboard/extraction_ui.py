@@ -17,7 +17,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -45,6 +44,23 @@ from chemfit_dashboard.extraction import (
 
 PREVIEW_LIMIT = 200
 _PREVIEW_MISSING = object()
+
+
+def _action_button(
+    name: str,
+    text: str,
+    tooltip: str,
+    *,
+    checkable: bool = False,
+) -> QToolButton:
+    button = QToolButton()
+    button.setObjectName(name)
+    button.setText(text)
+    button.setToolTip(tooltip)
+    button.setAccessibleName(tooltip)
+    button.setCheckable(checkable)
+    button.setAutoRaise(True)
+    return button
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,52 +173,40 @@ class DataExtractionPanel(QWidget):
         self.status.setObjectName("mutedLabel")
         heading.addWidget(self.status)
         layout.addLayout(heading)
+        order_hint = QLabel(
+            "Rows follow the collection order shown in the Evaluations sidebar."
+        )
+        order_hint.setObjectName("mutedLabel")
+        layout.addWidget(order_hint)
 
         self.selections = QTableWidget(0, 3)
         self.selections.setObjectName("extractionSelections")
-        self.selections.setHorizontalHeaderLabels(("Column", "Field path", ""))
-        self.selections.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Interactive
+        self.selections.setHorizontalHeaderLabels(("Column", "Field path", "Actions"))
+        selection_header = self.selections.horizontalHeader()
+        selection_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        selection_header.setStretchLastSection(False)
+        selection_header.resizeSection(0, 180)
+        selection_header.resizeSection(1, 260)
+        selection_header.resizeSection(2, 400)
+        self.selections.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
         )
-        self.selections.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
+        self.selections.ensurePolished()
+        self.selections.verticalHeader().setDefaultSectionSize(
+            max(36, self.selections.fontMetrics().height() + 14)
         )
-        self.selections.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Fixed
-        )
-        self.selections.horizontalHeader().resizeSection(2, 34)
-        self.selections.verticalHeader().setDefaultSectionSize(36)
         self.selections.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.selections.setMaximumHeight(190)
         self.selections.itemChanged.connect(self._column_edited)
-        self.selections.currentCellChanged.connect(self._selection_changed)
         layout.addWidget(self.selections)
 
         controls = QHBoxLayout()
-        self.remove_button = QPushButton("Remove selected")
-        self.up_button = QPushButton("Move up")
-        self.down_button = QPushButton("Move down")
         self.clear_button = QPushButton("Clear all")
-        self.flatten = QCheckBox("Flatten dictionary")
-        self.expand = QCheckBox("Expand array into rows")
-        self.remove_button.clicked.connect(self._remove)
-        self.up_button.clicked.connect(lambda: self._move(-1))
-        self.down_button.clicked.connect(lambda: self._move(1))
         self.clear_button.clicked.connect(self.clear)
-        self.flatten.toggled.connect(self._options_changed)
-        self.expand.toggled.connect(self._options_changed)
-        for widget in (
-            self.remove_button,
-            self.up_button,
-            self.down_button,
-            self.clear_button,
-            self.flatten,
-            self.expand,
-        ):
-            controls.addWidget(widget)
         controls.addStretch()
+        controls.addWidget(self.clear_button)
         layout.addLayout(controls)
 
         self.preview_model = ExtractionPreviewModel(self)
@@ -284,25 +288,77 @@ class DataExtractionPanel(QWidget):
 
     def _rebuild_selection_table(self, selected_row: int) -> None:
         self.selections.blockSignals(True)
+        self.selections.clearContents()
         self.selections.setRowCount(len(self._selectors))
         for row, selector in enumerate(self._selectors):
             self.selections.setItem(row, 0, QTableWidgetItem(selector.column))
             path_item = QTableWidgetItem(selector.path_label)
             path_item.setFlags(path_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.selections.setItem(row, 1, path_item)
-            remove = QToolButton()
-            remove.setText("\N{MULTIPLICATION SIGN}")
-            remove.setToolTip(f"Remove {selector.column} from extraction")
-            remove.setAccessibleName(f"Remove {selector.column}")
-            remove.setAutoRaise(True)
-            remove.clicked.connect(
-                lambda _checked=False, target=row: self._remove_row(target)
-            )
-            self.selections.setCellWidget(row, 2, remove)
+            self.selections.setCellWidget(row, 2, self._field_actions(row, selector))
         self.selections.blockSignals(False)
         if 0 <= selected_row < len(self._selectors):
             self.selections.setCurrentCell(selected_row, 0)
         self._update_controls()
+
+    def _field_actions(self, row: int, selector: FieldSelector) -> QWidget:
+        actions = QWidget()
+        layout = QHBoxLayout(actions)
+        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setSpacing(3)
+
+        move_up = _action_button("moveUpAction", "Up", f"Move {selector.column} up")
+        move_up.setEnabled(row > 0)
+        move_up.clicked.connect(
+            lambda _checked=False, target=row: self._move_row(target, -1)
+        )
+        layout.addWidget(move_up)
+
+        move_down = _action_button(
+            "moveDownAction", "Down", f"Move {selector.column} down"
+        )
+        move_down.setEnabled(row < len(self._selectors) - 1)
+        move_down.clicked.connect(
+            lambda _checked=False, target=row: self._move_row(target, 1)
+        )
+        layout.addWidget(move_down)
+
+        flatten = _action_button(
+            "flattenAction",
+            "Flatten all",
+            f"Recursively flatten nested dictionaries in {selector.column}",
+            checkable=True,
+        )
+        flatten.setChecked(selector.flatten)
+        flatten.toggled.connect(
+            lambda checked, target=row: self._set_option(target, "flatten", checked)
+        )
+        layout.addWidget(flatten)
+
+        expand = _action_button(
+            "expandAction",
+            "Expand",
+            f"Expand array values in {selector.column} into rows",
+            checkable=True,
+        )
+        expand.setChecked(selector.expand_array)
+        expand.toggled.connect(
+            lambda checked, target=row: self._set_option(
+                target, "expand_array", checked
+            )
+        )
+        layout.addWidget(expand)
+
+        remove = _action_button(
+            "removeAction",
+            "\N{MULTIPLICATION SIGN}",
+            f"Remove {selector.column} from extraction",
+        )
+        remove.clicked.connect(
+            lambda _checked=False, target=row: self._remove_row(target)
+        )
+        layout.addWidget(remove)
+        return actions
 
     def _emit_changed(self) -> None:
         self._update_controls()
@@ -320,26 +376,14 @@ class DataExtractionPanel(QWidget):
         )
         self._emit_changed()
 
-    def _selection_changed(
-        self, row: int, _column: int, _old_row: int, _old_column: int
-    ) -> None:
-        self.flatten.blockSignals(True)
-        self.expand.blockSignals(True)
+    def _set_option(self, row: int, option: str, checked: bool) -> None:
         if 0 <= row < len(self._selectors):
-            self.flatten.setChecked(self._selectors[row].flatten)
-            self.expand.setChecked(self._selectors[row].expand_array)
-        self.flatten.blockSignals(False)
-        self.expand.blockSignals(False)
-        self._update_controls()
-
-    def _options_changed(self, _checked: bool) -> None:
-        row = self.selections.currentRow()
-        if 0 <= row < len(self._selectors):
-            self._selectors[row] = replace(
-                self._selectors[row],
-                flatten=self.flatten.isChecked(),
-                expand_array=self.expand.isChecked(),
-            )
+            selector = self._selectors[row]
+            if option == "flatten":
+                selector = replace(selector, flatten=checked)
+            elif option == "expand_array":
+                selector = replace(selector, expand_array=checked)
+            self._selectors[row] = selector
             self._emit_changed()
 
     def _remove(self) -> None:
@@ -352,7 +396,9 @@ class DataExtractionPanel(QWidget):
             self._emit_changed()
 
     def _move(self, offset: int) -> None:
-        row = self.selections.currentRow()
+        self._move_row(self.selections.currentRow(), offset)
+
+    def _move_row(self, row: int, offset: int) -> None:
         target = row + offset
         if 0 <= row < len(self._selectors) and 0 <= target < len(self._selectors):
             self._selectors[row], self._selectors[target] = (
@@ -363,14 +409,7 @@ class DataExtractionPanel(QWidget):
             self._emit_changed()
 
     def _update_controls(self) -> None:
-        row = self.selections.currentRow()
-        selected = 0 <= row < len(self._selectors)
-        self.remove_button.setEnabled(selected)
-        self.up_button.setEnabled(selected and row > 0)
-        self.down_button.setEnabled(selected and row < len(self._selectors) - 1)
         self.clear_button.setEnabled(bool(self._selectors))
-        self.flatten.setEnabled(selected)
-        self.expand.setEnabled(selected)
         self.save_button.setEnabled(bool(self._selectors))
         self.csv_button.setEnabled(bool(self._selectors))
         self.jsonl_button.setEnabled(bool(self._selectors))

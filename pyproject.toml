@@ -19,6 +19,9 @@ chemfit-dashboard = "chemfit_dashboard.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+chemfit_dashboard = ["icons/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

@@ -1,302 +1,328 @@
 from __future__ import annotations
 
 import json
-import time
 
-from PySide6.QtCore import QRectF
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QModelIndex
 
-from chemfit_dashboard.graph_layout import (
-    LayoutNode,
-    dependency_layered_layout,
-    hierarchy_outline_layout,
+from chemfit_dashboard.data_flow import (
+    INPUT_NODE,
+    OUTPUT_NODE,
+    build_data_flow,
+    child_node,
 )
-from chemfit_dashboard.graph_view import ContextGraphPanel
+from chemfit_dashboard.graph_layout import data_flow_layout
+from chemfit_dashboard.graph_view import DataFlowPanel
+from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.source import JsonFileSource
 
 
-def test_dependency_layout_is_deterministic_and_respects_pipeline_direction():
-    nodes = [LayoutNode((), None), LayoutNode((0,), ()), LayoutNode((1,), ())]
-    hierarchy = [((), (0,)), ((), (1,))]
-    dependencies = [((0,), (1,))]
-
-    first = dependency_layered_layout(nodes, hierarchy, dependencies)
-    second = dependency_layered_layout(reversed(nodes), hierarchy, dependencies)
-
-    assert first == second
-    assert first.positions[(0,)][1] < first.positions[(1,)][1]
-    dependency = next(edge for edge in first.edges if edge.kind == "dependency")
-    assert (dependency.source, dependency.target) == ((0,), (1,))
+def _document(tmp_path, value, name="flow.json"):
+    path = tmp_path / name
+    path.write_text(json.dumps(value), encoding="utf-8")
+    source = JsonFileSource()
+    return source.load(source.discover([path])[0])
 
 
-def test_join_layout_keeps_all_dependency_edges():
-    nodes = [
-        LayoutNode((), None),
-        LayoutNode((0,), ()),
-        LayoutNode((1,), ()),
-        LayoutNode((2,), ()),
+def _context(structure, children=()):
+    return {"meta": {"chemfit.structure": structure}, "children": list(children)}
+
+
+def _edges(graph):
+    return [(edge.source, edge.target) for edge in graph.edges]
+
+
+def test_genuine_chemfit_pipeline_structure(chemfit_document):
+    graph = build_data_flow(chemfit_document)
+
+    assert _edges(graph) == [
+        (INPUT_NODE, child_node(0)),
+        (child_node(0), child_node(1)),
+        (child_node(1), OUTPUT_NODE),
     ]
-    layout = dependency_layered_layout(
-        nodes,
-        [((), (0,)), ((), (1,)), ((), (2,))],
-        [((0,), (2,)), ((1,), (2,))],
-    )
-
-    assert {
-        (edge.source, edge.target) for edge in layout.edges if edge.kind == "dependency"
-    } == {((0,), (2,)), ((1,), (2,))}
 
 
-def test_hierarchy_outline_is_preordered_indented_and_readable():
-    nodes = [
-        LayoutNode((1,), ()),
-        LayoutNode((0, 0), (0,)),
-        LayoutNode((), None),
-        LayoutNode((0,), ()),
-    ]
-    layout = hierarchy_outline_layout(
-        nodes,
-        [((), (0,)), ((0,), (0, 0)), ((), (1,))],
-        [((0,), (1,))],
-    )
-
-    assert list(layout.positions) == [(), (0,), (0, 0), (1,)]
-    assert layout.positions[()][0] < layout.positions[(0,)][0]
-    assert layout.positions[(0,)][0] < layout.positions[(0, 0)][0]
-    assert [layout.positions[path][1] for path in layout.positions] == sorted(
-        layout.positions[path][1] for path in layout.positions
-    )
-
-
-def test_collapsed_graph_reveals_hidden_semantic_selection(tmp_path):
-    value = {
-        "meta": {"chemfit.structure": {"children": [{"index": 0, "name": "group"}]}},
-        "children": [
-            {
-                "meta": {
-                    "chemfit.structure": {"children": [{"index": 0, "name": "leaf"}]}
-                },
-                "children": [{"output": 1}],
-            }
-        ],
-    }
-    path = tmp_path / "graph.json"
-    path.write_text(json.dumps(value), encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.set_document(document)
-    panel.ensure_rendered()
-
-    assert panel.view.rendered_node_count == 2
-    assert panel.view.toggle_paths == frozenset({(), (0,)})
-    assert panel.view._nodes[()].data(1) == "structural"  # noqa: SLF001
-    assert panel.view._nodes[(0,)].data(1) == "structural"  # noqa: SLF001
-    panel.select_path((0, 0))
-
-    assert panel.view.rendered_node_count == 3
-    assert panel.view._nodes[(0, 0)].data(1) == "atomic"  # noqa: SLF001
-    assert [item.data(0) for item in panel.view.scene().selectedItems()] == [(0, 0)]
-
-
-def test_inline_structural_toggle_expands_and_collapses_component(tmp_path):
-    value = {
-        "children": [{"children": [{"output": 1}]}],
-    }
-    path = tmp_path / "inline-toggle.json"
-    path.write_text(json.dumps(value), encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.set_document(document)
-    panel.ensure_rendered()
-
-    panel.view.toggle_path((0,))
-    assert panel.view.rendered_node_count == 3
-    assert (0,) in panel.view.expanded_paths
-
-    panel.view.toggle_path((0,))
-    assert panel.view.rendered_node_count == 2
-    assert (0,) not in panel.view.expanded_paths
-    assert [item.data(0) for item in panel.view.scene().selectedItems()] == [(0,)]
-
-
-def test_inline_expansion_preserves_readable_zoom_and_focus(tmp_path):
-    value = {"children": [{"children": [{"output": index} for index in range(4)]}]}
-    path = tmp_path / "readable-expansion.json"
-    path.write_text(json.dumps(value), encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.resize(440, 700)
-    panel.show()
-    panel.set_document(document)
-    panel.ensure_rendered()
-    initial_zoom = panel.view.transform().m11()
-
-    panel.view.toggle_path((0,))
-    QApplication.processEvents()
-
-    assert panel.view.transform().m11() == initial_zoom
-    viewport_center = panel.view.viewport().rect().center()
-    component_center = panel.view.mapFromScene(
-        panel.view._nodes[(0,)].sceneBoundingRect().center()  # noqa: SLF001
-    )
-    assert abs(viewport_center.x() - component_center.x()) <= 1
-    assert abs(90 - component_center.y()) <= 10
-
-
-def test_graph_defaults_to_data_flow_and_offers_hierarchy_outline(tmp_path):
-    path = tmp_path / "dependencies.json"
-    path.write_text('{"children": [{"output": 1}]}', encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.set_document(document)
-    panel.ensure_rendered()
-
-    assert panel.view.dependencies_visible
-    panel.dependencies.click()
-    assert not panel.view.dependencies_visible
-
-
-def test_fit_recenters_after_repeated_expand_and_collapse(tmp_path):
-    value = {
-        "children": [
-            {"children": [{"output": index} for index in range(5)]}
-            for _group in range(3)
-        ]
-    }
-    path = tmp_path / "fit.json"
-    path.write_text(json.dumps(value), encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.resize(900, 600)
-    panel.show()
-    panel.set_document(document)
-    panel.ensure_rendered()
-    panel.view.expand_all()
-    panel.view.toggle_path((0,))
-    panel.view.toggle_path((0,))
-    panel.view.scale(2.5, 2.5)
-    panel.view.horizontalScrollBar().setValue(
-        panel.view.horizontalScrollBar().maximum()
-    )
-
-    panel.view.fit_graph()
-    QApplication.processEvents()
-
-    bounds = QRectF()
-    for item in panel.view._nodes.values():  # noqa: SLF001
-        bounds = bounds.united(item.sceneBoundingRect())
-    viewport_center = panel.view.viewport().rect().center()
-    graph_center = panel.view.mapFromScene(bounds.center())
-    graph_top = panel.view.mapFromScene(bounds.topLeft()).y()
-    assert abs(viewport_center.x() - graph_center.x()) <= 1
-    assert 0 <= graph_top <= 40
-    assert panel.view.transform().m11() >= 0.78
-
-
-def test_repeated_collapse_removes_expanded_descendants_without_mutating_iteration(
-    tmp_path,
-):
-    value = {
-        "children": [
+def test_pipeline_uses_inputs_and_outputs_but_not_dependencies(tmp_path):
+    document = _document(
+        tmp_path,
+        _context(
             {
                 "children": [
-                    {
-                        "children": [{"output": 1}],
-                        "meta": {
-                            "chemfit.structure": {
-                                "children": [{"index": 0, "name": "leaf"}]
-                            }
-                        },
-                    }
+                    {"index": 0, "name": "prepare"},
+                    {"index": 1, "name": "finish"},
                 ],
-                "meta": {
-                    "chemfit.structure": {"children": [{"index": 0, "name": "nested"}]}
-                },
-            }
-        ],
-        "meta": {"chemfit.structure": {"children": [{"index": 0, "name": "group"}]}},
-    }
-    path = tmp_path / "nested.json"
-    path.write_text(json.dumps(value), encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.set_document(document)
-    panel.ensure_rendered()
-    panel.view.expand_all()
-    panel.select_path((0,))
-
-    panel.view.collapse_selected()
-    panel.view.collapse_selected()
-
-    assert panel.view.expanded_paths == frozenset({()})
-    assert panel.view.rendered_node_count == 2
-    assert [item.data(0) for item in panel.view.scene().selectedItems()] == [(0,)]
-
-
-def test_expanding_a_leaf_is_a_noop(tmp_path):
-    path = tmp_path / "leaf.json"
-    path.write_text('{"children": [{"output": 1}]}', encoding="utf-8")
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.set_document(document)
-    panel.ensure_rendered()
-    panel.select_path((0,))
-    before = panel.view.expanded_paths
-
-    panel.view.expand_selected()
-
-    assert panel.view.expanded_paths == before
-
-
-def test_graph_larger_than_old_limit_remains_navigable(tmp_path):
-    children = [{"output": index} for index in range(1_050)]
-    path = tmp_path / "large.json"
-    path.write_text(json.dumps({"children": children}), encoding="utf-8")
-    source = JsonFileSource(cache_memory_budget=32 * 1024 * 1024)
-    document = source.load(source.discover([path])[0])
-    panel = ContextGraphPanel()
-    panel.set_document(document)
-    panel.ensure_rendered()
-
-    deadline = time.monotonic() + 10
-    while panel.view.rendered_node_count == 0 and time.monotonic() < deadline:
-        QApplication.processEvents()
-
-    assert panel.view.rendered_node_count == 1_051
-    panel.select_path((1_049,))
-    assert panel.view.scene().selectedItems()[0].data(0) == (1_049,)
-
-
-def test_outdated_large_graph_layout_is_discarded(tmp_path):
-    large_path = tmp_path / "large.json"
-    small_path = tmp_path / "small.json"
-    large_path.write_text(
-        json.dumps({"children": [{"output": index} for index in range(600)]}),
-        encoding="utf-8",
+                "inputs": [
+                    [{"kind": "parent_input"}],
+                    [{"kind": "child", "index": 0}],
+                ],
+                "outputs": [{"kind": "child", "index": 1}],
+                "dependencies": [[1], []],
+            },
+            [{"output": 1}, {"output": 2}],
+        ),
     )
-    small_path.write_text('{"output": 1}', encoding="utf-8")
-    source = JsonFileSource()
-    records = {record.name: record for record in source.discover([tmp_path])}
-    large = source.load(records["large.json"])
-    small = source.load(records["small.json"])
-    panel = ContextGraphPanel()
-    panel.set_document(large)
+
+    graph = build_data_flow(document)
+
+    assert _edges(graph) == [
+        (INPUT_NODE, child_node(0)),
+        (child_node(0), child_node(1)),
+        (child_node(1), OUTPUT_NODE),
+    ]
+    assert (child_node(1), child_node(0)) not in _edges(graph)
+
+
+def test_parallel_branches_multiple_sources_and_outputs(tmp_path):
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [
+                    {"index": 0, "name": "left"},
+                    {"index": 1, "name": "right"},
+                    {"index": 2, "name": "join"},
+                ],
+                "inputs": [
+                    [{"kind": "parent_input"}],
+                    [{"kind": "parent_input"}],
+                    [
+                        {"kind": "child", "index": 0},
+                        {"kind": "child", "index": 1},
+                    ],
+                ],
+                "outputs": [
+                    {"kind": "child", "index": 2},
+                    {"kind": "child", "index": 0},
+                ],
+                "dependencies": [[], [], []],
+            }
+        ),
+    )
+
+    assert _edges(build_data_flow(document)) == [
+        (INPUT_NODE, child_node(0)),
+        (INPUT_NODE, child_node(1)),
+        (child_node(0), child_node(2)),
+        (child_node(1), child_node(2)),
+        (child_node(2), OUTPUT_NODE),
+        (child_node(0), OUTPUT_NODE),
+    ]
+
+
+def test_parent_input_can_pass_directly_to_output(tmp_path):
+    graph = build_data_flow(
+        _document(
+            tmp_path,
+            _context(
+                {
+                    "children": [],
+                    "inputs": [],
+                    "outputs": [{"kind": "parent_input"}],
+                    "dependencies": [],
+                }
+            ),
+        )
+    )
+
+    assert _edges(graph) == [(INPUT_NODE, OUTPUT_NODE)]
+
+
+def test_static_children_survive_failed_and_missing_runtime_contexts(tmp_path):
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [
+                    {"index": 0, "name": "fails"},
+                    {"index": 1, "name": "not_run"},
+                ],
+                "inputs": [
+                    [{"kind": "parent_input"}],
+                    [{"kind": "child", "index": 0}],
+                ],
+                "outputs": [{"kind": "child", "index": 1}],
+                "dependencies": [[], [0]],
+            },
+            [{"output": "ValueError: boom"}],
+        ),
+    )
+
+    children = [node for node in build_data_flow(document).nodes if node.kind == "child"]
+
+    assert [node.status for node in children] == ["failed", "not recorded"]
+    assert not children[1].recorded
+
+
+def test_skipped_component_remains_visible(tmp_path):
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [{"index": 0, "name": "optional"}],
+                "inputs": [[{"kind": "parent_input"}]],
+                "outputs": [{"kind": "child", "index": 0}],
+                "dependencies": [[]],
+            },
+            [{"output": {"skipped": True}}],
+        ),
+    )
+
+    child = build_data_flow(document).nodes[1]
+
+    assert child.status == "skipped"
+    assert child.recorded
+
+
+def test_nested_components_are_marked_without_name_heuristics(tmp_path):
+    nested = _context(
+        {
+            "children": [{"index": 0, "name": "leaf"}],
+            "inputs": [[{"kind": "parent_input"}]],
+            "outputs": [{"kind": "child", "index": 0}],
+            "dependencies": [[]],
+        },
+        [{"output": 1}],
+    )
+    root = _context(
+        {
+            "children": [{"index": 0, "name": "innocent_name"}],
+            "inputs": [[{"kind": "parent_input"}]],
+            "outputs": [{"kind": "child", "index": 0}],
+            "dependencies": [[]],
+        },
+        [nested],
+    )
+
+    child = build_data_flow(_document(tmp_path, root)).nodes[1]
+
+    assert child.nested
+
+
+def test_missing_structure_has_no_inferred_flow(tmp_path):
+    document = _document(tmp_path, {"children": [{"output": 1}]})
+
+    graph = build_data_flow(document)
+
+    assert not graph.available
+    assert graph.nodes == ()
+    assert "No declared data flow" in (graph.message or "")
+
+
+def test_layout_is_left_to_right_deterministic_and_keeps_disconnected_nodes():
+    nodes = [INPUT_NODE, child_node(0), child_node(1), child_node(2), OUTPUT_NODE]
+    edges = [
+        (INPUT_NODE, child_node(0)),
+        (INPUT_NODE, child_node(1)),
+        (child_node(0), OUTPUT_NODE),
+        (child_node(1), OUTPUT_NODE),
+    ]
+
+    first = data_flow_layout(nodes, edges)
+    second = data_flow_layout(reversed(nodes), reversed(edges))
+
+    assert first == second
+    assert set(first.positions) == set(nodes)
+    assert first.positions[INPUT_NODE][0] < first.positions[child_node(0)][0]
+    assert first.positions[child_node(0)][0] < first.positions[OUTPUT_NODE][0]
+
+
+def test_large_layout_contains_every_node():
+    nodes = [INPUT_NODE, *(child_node(index) for index in range(2_000)), OUTPUT_NODE]
+    edges = [(INPUT_NODE, child_node(index)) for index in range(2_000)]
+    edges.extend((child_node(index), OUTPUT_NODE) for index in range(2_000))
+
+    layout = data_flow_layout(nodes, edges)
+
+    assert len(layout.positions) == 2_002
+    assert len(layout.edges) == 4_000
+
+
+def test_breadcrumb_navigation_and_selection(tmp_path, capsys):
+    inner = _context(
+        {
+            "children": [{"index": 0, "name": "leaf"}],
+            "inputs": [[{"kind": "parent_input"}]],
+            "outputs": [{"kind": "child", "index": 0}],
+            "dependencies": [[]],
+        },
+        [{"output": 1}],
+    )
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [{"index": 0, "name": "nested"}],
+                "inputs": [[{"kind": "parent_input"}]],
+                "outputs": [{"kind": "child", "index": 0}],
+                "dependencies": [[]],
+            },
+            [inner],
+        ),
+    )
+    panel = DataFlowPanel()
+    panel.set_document(document)
     panel.ensure_rendered()
 
-    panel.set_document(small)
-    panel.ensure_rendered()
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        QApplication.processEvents()
-        if panel.view.rendered_node_count == 1:
-            break
+    panel.view._nodes[(0,)].setSelected(True)  # noqa: SLF001
+    panel._enter((0,))  # noqa: SLF001
+    assert panel.view.current_path == (0,)
+    assert panel.back_button.isEnabled()
 
-    assert panel.view.document is small
-    assert panel.view.rendered_node_count == 1
+    panel.view._nodes[(0, 0)].setSelected(True)  # noqa: SLF001
+    panel._back()  # noqa: SLF001
+    assert panel.view.current_path == ()
+    assert "Internal C++ object" not in capsys.readouterr().err
+
+
+def test_data_flow_ignores_items_destroyed_by_qt(tmp_path, capsys):
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [{"index": 0, "name": "step"}],
+                "inputs": [[{"kind": "parent_input"}]],
+                "outputs": [{"kind": "child", "index": 0}],
+                "dependencies": [[]],
+            },
+            [{"output": 4}],
+        ),
+    )
+    panel = DataFlowPanel()
+    panel.set_document(document)
+    panel.ensure_rendered()
+    panel.view._nodes[(0,)].setSelected(True)  # noqa: SLF001
+
+    # Qt can own and destroy scene items during widget teardown without going
+    # through DataFlowView._clear_scene(). Stale Python wrappers must be ignored.
+    panel.view.scene().clear()
+    panel.view._selection_changed()  # noqa: SLF001
+
+    assert panel.view.rendered_node_count == 0
+    assert "Internal C++ object" not in capsys.readouterr().err
+
+
+def test_tree_data_flow_and_inspector_selection_are_synchronized(tmp_path):
+    document = _document(
+        tmp_path,
+        _context(
+            {
+                "children": [{"index": 0, "name": "step"}],
+                "inputs": [[{"kind": "parent_input"}]],
+                "outputs": [{"kind": "child", "index": 0}],
+                "dependencies": [[]],
+            },
+            [{"output": 4}],
+        ),
+    )
+    window = MainWindow(source=JsonFileSource())
+    window._load_generation = 1  # noqa: SLF001
+    window._document_loaded(1, document)  # noqa: SLF001
+    window.hierarchy_tabs.setCurrentWidget(window.data_flow)
+    window.data_flow.ensure_rendered()
+
+    window.data_flow.node_selected.emit((0,))
+
+    info = window.tree_model.node_info(window.tree.currentIndex())
+    assert info is not None
+    assert info.path == (0,)
+    assert window.inspector.title.text() == "step"
+    assert window.tree.currentIndex() != QModelIndex()

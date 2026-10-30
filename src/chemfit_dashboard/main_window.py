@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -73,7 +74,7 @@ from chemfit_dashboard.extraction import (
     selector_for_document as extraction_selector_for_document,
 )
 from chemfit_dashboard.extraction_ui import PREVIEW_LIMIT, DataExtractionPanel
-from chemfit_dashboard.graph_view import ContextGraphPanel
+from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.models import ContextTreeModel, EvaluationListModel
 from chemfit_dashboard.semantic import (
@@ -127,6 +128,7 @@ class MainWindow(QMainWindow):
         self._operation_tokens: dict[str, CancellationToken] = {}
         self._pending_search_hit: SearchHit | None = None
         self._pending_failure: FailureOccurrence | None = None
+        self._pending_plot_selection: tuple[str, NumberSelector] | None = None
         self._sticky_node_path: NodePath = ()
         self._sticky_node_trail: NodeTrail = ()
         self._suppress_context_memory = False
@@ -230,7 +232,6 @@ class MainWindow(QMainWindow):
 
         self.context_workspace = QSplitter(Qt.Orientation.Horizontal)
         self.context_workspace.setChildrenCollapsible(False)
-        self.context_workspace.addWidget(self._build_evaluation_panel())
         self.context_workspace.addWidget(self._build_tree_panel())
         self.inspector = Inspector()
         self.inspector.plot_requested.connect(self._plot_requested)
@@ -241,7 +242,7 @@ class MainWindow(QMainWindow):
             self._add_extraction_selector
         )
         self.context_workspace.addWidget(self.inspector)
-        self.context_workspace.setSizes([275, 440, 745])
+        self.context_workspace.setSizes([440, 745])
 
         self.collection_analysis = CollectionAnalysisPanel()
         self.collection_analysis.failure_selected.connect(
@@ -257,11 +258,24 @@ class MainWindow(QMainWindow):
         self.extraction.selectors_changed.connect(self._refresh_extraction_preview)
         self.extraction.selectors_changed.connect(self._update_extraction_tab_badge)
         self.extraction.export_requested.connect(self._export_extraction)
+        self.workspace_tabs.setObjectName("workspaceTabs")
+        self.workspace_tabs.tabBar().setObjectName("workspaceTabBar")
         self._extraction_tab_index = self.workspace_tabs.addTab(
             self.extraction, "Data Extraction"
         )
         self._update_extraction_tab_badge()
-        outer.addWidget(self.workspace_tabs, 1)
+
+        self.evaluation_panel = self._build_evaluation_panel()
+        self.evaluation_panel.setMinimumWidth(230)
+        self.main_workspace = QSplitter(Qt.Orientation.Horizontal)
+        self.main_workspace.setObjectName("mainWorkspace")
+        self.main_workspace.setChildrenCollapsible(False)
+        self.main_workspace.addWidget(self.evaluation_panel)
+        self.main_workspace.addWidget(self.workspace_tabs)
+        self.main_workspace.setStretchFactor(0, 0)
+        self.main_workspace.setStretchFactor(1, 1)
+        self.main_workspace.setSizes([275, 1185])
+        outer.addWidget(self.main_workspace, 1)
         self.setCentralWidget(container)
         self.statusBar().showMessage("Ready")
 
@@ -308,7 +322,8 @@ class MainWindow(QMainWindow):
         self.order_status.setToolTip("Natural alphanumeric filename order")
         self.order_status.setWordWrap(True)
         layout.addWidget(self.order_status)
-        order_controls = QHBoxLayout()
+        order_controls = QVBoxLayout()
+        order_controls.setSpacing(6)
         self.reverse_order_button = QPushButton("Reverse order")
         self.reverse_order_button.setToolTip("Reverse the current collection order")
         self.reverse_order_button.setEnabled(False)
@@ -370,21 +385,36 @@ class MainWindow(QMainWindow):
         search_controls.addWidget(self.search_scope)
         search_controls.addStretch()
         layout.addLayout(search_controls)
-        search_dimensions = QHBoxLayout()
+        search_dimensions = QGridLayout()
         search_dimensions.setSpacing(8)
-        search_dimensions.addStretch()
         self.search_keys = QCheckBox("Include keys")
         self.search_keys.setChecked(True)
         self.search_keys.setToolTip("Match nested field paths and section names")
         self.search_keys.toggled.connect(self._search_options_toggled)
-        search_dimensions.addWidget(self.search_keys)
+        search_dimensions.addWidget(self.search_keys, 0, 0)
         self.search_values = QCheckBox("Include values")
         self.search_values.setChecked(True)
         self.search_values.setToolTip(
-            "Match serialized field values as well as keys and hierarchy names"
+            "Match serialized field values"
         )
         self.search_values.toggled.connect(self._search_options_toggled)
-        search_dimensions.addWidget(self.search_values)
+        search_dimensions.addWidget(self.search_values, 0, 1)
+        self.search_metadata = QCheckBox("Include metadata")
+        self.search_metadata.setChecked(True)
+        self.search_metadata.setToolTip(
+            "Include component metadata fields and values in search results"
+        )
+        self.search_metadata.toggled.connect(self._search_options_toggled)
+        search_dimensions.addWidget(self.search_metadata, 1, 0)
+        self.search_components = QCheckBox("Component names")
+        self.search_components.setChecked(False)
+        self.search_components.setToolTip(
+            "Include component names and hierarchy breadcrumbs when matching"
+        )
+        self.search_components.toggled.connect(self._search_options_toggled)
+        search_dimensions.addWidget(self.search_components, 1, 1)
+        search_dimensions.setColumnStretch(0, 1)
+        search_dimensions.setColumnStretch(1, 1)
         layout.addLayout(search_dimensions)
 
         self.tree_model = ContextTreeModel(self)
@@ -406,17 +436,22 @@ class MainWindow(QMainWindow):
         self.tree.header().setMinimumSectionSize(72)
         self.tree.selectionModel().selectionChanged.connect(self._context_selected)
 
-        self.graph = ContextGraphPanel()
+        self.data_flow = DataFlowPanel()
+        # ``graph`` remains a private compatibility handle for integrations
+        # built against early dashboard releases; both names reference the
+        # single Data Flow implementation.
+        self.graph = self.data_flow
         self.graph.node_selected.connect(self._graph_context_selected)
         self.collection_plot = CollectionPlotPanel()
         self.collection_plot.context_selected.connect(self._plot_context_selected)
+        self.collection_plot.point_selected.connect(self._plot_point_selected)
         self.collection_plot.remove_series_requested.connect(self._remove_plot_series)
         self.collection_plot.clear_series_requested.connect(self._clear_plot_series)
         self.search_panel = ContextSearchPanel()
         self.search_panel.hit_selected.connect(self._search_hit_selected)
         self.hierarchy_tabs = QTabWidget()
         self.hierarchy_tabs.addTab(self.tree, "Tree")
-        self.hierarchy_tabs.addTab(self.graph, "Graph")
+        self.hierarchy_tabs.addTab(self.graph, "Data Flow")
         self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
         self.hierarchy_tabs.addTab(self.search_panel, "Search")
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
@@ -642,6 +677,10 @@ class MainWindow(QMainWindow):
         ):
             self._pending_failure = None
             self._focus_failure_occurrence(pending_failure)
+        pending_plot = self._pending_plot_selection
+        if pending_plot is not None and pending_plot[0] == document.record.id:
+            self._pending_plot_selection = None
+            self._focus_plot_selection(pending_plot[1])
 
     def _load_failed(self, generation: int, record: RecordRef, details: str) -> None:
         if generation != self._load_generation:
@@ -656,6 +695,11 @@ class MainWindow(QMainWindow):
             and self._pending_failure.record_id == record.id
         ):
             self._pending_failure = None
+        if (
+            self._pending_plot_selection is not None
+            and self._pending_plot_selection[0] == record.id
+        ):
+            self._pending_plot_selection = None
         self.node_count.setText("error")
         self._show_error(f"Could not load {record.name}", details)
 
@@ -681,8 +725,7 @@ class MainWindow(QMainWindow):
 
     def _graph_context_selected(self, path: NodePath) -> None:
         if self._current_document is not None:
-            self.inspector.set_details(self._current_document.details(path))
-            self._remember_context_selection(path)
+            self._select_context_path(path, remember=True)
 
     def _remember_context_selection(self, path: NodePath) -> None:
         if self._current_document is None:
@@ -802,6 +845,42 @@ class MainWindow(QMainWindow):
     def _plot_context_selected(self, record_id: str) -> None:
         self._select_record_by_id(record_id)
 
+    def _plot_point_selected(
+        self, record_id: str, selector: NumberSelector | object
+    ) -> None:
+        if not isinstance(selector, NumberSelector):
+            return
+        if (
+            self._current_document is not None
+            and self._current_document.record.id == record_id
+        ):
+            self._focus_plot_selection(selector)
+            return
+        self._pending_plot_selection = (record_id, selector)
+        if not self._select_record_by_id(record_id):
+            self._pending_plot_selection = None
+
+    def _focus_plot_selection(self, selector: NumberSelector) -> None:
+        document = self._current_document
+        if document is None:
+            return
+        if selector.node_trail is None:
+            path = selector.node_path
+            try:
+                document.details(path)
+            except ContextSourceError:
+                return
+        else:
+            resolution = resolve_component_selection(
+                document, selector.node_path, selector.node_trail
+            )
+            if not resolution.complete:
+                self._select_context_path(resolution.path, remember=True)
+                return
+            path = resolution.path
+        if self._select_context_path(path, remember=True):
+            self.inspector.focus_value(selector.section, selector.value_path)
+
     def _field_search_changed(self, text: str) -> None:
         self._cancel_operation("search")
         if text.strip():
@@ -837,6 +916,8 @@ class MainWindow(QMainWindow):
                 return
         include_keys = self.search_keys.isChecked()
         include_values = self.search_values.isChecked()
+        include_metadata = self.search_metadata.isChecked()
+        include_components = self.search_components.isChecked()
         scope = self.search_scope.currentData()
         if scope == "collection":
             records = list(self.file_model.records)
@@ -881,6 +962,8 @@ class MainWindow(QMainWindow):
                             query,
                             include_keys=include_keys,
                             include_values=include_values,
+                            include_metadata=include_metadata,
+                            include_components=include_components,
                             mode=mode,
                         )
                     )
@@ -896,6 +979,8 @@ class MainWindow(QMainWindow):
                 query,
                 include_keys,
                 include_values,
+                include_metadata,
+                include_components,
                 mode,
                 scope_label,
                 count,
@@ -947,6 +1032,8 @@ class MainWindow(QMainWindow):
         query: str,
         include_keys: bool,
         include_values: bool,
+        include_metadata: bool,
+        include_components: bool,
         mode: SearchMode,
         scope_label: str,
         searched_records: int,
@@ -961,6 +1048,8 @@ class MainWindow(QMainWindow):
             query,
             include_keys=include_keys,
             include_values=include_values,
+            include_metadata=include_metadata,
+            include_components=include_components,
             mode=mode,
             scope_label=scope_label,
             searched_records=searched_records,
@@ -1161,6 +1250,7 @@ class MainWindow(QMainWindow):
         )
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
+        self._refresh_extraction_preview(self.extraction.selectors)
         self.order_status.setText(f"Order: {data.selector.label} ↑")
         self.order_status.setToolTip(
             f"Ascending numeric order by {data.selector.label}; missing values last"
@@ -1189,6 +1279,7 @@ class MainWindow(QMainWindow):
         self.file_model.set_record_order(None)
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
+        self._refresh_extraction_preview(self.extraction.selectors)
         self.order_status.setText("Order: filename")
         self.order_status.setToolTip("Natural alphanumeric filename order")
         self.reset_order_button.setEnabled(False)
@@ -1240,6 +1331,7 @@ class MainWindow(QMainWindow):
                 self.reset_order_button.setEnabled(False)
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
+        self._refresh_extraction_preview(self.extraction.selectors)
         self.statusBar().showMessage("Reversed collection order", 3000)
 
     def _clear_numeric_order(self) -> None:
