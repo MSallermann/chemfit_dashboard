@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStyle,
     QTabWidget,
     QTreeView,
     QVBoxLayout,
@@ -64,6 +65,7 @@ from chemfit_dashboard.context_search import (
     SearchHit,
     SearchMode,
     TopKSearchHits,
+    clear_search_caches,
 )
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
@@ -117,6 +119,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.source = source or JsonFileSource()
         self.tasks = TaskRunner(self)
+        self._collection_generation = 0
         self._load_generation = 0
         self._plot_generation = 0
         self._order_generation = 0
@@ -517,10 +520,23 @@ class MainWindow(QMainWindow):
         open_directory.triggered.connect(self.open_directory)
         file_menu.addAction(open_directory)
         file_menu.addSeparator()
-        close = QAction("&Quit", self)
-        close.setShortcut(QKeySequence.StandardKey.Quit)
-        close.triggered.connect(self.close)
-        file_menu.addAction(close)
+        self.close_collection_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton),
+            "&Close collection",
+            self,
+        )
+        self.close_collection_action.setShortcut(QKeySequence.StandardKey.Close)
+        self.close_collection_action.setToolTip(
+            "Close the loaded collection and keep the application open"
+        )
+        self.close_collection_action.setEnabled(False)
+        self.close_collection_action.triggered.connect(self.close_collection)
+        file_menu.addAction(self.close_collection_action)
+        file_menu.addSeparator()
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
 
     def _new_operation(self, name: str) -> CancellationToken:
         previous = self._operation_tokens.get(name)
@@ -671,21 +687,86 @@ class MainWindow(QMainWindow):
         if path:
             self.add_locations([path])
 
+    def close_collection(self) -> None:
+        """Close all loaded contexts while leaving the application running."""
+        if not self.file_model.records:
+            return
+        self._restore_data_flow_panel()
+        for token in self._operation_tokens.values():
+            token.cancel()
+        self.tasks.cancel_pending()
+        self.graph.view.cancel_pending_layout()
+        self._operation_tokens.clear()
+        self._collection_generation += 1
+        self._load_generation += 1
+        self._plot_generation += 1
+        self._order_generation += 1
+        self._search_generation += 1
+        self._analysis_generation += 1
+        self._extraction_generation += 1
+        self._pending_search_hit = None
+        self._pending_failure = None
+        self._pending_plot_selection = None
+        self._current_document = None
+        self._sticky_node_path = ()
+        self._sticky_node_trail = ()
+        self._clear_numeric_order()
+        self._filename_reversed = False
+        self._active_plot_selector = None
+        self._active_plot_selectors = []
+        with self._search_index_lock:
+            self._search_index_cache.clear()
+        clear_search_caches()
+        clear_source_cache = getattr(self.source, "clear_cache", None)
+        if callable(clear_source_cache):
+            clear_source_cache()
+
+        self.search.clear()
+        self.field_search.clear()
+        self.file_model.clear_records()
+        self.tree_model.set_document(None)
+        self.graph.set_document(None)
+        self.inspector.clear()
+        self.search_panel.set_available(False)
+        self.collection_plot.clear()
+        self.collection_analysis.clear()
+        self.extraction.clear()
+        self.node_count.setText("—")
+        self.file_count.setText("No files loaded")
+        self.order_status.setText("Order: filename")
+        self.order_status.setToolTip("Natural alphanumeric filename order")
+        self.ascending_order_button.setEnabled(False)
+        self.descending_order_button.setEnabled(False)
+        self.reset_order_button.setEnabled(False)
+        self.close_collection_action.setEnabled(False)
+        self.statusBar().showMessage("Closed context collection", 3000)
+
     def add_locations(self, locations: Sequence[str | Path]) -> None:
         locations = list(locations)
+        collection_generation = self._collection_generation
         self.statusBar().showMessage("Scanning for context files…")
         self.tasks.submit(
             lambda: self.source.discover(locations),
-            self._records_discovered,
+            lambda records: self._records_discovered(records, collection_generation),
             lambda details: self._show_error("Could not scan locations", details),
         )
 
-    def _records_discovered(self, records: list[RecordRef]) -> None:
+    def _records_discovered(
+        self,
+        records: list[RecordRef],
+        collection_generation: int | None = None,
+    ) -> None:
+        if (
+            collection_generation is not None
+            and collection_generation != self._collection_generation
+        ):
+            return
         self.file_model.set_records(records)
         count = len(self.file_model.records)
         self.file_count.setText(f"{count} file{'s' if count != 1 else ''}")
         self.ascending_order_button.setEnabled(count > 1)
         self.descending_order_button.setEnabled(count > 1)
+        self.close_collection_action.setEnabled(count > 0)
         self.statusBar().showMessage(f"Found {len(records)} context files", 3500)
         self._refresh_collection_analysis()
         self._refresh_extraction_preview(self.extraction.selectors)

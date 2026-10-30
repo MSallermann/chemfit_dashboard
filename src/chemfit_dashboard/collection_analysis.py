@@ -291,6 +291,18 @@ class CollectionAnalysisPanel(QWidget):
         self.summary_label.setText(message)
         self.refresh_button.setEnabled(True)
 
+    def clear(self) -> None:
+        """Restore the unloaded collection state without retaining old results."""
+        self.summary_label.setText("Load a collection to build its summary.")
+        self.issue_label.clear()
+        self.numeric_table.setRowCount(0)
+        self.failure_tree.clear()
+        self._occurrences = ()
+        self._current_occurrence = -1
+        self.previous_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.refresh_button.setEnabled(True)
+
     def set_summary(self, summary: CollectionSummary) -> None:
         self.refresh_button.setEnabled(True)
         self.summary_label.setText(

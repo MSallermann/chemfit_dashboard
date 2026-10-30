@@ -64,6 +64,43 @@ def test_evaluation_model_uses_natural_filename_order(tmp_path):
     ]
 
 
+def test_file_menu_closes_loaded_collection_without_quitting(tmp_path, monkeypatch):
+    context_path = tmp_path / "step_1.json"
+    context_path.write_text('{"output": 4}', encoding="utf-8")
+    source = JsonFileSource()
+    window = MainWindow(source=source)
+    monkeypatch.setattr(
+        window.tasks,
+        "submit",
+        lambda function, on_success, _on_error: on_success(function()),
+    )
+
+    assert not window.close_collection_action.isEnabled()
+    assert not window.close_collection_action.icon().isNull()
+
+    window._records_discovered(source.discover([context_path]))  # noqa: SLF001
+    assert window.close_collection_action.isEnabled()
+    assert window._current_document is not None  # noqa: SLF001
+    collection_generation = window._collection_generation  # noqa: SLF001
+
+    window.close_collection_action.trigger()
+
+    assert window.file_model.records == ()
+    assert window._current_document is None  # noqa: SLF001
+    assert window.tree_model.document is None
+    assert window.graph.view.document is None
+    assert window.file_count.text() == "No files loaded"
+    assert window.inspector.title.text() == "Context details"
+    assert not window.close_collection_action.isEnabled()
+    assert "Closed" in window.statusBar().currentMessage()
+
+    # A scan that was already running when Close was chosen cannot reopen it.
+    window._records_discovered(  # noqa: SLF001
+        source.discover([context_path]), collection_generation
+    )
+    assert window.file_model.records == ()
+
+
 def test_collection_has_separate_ascending_and_descending_sort_buttons(tmp_path):
     for name in ("step_10.json", "step_1.json", "step_2.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")

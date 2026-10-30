@@ -119,6 +119,15 @@ class EvaluationListModel(QAbstractItemModel):
         self._build_tree()
         self.endResetModel()
 
+    def clear_records(self) -> None:
+        """Remove every record and restore the empty model state."""
+        self.beginResetModel()
+        self._records = []
+        self._record_order = None
+        self._items_by_record_id.clear()
+        self._root = _EvaluationItem("", None, None, None)
+        self.endResetModel()
+
     def record(self, index: ModelIndex) -> RecordRef | None:
         if not index.isValid():
             return None
