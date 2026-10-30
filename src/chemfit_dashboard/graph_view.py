@@ -134,6 +134,16 @@ class DataFlowView(QGraphicsView):
         if was_rendered:
             self.ensure_rendered()
 
+    def refresh_labels(self) -> None:
+        """Rebuild visible node text while retaining navigation and selection."""
+        was_rendered = self._rendered
+        self._cancel_layout()
+        self._layout_generation += 1
+        self._rendered = False
+        self._clear_scene()
+        if was_rendered:
+            self.ensure_rendered()
+
     def ensure_rendered(self) -> None:
         if self._rendered or self._document is None:
             return
@@ -540,6 +550,10 @@ class DataFlowPanel(QWidget):
     def set_color_scheme(self, scheme: ColorScheme) -> None:
         self.view.set_color_scheme(scheme)
 
+    def refresh_labels(self) -> None:
+        self.view.refresh_labels()
+        self._update_breadcrumbs(self.view.current_path)
+
     def _enter(self, path: NodePath) -> None:
         self.view.navigate_to(path)
         self.node_selected.emit(path)
@@ -582,11 +596,10 @@ class DataFlowPanel(QWidget):
         if self._document is None:
             return ".".join(map(str, path))
         try:
-            details = self._document.details(path)
+            self._document.details(path)
         except ContextSourceError:
             return ".".join(map(str, path))
-        name = details.metadata.get("name")
-        return name.strip() if isinstance(name, str) and name.strip() else details.info.label
+        return self._document.component_label(path)
 
 
 # Kept as an import compatibility alias; there is only one renderer.

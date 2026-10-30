@@ -95,10 +95,10 @@ def _child_segments(
     occurrences: defaultdict[tuple[bool, str], int] = defaultdict(int)
     result: list[tuple[NodePath, NodeTrailSegment]] = []
     for child in document.children(parent_path):
-        name = _declared_child_name(document, parent_path, child.path[-1])
-        declared = name is not None
-        if name is None:
-            name = child.label
+        declared = (
+            _declared_child_name(document, parent_path, child.path[-1]) is not None
+        )
+        name = document.component_label(child.path)
         key = (declared, name)
         occurrence = occurrences[key]
         occurrences[key] += 1

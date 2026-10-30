@@ -243,6 +243,7 @@ class Inspector(QWidget):
         self.tabs.addTab(self.raw, "Raw fields")
         layout.addWidget(self.tabs, 1)
         self._details: NodeDetails | None = None
+        self._component_label = ""
         self._number_selector: NumberSelector | None = None
         self._field_selector: FieldSelector | None = None
         self.summary.numeric_selected.connect(
@@ -272,6 +273,7 @@ class Inspector(QWidget):
 
     def clear(self) -> None:
         self._details = None
+        self._component_label = ""
         self._set_number_selector(None)
         self._set_field_selector(None)
         self.extract_component_button.setEnabled(False)
@@ -286,17 +288,20 @@ class Inspector(QWidget):
         self.structure.set_structure(None)
         self.raw.set_value({})
 
-    def set_details(self, details: NodeDetails) -> None:
+    def set_details(
+        self, details: NodeDetails, component_label: str | None = None
+    ) -> None:
         self._details = details
+        self._component_label = component_label or details.info.label
         self._set_number_selector(None)
         self._set_field_selector(None)
         self.extract_component_button.setEnabled(True)
         self.extract_component_button.setToolTip(
-            f"Add the entire {details.info.label} component to Data Extraction."
+            f"Add the entire {self._component_label} component to Data Extraction."
         )
         info = details.info
         self.eyebrow.setText(info.kind.upper())
-        self.title.setText(info.label)
+        self.title.setText(self._component_label)
         recorded = "recorded" if info.recorded else "declaration only"
         self.subtitle.setText(f"Path {info.path_text} · {info.status} · {recorded}")
         self.summary.set_value(details.fields)
@@ -329,7 +334,7 @@ class Inspector(QWidget):
             return
         value_label = _format_value_path(value_path)
         component_label = (
-            self._details.info.label if self._details.info.path else "Evaluation root"
+            self._component_label if self._details.info.path else "Evaluation root"
         )
         label = f"{component_label} · {value_label}"
         self._set_number_selector(

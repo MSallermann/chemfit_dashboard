@@ -297,7 +297,12 @@ class ContextTreeModel(QAbstractItemModel):
         if role == self.NodeRole:
             return info
         if role == DISPLAY_ROLE:
-            return (info.label, info.status, info.output_preview)[index.column()]
+            label = (
+                self._document.component_label(info.path)
+                if self._document is not None
+                else info.label
+            )
+            return (label, info.status, info.output_preview)[index.column()]
         if role == TOOLTIP_ROLE:
             return f"{info.kind} · {info.path_text}"
         if role == FOREGROUND_ROLE and not info.recorded:

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
 NodePath = tuple[int, ...]
+DEFAULT_COMPONENT_LABEL_METADATA_KEY = "name"
 
 
 def alphanumeric_key(value: str) -> tuple[tuple[int, int | str], ...]:
@@ -75,10 +76,17 @@ class _NodeRecord:
 class ContextDocument:
     """One parsed JSON document with an immutable context-node index."""
 
-    def __init__(self, record: RecordRef, raw: Any):
+    def __init__(
+        self,
+        record: RecordRef,
+        raw: Any,
+        *,
+        component_label_metadata_key: str = DEFAULT_COMPONENT_LABEL_METADATA_KEY,
+    ):
         """Index the parsed context hierarchy without changing its values."""
         self.record = record
         self.raw = raw
+        self._component_label_metadata_key = component_label_metadata_key.strip()
         self._nodes: dict[NodePath, _NodeRecord] = {}
         self._children: dict[NodePath, tuple[NodePath, ...]] = {}
         self._build_index()
@@ -130,6 +138,34 @@ class ContextDocument:
             structure=structure,
             raw=raw,
         )
+
+    @property
+    def component_label_metadata_key(self) -> str:
+        """Return the metadata key used for user-facing component labels."""
+        return self._component_label_metadata_key
+
+    def set_component_label_metadata_key(self, key: str) -> None:
+        """Select the metadata field used for labels without rebuilding the index."""
+        self._component_label_metadata_key = key.strip()
+
+    def component_label(self, path: NodePath) -> str:
+        """Return the configured metadata label, falling back to structural identity."""
+        details = self.details(path)
+        key = self._component_label_metadata_key
+        candidate = details.metadata.get(key) if key else None
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        return details.info.label
+
+    @property
+    def component_label_metadata_keys(self) -> tuple[str, ...]:
+        """Return string-valued metadata keys available as component labels."""
+        keys: set[str] = set()
+        for path in self._nodes:
+            for key, value in self.details(path).metadata.items():
+                if isinstance(key, str) and isinstance(value, str) and value.strip():
+                    keys.add(key)
+        return tuple(sorted(keys, key=str.casefold))
 
     def _build_index(self) -> None:
         root_label = self._identity(self.raw) or self.record.path.stem
@@ -272,6 +308,23 @@ class ContextSource(ABC):
     def load(self, record: RecordRef) -> ContextDocument:
         """Parse and index one context record."""
 
+    @property
+    def component_label_metadata_key(self) -> str:
+        return getattr(
+            self,
+            "_component_label_metadata_key",
+            DEFAULT_COMPONENT_LABEL_METADATA_KEY,
+        )
+
+    def set_component_label_metadata_key(self, key: str) -> None:
+        """Configure the label metadata key for documents loaded by this source."""
+        self._component_label_metadata_key = key.strip()
+
+    def configure_document(self, document: ContextDocument) -> ContextDocument:
+        """Apply source-level presentation configuration to a loaded document."""
+        document.set_component_label_metadata_key(self.component_label_metadata_key)
+        return document
+
 
 class JsonFileSource(ContextSource):
     """JSON context source with a stat-aware, bounded LRU document cache."""
@@ -284,6 +337,7 @@ class JsonFileSource(ContextSource):
         object_overhead_factor: float = 3.0,
     ) -> None:
         """Initialize a thread-safe cache bounded by entries and estimated bytes."""
+        super().__init__()
         if cache_capacity < 0 or cache_memory_budget < 0:
             message = "Cache limits cannot be negative"
             raise ValueError(message)
@@ -298,6 +352,12 @@ class JsonFileSource(ContextSource):
         )
         self._cache_bytes = 0
         self._lock = threading.RLock()
+
+    def set_component_label_metadata_key(self, key: str) -> None:
+        super().set_component_label_metadata_key(key)
+        with self._lock:
+            for _signature, _cost, document in self._cache.values():
+                self.configure_document(document)
 
     @property
     def cache_info(self) -> tuple[int, int]:
@@ -362,7 +422,7 @@ class JsonFileSource(ContextSource):
             if cached is not None:
                 if cached[0] == signature:
                     self._cache.move_to_end(record.id)
-                    return cached[2]
+                    return self.configure_document(cached[2])
                 self._cache_bytes -= cached[1]
                 del self._cache[record.id]
 
@@ -373,7 +433,11 @@ class JsonFileSource(ContextSource):
             message = f"Cannot load {record.path.name}: {exc}"
             raise ContextSourceError(message) from exc
 
-        document = ContextDocument(record, raw)
+        document = ContextDocument(
+            record,
+            raw,
+            component_label_metadata_key=self.component_label_metadata_key,
+        )
         estimated_cost = max(1, round(stat.st_size * self.object_overhead_factor))
         if (
             self.cache_capacity == 0

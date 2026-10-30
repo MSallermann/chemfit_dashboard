@@ -458,15 +458,9 @@ def _walk_values(
 
 def _breadcrumb(document: ContextDocument, path: NodePath) -> str:
     labels = ["Evaluation root"]
-    for depth in range(1, len(path) + 1):
-        details = document.details(path[:depth])
-        label = details.info.label
-        for key in ("stage", "model", "execution", "metric", "component_name"):
-            value = details.metadata.get(key)
-            if isinstance(value, str) and value:
-                label = value
-                break
-        labels.append(label)
+    labels.extend(
+        document.component_label(path[:depth]) for depth in range(1, len(path) + 1)
+    )
     return " / ".join(labels)
 
 

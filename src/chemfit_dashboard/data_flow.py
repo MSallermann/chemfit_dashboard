@@ -91,7 +91,6 @@ def build_data_flow(  # noqa: PLR0912
         declaration = declarations.get(index, {})
         declared_type = _nonempty_string(declaration.get("name"))
         child_path = (*structural_path, index)
-        metadata_name: str | None = None
         nested = False
         if info is not None:
             try:
@@ -99,9 +98,8 @@ def build_data_flow(  # noqa: PLR0912
             except ContextSourceError:
                 child_details = None
             if child_details is not None:
-                metadata_name = _nonempty_string(child_details.metadata.get("name"))
                 nested = child_details.structure is not None
-        label = metadata_name or (info.label if info is not None else None)
+        label = document.component_label(child_path) if info is not None else None
         label = label or declared_type or f"Component {index + 1}"
         component_type = declared_type if declared_type != label else None
         nodes.append(

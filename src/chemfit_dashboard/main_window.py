@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
     COLOR_SCHEMES,
+    COMPONENT_LABEL_METADATA_KEY_SETTING,
     DEFAULT_COLOR_SCHEME,
     FONT_SCALE_SETTING,
     application_settings,
@@ -83,6 +84,7 @@ from chemfit_dashboard.semantic import (
     resolve_component_selection,
 )
 from chemfit_dashboard.source import (
+    DEFAULT_COMPONENT_LABEL_METADATA_KEY,
     ContextDocument,
     ContextSource,
     ContextSourceError,
@@ -146,6 +148,12 @@ class MainWindow(QMainWindow):
         self._color_scheme_key = DEFAULT_COLOR_SCHEME
         self._base_font: QFont | None = None
         self._base_stylesheet = ""
+        saved_label_key = self._settings.value(
+            COMPONENT_LABEL_METADATA_KEY_SETTING,
+            DEFAULT_COMPONENT_LABEL_METADATA_KEY,
+        )
+        self._component_label_metadata_key = str(saved_label_key).strip()
+        self.source.set_component_label_metadata_key(self._component_label_metadata_key)
         self._restore_appearance_settings()
 
         self.setWindowTitle("ChemFit Context Inspector")
@@ -279,7 +287,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
         self.statusBar().showMessage("Ready")
 
-    def _build_evaluation_panel(self) -> QWidget:
+    def _build_evaluation_panel(self) -> QWidget:  # noqa: PLR0915
         panel = QFrame()
         panel.setObjectName("sidePanel")
         layout = QVBoxLayout(panel)
@@ -322,19 +330,32 @@ class MainWindow(QMainWindow):
         self.order_status.setToolTip("Natural alphanumeric filename order")
         self.order_status.setWordWrap(True)
         layout.addWidget(self.order_status)
-        order_controls = QVBoxLayout()
+        order_controls = QHBoxLayout()
         order_controls.setSpacing(6)
-        self.reverse_order_button = QPushButton("Reverse order")
-        self.reverse_order_button.setToolTip("Reverse the current collection order")
-        self.reverse_order_button.setEnabled(False)
-        self.reverse_order_button.clicked.connect(self._reverse_collection_order)
-        order_controls.addWidget(self.reverse_order_button)
+        self.ascending_order_button = QPushButton("Ascending")
+        self.ascending_order_button.setToolTip("Sort the collection in ascending order")
+        self.ascending_order_button.setEnabled(False)
+        self.ascending_order_button.clicked.connect(
+            lambda: self._set_collection_order(descending=False)
+        )
+        order_controls.addWidget(self.ascending_order_button)
+        self.descending_order_button = QPushButton("Descending")
+        self.descending_order_button.setToolTip(
+            "Sort the collection in descending order"
+        )
+        self.descending_order_button.setEnabled(False)
+        self.descending_order_button.clicked.connect(
+            lambda: self._set_collection_order(descending=True)
+        )
+        order_controls.addWidget(self.descending_order_button)
+        # Compatibility handle for integrations that used the old toggle button.
+        self.reverse_order_button = self.descending_order_button
+        layout.addLayout(order_controls)
         self.reset_order_button = QPushButton("Filename order")
         self.reset_order_button.setToolTip("Restore natural filename ordering")
         self.reset_order_button.setEnabled(False)
         self.reset_order_button.clicked.connect(self._reset_collection_order)
-        order_controls.addWidget(self.reset_order_button)
-        layout.addLayout(order_controls)
+        layout.addWidget(self.reset_order_button)
         return panel
 
     def _build_tree_panel(self) -> QWidget:  # noqa: PLR0915
@@ -352,6 +373,29 @@ class MainWindow(QMainWindow):
         self.node_count.setObjectName("mutedLabel")
         top.addWidget(self.node_count)
         layout.addLayout(top)
+
+        label_controls = QHBoxLayout()
+        label_controls.setSpacing(8)
+        label_field_label = QLabel("Component label metadata")
+        label_field_label.setObjectName("mutedLabel")
+        label_controls.addWidget(label_field_label)
+        self.component_label_key = QComboBox()
+        self.component_label_key.setEditable(True)
+        self.component_label_key.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.component_label_key.setToolTip(
+            "Metadata key used for component labels in every view. "
+            "Leave blank to use structural component names."
+        )
+        self.component_label_key.setEditText(self._component_label_metadata_key)
+        editor = self.component_label_key.lineEdit()
+        if editor is not None:
+            editor.setPlaceholderText("name")
+            editor.editingFinished.connect(self._component_label_key_changed)
+        self.component_label_key.activated.connect(
+            lambda _index: self._component_label_key_changed()
+        )
+        label_controls.addWidget(self.component_label_key, 1)
+        layout.addLayout(label_controls)
 
         self.field_search = QLineEdit()
         self.field_search.setPlaceholderText(
@@ -426,14 +470,11 @@ class MainWindow(QMainWindow):
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.setAnimated(False)
         self.tree.header().setStretchLastSection(False)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.tree.header().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
+        self.tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.tree.header().setMinimumSectionSize(72)
+        self.tree.header().resizeSection(0, 280)
+        self.tree.header().resizeSection(1, 110)
+        self.tree.header().resizeSection(2, 220)
         self.tree.selectionModel().selectionChanged.connect(self._context_selected)
 
         self.data_flow = DataFlowPanel()
@@ -530,6 +571,60 @@ class MainWindow(QMainWindow):
             4000,
         )
 
+    def _component_label_key_changed(self) -> None:
+        key = self.component_label_key.currentText().strip()
+        if key == self._component_label_metadata_key:
+            return
+        self._component_label_metadata_key = key
+        self.source.set_component_label_metadata_key(key)
+        self._settings.setValue(COMPONENT_LABEL_METADATA_KEY_SETTING, key)
+        self._settings.sync()
+        with self._search_index_lock:
+            self._search_index_cache.clear()
+
+        document = self._current_document
+        if document is not None:
+            document.set_component_label_metadata_key(key)
+            self.tree_model.layoutChanged.emit()
+            self.tree.viewport().update()
+            self.graph.refresh_labels()
+            current = self.tree_model.node_info(self.tree.currentIndex())
+            if current is not None:
+                self.inspector.set_details(
+                    document.details(current.path),
+                    document.component_label(current.path),
+                )
+            self._sticky_node_trail = component_trail_for_path(
+                document, self._sticky_node_path
+            )
+            if self._active_plot_selectors:
+                self._active_plot_selectors = [
+                    selector_for_document(document, selector)
+                    for selector in self._active_plot_selectors
+                ]
+                self._active_plot_selector = self._active_plot_selectors[0]
+                self._refresh_active_plot()
+            if self.extraction.selectors:
+                config = self.extraction.config
+                self.extraction.set_config(
+                    ExtractionConfig(
+                        tuple(
+                            extraction_selector_for_document(document, selector)
+                            for selector in config.selectors
+                        ),
+                        include_identifiers=config.include_identifiers,
+                        include_status_columns=config.include_status_columns,
+                        version=config.version,
+                    )
+                )
+        self._refresh_collection_analysis()
+        if self.field_search.text().strip():
+            self._run_field_search()
+        shown_key = key or "structural names"
+        self.statusBar().showMessage(
+            f"Component labels now use {shown_key} in every view", 4000
+        )
+
     def _apply_application_stylesheet(self) -> None:
         application = QApplication.instance()
         if not isinstance(application, QApplication):
@@ -581,7 +676,8 @@ class MainWindow(QMainWindow):
         self.file_model.set_records(records)
         count = len(self.file_model.records)
         self.file_count.setText(f"{count} file{'s' if count != 1 else ''}")
-        self.reverse_order_button.setEnabled(count > 1)
+        self.ascending_order_button.setEnabled(count > 1)
+        self.descending_order_button.setEnabled(count > 1)
         self.statusBar().showMessage(f"Found {len(records)} context files", 3500)
         self._refresh_collection_analysis()
         self._refresh_extraction_preview(self.extraction.selectors)
@@ -619,7 +715,7 @@ class MainWindow(QMainWindow):
         self.node_count.setText("loading…")
         self.statusBar().showMessage(f"Loading {record.name}…")
         self.tasks.submit(
-            lambda: self.source.load(record),
+            lambda: self.source.configure_document(self.source.load(record)),
             lambda document: self._document_loaded(generation, document),
             lambda details: self._load_failed(generation, record, details),
         )
@@ -627,7 +723,17 @@ class MainWindow(QMainWindow):
     def _document_loaded(self, generation: int, document: ContextDocument) -> None:
         if generation != self._load_generation:
             return
+        document.set_component_label_metadata_key(self._component_label_metadata_key)
         self._current_document = document
+        current_key = self.component_label_key.currentText()
+        existing_keys = {
+            self.component_label_key.itemText(index)
+            for index in range(self.component_label_key.count())
+        }
+        for key in document.component_label_metadata_keys:
+            if key not in existing_keys:
+                self.component_label_key.addItem(key)
+        self.component_label_key.setEditText(current_key)
         self.tree_model.set_document(document)
         self.graph.set_document(document)
         if self.search_scope.currentData() == "current":
@@ -648,7 +754,7 @@ class MainWindow(QMainWindow):
             self._sticky_node_path = resolution.path
             self._select_context_path(resolution.path, remember=False)
             if resolution.path:
-                selected_label = document.details(resolution.path).info.label
+                selected_label = document.component_label(resolution.path)
                 self.statusBar().showMessage(
                     f"Loaded {document.record.name}; restored {selected_label}",
                     3500,
@@ -656,7 +762,7 @@ class MainWindow(QMainWindow):
         else:
             self._select_context_path(resolution.path, remember=False)
             available_label = (
-                document.details(resolution.path).info.label
+                document.component_label(resolution.path)
                 if resolution.path
                 else "evaluation root"
             )
@@ -714,7 +820,10 @@ class MainWindow(QMainWindow):
         info = self.tree_model.node_info(indexes[0])
         if info is None:
             return
-        self.inspector.set_details(self._current_document.details(info.path))
+        self.inspector.set_details(
+            self._current_document.details(info.path),
+            self._current_document.component_label(info.path),
+        )
         self.graph.select_path(info.path)
         if not self._suppress_context_memory:
             self._remember_context_selection(info.path)
@@ -752,7 +861,10 @@ class MainWindow(QMainWindow):
                 parent = parent.parent()
             self.tree.setCurrentIndex(tree_index)
             self.tree.scrollTo(tree_index)
-            self.inspector.set_details(self._current_document.details(path))
+            self.inspector.set_details(
+                self._current_document.details(path),
+                self._current_document.component_label(path),
+            )
             self.graph.select_path(path)
         finally:
             self._suppress_context_memory = previous_suppression
@@ -813,7 +925,10 @@ class MainWindow(QMainWindow):
             details = self._current_document.details(occurrence.node_path)
         except ContextSourceError:
             return
-        self.inspector.set_details(details)
+        self.inspector.set_details(
+            details,
+            self._current_document.component_label(occurrence.node_path),
+        )
         tree_index = self.tree_model.index_for_path(occurrence.node_path)
         if tree_index.isValid():
             self.tree.setCurrentIndex(tree_index)
@@ -954,7 +1069,7 @@ class MainWindow(QMainWindow):
                         current_document
                         if current_document is not None
                         and current_document.record.id == record.id
-                        else self.source.load(record)
+                        else self.source.configure_document(self.source.load(record))
                     )
                     index = self._cached_search_index(document)
                     hits.extend(
@@ -1087,7 +1202,10 @@ class MainWindow(QMainWindow):
     def _focus_search_hit(self, hit: SearchHit) -> None:
         if self._current_document is None:
             return
-        self.inspector.set_details(self._current_document.details(hit.node_path))
+        self.inspector.set_details(
+            self._current_document.details(hit.node_path),
+            self._current_document.component_label(hit.node_path),
+        )
         tree_index = self.tree_model.index_for_path(hit.node_path)
         if tree_index.isValid():
             self.tree.setCurrentIndex(tree_index)
@@ -1256,7 +1374,8 @@ class MainWindow(QMainWindow):
             f"Ascending numeric order by {data.selector.label}; missing values last"
         )
         self.reset_order_button.setEnabled(True)
-        self.reverse_order_button.setEnabled(len(records) > 1)
+        self.ascending_order_button.setEnabled(len(records) > 1)
+        self.descending_order_button.setEnabled(len(records) > 1)
         missing = data.missing_count
         suffix = f"; {missing:,} missing placed last" if missing else ""
         self.statusBar().showMessage(
@@ -1285,15 +1404,15 @@ class MainWindow(QMainWindow):
         self.reset_order_button.setEnabled(False)
         self.statusBar().showMessage("Restored filename order", 3000)
 
-    def _reverse_collection_order(self) -> None:
+    def _set_collection_order(self, *, descending: bool) -> None:
         if len(self.file_model.records) < 2:
             return
         selected_id = self._selected_record_id()
+        self._order_descending = descending
         if self._numeric_order_label is not None:
-            self._order_descending = not self._order_descending
             present = (
                 tuple(reversed(self._numeric_order_present))
-                if self._order_descending
+                if descending
                 else self._numeric_order_present
             )
             known_ids = {*present, *self._numeric_order_missing}
@@ -1305,16 +1424,16 @@ class MainWindow(QMainWindow):
             self.file_model.set_record_order(
                 (*present, *self._numeric_order_missing, *newly_added)
             )
-            arrow = "↓" if self._order_descending else "↑"
-            direction = "Descending" if self._order_descending else "Ascending"
+            arrow = "↓" if descending else "↑"
+            direction = "Descending" if descending else "Ascending"
             self.order_status.setText(f"Order: {self._numeric_order_label} {arrow}")
             self.order_status.setToolTip(
                 f"{direction} numeric order by {self._numeric_order_label}; "
                 "missing values last"
             )
         else:
-            self._filename_reversed = not self._filename_reversed
-            if self._filename_reversed:
+            self._filename_reversed = descending
+            if descending:
                 filename_records = self.file_model.filename_ordered_records
                 self.file_model.set_record_order(
                     record.id for record in reversed(filename_records)
@@ -1332,7 +1451,12 @@ class MainWindow(QMainWindow):
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
         self._refresh_extraction_preview(self.extraction.selectors)
-        self.statusBar().showMessage("Reversed collection order", 3000)
+        direction = "descending" if descending else "ascending"
+        self.statusBar().showMessage(f"Sorted collection in {direction} order", 3000)
+
+    def _reverse_collection_order(self) -> None:
+        """Compatibility helper for callers of the former toggle action."""
+        self._set_collection_order(descending=not self._order_descending)
 
     def _clear_numeric_order(self) -> None:
         self._numeric_order_present = ()

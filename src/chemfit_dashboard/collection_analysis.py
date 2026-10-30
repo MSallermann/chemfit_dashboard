@@ -111,9 +111,9 @@ def analyze_collection(  # noqa: PLR0912
 
         for node in nodes:
             if node.status == "skipped":
-                skipped[node.label] += 1
+                skipped[document.component_label(node.path)] += 1
             if not node.recorded:
-                missing[node.label] += 1
+                missing[document.component_label(node.path)] += 1
 
         failed_paths = {node.path for node in failed_nodes}
         primary_candidates = [
@@ -135,7 +135,7 @@ def analyze_collection(  # noqa: PLR0912
                     record_id=record.id,
                     record_name=record.name,
                     node_path=node.path,
-                    component=node.label,
+                    component=document.component_label(node.path),
                     exception_type=error_type,
                     message=message,
                 )

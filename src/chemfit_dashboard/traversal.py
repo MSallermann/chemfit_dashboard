@@ -54,7 +54,7 @@ def iter_collection(
         if cancellation is not None:
             cancellation.raise_if_cancelled()
         try:
-            document = source.load(record)
+            document = source.configure_document(source.load(record))
         except ContextSourceError as error:
             item = TraversalItem(record, None, str(error))
         else:

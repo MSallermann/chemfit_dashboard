@@ -10,11 +10,13 @@ from PySide6.QtWidgets import QGraphicsSimpleTextItem, QHeaderView
 
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
+    COMPONENT_LABEL_METADATA_KEY_SETTING,
     FONT_SCALE_SETTING,
     SETTINGS_FILENAME,
     application_settings,
     color_scheme,
 )
+from chemfit_dashboard.context_search import ContextSearchIndex
 from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.graph_view import ContextGraphPanel
 from chemfit_dashboard.main_window import MainWindow
@@ -56,6 +58,30 @@ def test_evaluation_model_uses_natural_filename_order(tmp_path):
 
     model.set_record_order(None)
     assert [record.name for record in model.records] == [
+        "step_1.json",
+        "step_2.json",
+        "step_10.json",
+    ]
+
+
+def test_collection_has_separate_ascending_and_descending_sort_buttons(tmp_path):
+    for name in ("step_10.json", "step_1.json", "step_2.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    source = JsonFileSource()
+    window = MainWindow(source=source)
+    window.file_model.set_records(source.discover([tmp_path]))
+    window.ascending_order_button.setEnabled(True)
+    window.descending_order_button.setEnabled(True)
+
+    window.descending_order_button.click()
+    assert [record.name for record in window.file_model.records] == [
+        "step_10.json",
+        "step_2.json",
+        "step_1.json",
+    ]
+
+    window.ascending_order_button.click()
+    assert [record.name for record in window.file_model.records] == [
         "step_1.json",
         "step_2.json",
         "step_10.json",
@@ -441,13 +467,74 @@ def test_adding_extraction_field_keeps_workspace_and_updates_tab_counter():
     )
 
 
-def test_context_tree_component_column_stretches_to_fill_panel_width():
+def test_context_tree_columns_are_user_resizable():
     window = MainWindow()
     header = window.tree.header()
 
-    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
-    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
-    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.ResizeToContents
+    assert all(
+        header.sectionResizeMode(column) == QHeaderView.ResizeMode.Interactive
+        for column in range(window.tree_model.columnCount())
+    )
+
+
+def test_component_label_metadata_key_applies_across_views_and_persists(tmp_path):
+    context_path = tmp_path / "labels.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "chemfit.structure": {
+                        "children": [{"index": 0, "name": "WrappedComponent"}]
+                    }
+                },
+                "children": [
+                    {
+                        "output": 1,
+                        "meta": {"name": "density observable", "tag": "density"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings_directory = tmp_path / "label-settings"
+    settings = application_settings(settings_directory)
+    source = JsonFileSource()
+    document = source.load(source.discover([context_path])[0])
+    window = MainWindow(source=source, settings=settings)
+    window._load_generation = 1  # noqa: SLF001
+    window._document_loaded(1, document)  # noqa: SLF001
+    root = window.tree_model.index(0, 0)
+    window.tree_model.fetchMore(root)
+    child = window.tree_model.index(0, 0, root)
+    window.hierarchy_tabs.setCurrentWidget(window.graph)
+    window.graph.ensure_rendered()
+
+    assert window.tree_model.data(child) == "density observable"
+
+    window.component_label_key.setEditText("tag")
+    window._component_label_key_changed()  # noqa: SLF001
+    window._select_context_path((0,), remember=True)  # noqa: SLF001
+
+    assert window.tree_model.data(child) == "density"
+    assert window.inspector.title.text() == "density"
+    labels = {
+        item.text()
+        for item in window.graph.view.scene().items()
+        if isinstance(item, QGraphicsSimpleTextItem)
+    }
+    assert "density" in labels
+    assert any(
+        hit.breadcrumb.endswith("density")
+        for hit in ContextSearchIndex(document).search("density")
+    )
+    assert settings.value(COMPONENT_LABEL_METADATA_KEY_SETTING) == "tag"
+
+    restored = MainWindow(
+        source=JsonFileSource(),
+        settings=application_settings(settings_directory),
+    )
+    assert restored.component_label_key.currentText() == "tag"
 
 
 def test_header_controls_scale_application_fonts(qapp, tmp_path):
