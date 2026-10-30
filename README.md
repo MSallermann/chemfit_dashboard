@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="res/chemfit_logo_portable.svg" alt="ChemFit logo" width="180">
+  <img src="res/chemfit_logo_portable.svg" alt="ChemFit logo" width="500">
 </p>
 
 # ChemFit Dashboard
