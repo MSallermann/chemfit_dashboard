@@ -34,16 +34,19 @@ git clone https://github.com/MSallermann/chemfit_dashboard.git
 cd chemfit_dashboard
 ```
 
-Install the required development version of `pydictnest`, followed by the dashboard:
+Install the dashboard with its GUI dependencies:
 
 ```bash
-python -m pip install git+https://github.com/MSallermann/pydictnest.git
-python -m pip install -e .
+python -m pip install -e ".[gui]"
 ```
 
-The separate `pydictnest` installation is only necessary until version 0.3.0 is available on PyPI.
-
 ChemFit itself is not required to inspect previously saved evaluation contexts.
+
+For headless extraction only, Qt is not required:
+
+```bash
+python -m pip install -e .
+```
 
 ## Getting started
 
@@ -177,6 +180,29 @@ The extraction interface also supports nested data:
 For example, extracting a dictionary containing `energy` and `forces` can produce separate columns for these values when flattening is enabled.
 
 The preview displays up to 200 evaluations. Exports process the entire collection.
+
+### Headless extraction
+
+Extraction configurations saved from the GUI can also be run without Qt using the
+`chemfit-extract` command:
+
+```bash
+chemfit-extract path/to/results/ \
+  --config extraction.json \
+  --format csv \
+  --output values.csv
+```
+
+Input paths may be individual context JSON files or directories, which are searched
+recursively. Multiple input paths can be supplied. JSONL output is supported in the
+same way:
+
+```bash
+chemfit-extract run-a/ run-b/ -c extraction.json -f jsonl -o values.jsonl
+```
+
+The format can be omitted when the output filename ends in `.csv` or `.jsonl`.
+Existing output files are protected by default; pass `--force` to replace one.
 
 ### Export formats
 

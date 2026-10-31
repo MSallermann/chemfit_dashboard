@@ -30,8 +30,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         from chemfit_dashboard.app import run
     except ImportError as exc:
-        if exc.name == "PySide6" or (exc.name and exc.name.startswith("PySide6.")):
-            message = 'PySide6 is not installed. Run: python -m pip install -e "."'
+        missing_gui_dependency = exc.name == "rapidfuzz" or (
+            exc.name == "PySide6" or (exc.name and exc.name.startswith("PySide6."))
+        )
+        if missing_gui_dependency:
+            message = (
+                "The dashboard GUI dependencies are not installed. "
+                'Run: python -m pip install "chemfit-dashboard[gui]"'
+            )
             raise SystemExit(message) from exc
         raise
     return run(arguments.paths)
