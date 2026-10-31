@@ -131,6 +131,7 @@ def test_session_restores_collection_layout_and_recent_location(
     assert first._current_document is not None  # noqa: SLF001
     assert first._current_document.record.name == "step_2.json"  # noqa: SLF001
     first.hierarchy_tabs.setCurrentWidget(first.collection_plot)
+    first.workspace_tabs.setCurrentWidget(first.search_workspace)
     first.main_workspace.setSizes([320, 880])
     first.close()
     qapp.processEvents()
@@ -145,6 +146,7 @@ def test_session_restores_collection_layout_and_recent_location(
     assert restored._current_document is not None  # noqa: SLF001
     assert restored._current_document.record.name == "step_2.json"  # noqa: SLF001
     assert restored.hierarchy_tabs.currentWidget() is restored.collection_plot
+    assert restored.workspace_tabs.currentWidget() is restored.search_workspace
     assert restored.recent_menu.actions()[0].toolTip() == str(contexts.resolve())
 
     explicit = tmp_path / "explicit.json"
@@ -166,12 +168,14 @@ def test_find_shortcut_and_navigation_history(chemfit_document):
     window._load_generation = 1  # noqa: SLF001
     window._document_loaded(1, chemfit_document)  # noqa: SLF001
     window.hierarchy_tabs.setCurrentWidget(window.tree)
+    window.workspace_tabs.setCurrentWidget(window.collection_analysis)
 
     window.find_action.trigger()
-    assert window.hierarchy_tabs.currentWidget() is window.search_workspace
+    assert window.workspace_tabs.currentWidget() is window.search_workspace
     window.field_search.setText("output")
     window.clear_search_action.trigger()
     assert window.field_search.text() == ""
+    assert window.workspace_tabs.currentWidget() is window.collection_analysis
     assert window.hierarchy_tabs.currentWidget() is window.tree
 
     assert window._select_context_path((0,), remember=True)  # noqa: SLF001
@@ -636,7 +640,14 @@ def test_collection_overview_is_a_top_level_workspace():
         for index in range(window.hierarchy_tabs.count())
     ]
     assert window.collection_analysis not in hierarchy_widgets
+    assert window.search_workspace not in hierarchy_widgets
     assert window.workspace_tabs.indexOf(window.collection_analysis) >= 0
+    assert window.workspace_tabs.indexOf(window.search_workspace) == (
+        window.workspace_tabs.indexOf(window.collection_analysis) + 1
+    )
+    assert window.workspace_tabs.indexOf(window.extraction) == (
+        window.workspace_tabs.indexOf(window.search_workspace) + 1
+    )
 
 
 def test_evaluation_sidebar_persists_across_top_level_workspaces(qapp):
@@ -650,6 +661,7 @@ def test_evaluation_sidebar_persists_across_top_level_workspaces(qapp):
     for workspace in (
         window.context_workspace,
         window.collection_analysis,
+        window.search_workspace,
         window.extraction,
     ):
         window.workspace_tabs.setCurrentWidget(workspace)

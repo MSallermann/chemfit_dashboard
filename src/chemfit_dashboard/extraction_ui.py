@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 # ruff: noqa: FBT003
+import csv
+import io
 import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
@@ -17,10 +19,12 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QTableView,
     QTableWidget,
@@ -130,16 +134,7 @@ class ExtractionPreviewModel(QAbstractTableModel):
             return row.filename
         if index.column() == 2:
             return row.record_id
-        column = self._columns[index.column() - 3]
-        extracted = row.values[column.selector_index]
-        if column.nested_path is not None:
-            nested = _nested_preview_value(extracted.value, column.nested_path)
-            extracted = ExtractionValue(
-                None if nested is _PREVIEW_MISSING else nested,
-                ExtractionStatus.MISSING_FIELD
-                if nested is _PREVIEW_MISSING
-                else extracted.status,
-            )
+        extracted = self._extracted_value(index)
         if role == Qt.ItemDataRole.ToolTipRole:
             return (
                 f"Status: {extracted.status.value}\n{_compact(extracted.value, 1000)}"
@@ -151,6 +146,56 @@ class ExtractionPreviewModel(QAbstractTableModel):
         ):
             return f"<{extracted.status.value}>"
         return _compact(extracted.value)
+
+    def headers(self) -> tuple[str, ...]:
+        return tuple(
+            str(self.headerData(column, Qt.Orientation.Horizontal))
+            for column in range(self.columnCount())
+        )
+
+    def copy_value(self, index: QModelIndex) -> Any:
+        """Return the complete, untruncated value represented by a preview cell."""
+        if not index.isValid():
+            return ""
+        row = self._rows[index.row()]
+        if index.column() == 0:
+            return row.index
+        if index.column() == 1:
+            return row.filename
+        if index.column() == 2:
+            return row.record_id
+        extracted = self._extracted_value(index)
+        if extracted.status not in (
+            ExtractionStatus.AVAILABLE,
+            ExtractionStatus.EXPLICIT_NULL,
+            ExtractionStatus.SERIALIZED_EXCEPTION,
+        ):
+            return f"<{extracted.status.value}>"
+        return extracted.value
+
+    def row_mapping(self, row: int) -> dict[str, Any]:
+        if not 0 <= row < self.rowCount():
+            return {}
+        return {
+            header: self.copy_value(self.index(row, column))
+            for column, header in enumerate(self.headers())
+        }
+
+    def _extracted_value(
+        self, index: QModelIndex | QPersistentModelIndex
+    ) -> ExtractionValue:
+        row = self._rows[index.row()]
+        column = self._columns[index.column() - 3]
+        extracted = row.values[column.selector_index]
+        if column.nested_path is None:
+            return extracted
+        nested = _nested_preview_value(extracted.value, column.nested_path)
+        return ExtractionValue(
+            None if nested is _PREVIEW_MISSING else nested,
+            ExtractionStatus.MISSING_FIELD
+            if nested is _PREVIEW_MISSING
+            else extracted.status,
+        )
 
 
 class DataExtractionPanel(QWidget):
@@ -200,6 +245,10 @@ class DataExtractionPanel(QWidget):
         )
         self.selections.setMaximumHeight(190)
         self.selections.itemChanged.connect(self._column_edited)
+        self.selections.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.selections.customContextMenuRequested.connect(
+            self._show_selection_context_menu
+        )
         layout.addWidget(self.selections)
 
         controls = QHBoxLayout()
@@ -219,20 +268,28 @@ class DataExtractionPanel(QWidget):
         self.preview.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive
         )
+        self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.preview.customContextMenuRequested.connect(self._show_preview_context_menu)
         layout.addWidget(self.preview, 1)
 
         actions = QHBoxLayout()
         self.save_button = QPushButton("Save configuration")
         self.load_button = QPushButton("Load configuration")
+        self.copy_config_button = QPushButton("Copy configuration")
+        self.copy_config_button.setToolTip(
+            "Copy JSON compatible with chemfit-extract --config"
+        )
         self.csv_button = QPushButton("Export CSV")
         self.jsonl_button = QPushButton("Export JSONL")
         self.save_button.clicked.connect(self._save)
         self.load_button.clicked.connect(self._load)
+        self.copy_config_button.clicked.connect(self.copy_configuration)
         self.csv_button.clicked.connect(lambda: self._export("csv"))
         self.jsonl_button.clicked.connect(lambda: self._export("jsonl"))
         for widget in (
             self.save_button,
             self.load_button,
+            self.copy_config_button,
             self.csv_button,
             self.jsonl_button,
         ):
@@ -411,8 +468,105 @@ class DataExtractionPanel(QWidget):
     def _update_controls(self) -> None:
         self.clear_button.setEnabled(bool(self._selectors))
         self.save_button.setEnabled(bool(self._selectors))
+        self.copy_config_button.setEnabled(bool(self._selectors))
         self.csv_button.setEnabled(bool(self._selectors))
         self.jsonl_button.setEnabled(bool(self._selectors))
+
+    def copy_configuration(self) -> None:
+        """Copy the complete CLI-compatible extraction configuration."""
+        QApplication.clipboard().setText(
+            json.dumps(self.config.to_dict(), indent=2, ensure_ascii=False)
+        )
+
+    def _show_selection_context_menu(self, position) -> None:  # noqa: ANN001
+        item = self.selections.itemAt(position)
+        if item is None or not 0 <= item.row() < len(self._selectors):
+            return
+        row = item.row()
+        self.selections.setCurrentCell(row, item.column())
+        menu = QMenu(self.selections)
+        copy_column = menu.addAction("Copy column name")
+        copy_path = menu.addAction("Copy field path")
+        copy_selector = menu.addAction("Copy field configuration as JSON")
+        selected = menu.exec(self.selections.viewport().mapToGlobal(position))
+        if selected is copy_column:
+            QApplication.clipboard().setText(self._selectors[row].column)
+        elif selected is copy_path:
+            QApplication.clipboard().setText(self._selectors[row].path_label)
+        elif selected is copy_selector:
+            self._copy_selector_json(row)
+
+    def _copy_selector_json(self, row: int) -> None:
+        if not 0 <= row < len(self._selectors):
+            return
+        selector = ExtractionConfig((self._selectors[row],)).to_dict()["selectors"][0]
+        QApplication.clipboard().setText(
+            json.dumps(selector, indent=2, ensure_ascii=False)
+        )
+
+    def _show_preview_context_menu(self, position) -> None:  # noqa: ANN001
+        index = self.preview.indexAt(position)
+        if not index.isValid():
+            return
+        self.preview.setCurrentIndex(index)
+        menu = QMenu(self.preview)
+        copy_cell = menu.addAction("Copy cell")
+        copy_column = menu.addAction("Copy column as CSV")
+        copy_row = menu.addAction("Copy row as CSV")
+        copy_row_json = menu.addAction("Copy row as JSON")
+        menu.addSeparator()
+        copy_preview = menu.addAction("Copy preview as CSV")
+        selected = menu.exec(self.preview.viewport().mapToGlobal(position))
+        if selected is copy_cell:
+            self._copy_preview_cell(index)
+        elif selected is copy_column:
+            self._copy_preview_column(index.column())
+        elif selected is copy_row:
+            self._copy_preview_row(index.row())
+        elif selected is copy_row_json:
+            self._copy_preview_row(index.row(), as_json=True)
+        elif selected is copy_preview:
+            self._copy_preview_table()
+
+    def _copy_preview_cell(self, index: QModelIndex) -> None:
+        value = self.preview_model.copy_value(index)
+        QApplication.clipboard().setText(_clipboard_text(value))
+
+    def _copy_preview_column(self, column: int) -> None:
+        if not 0 <= column < self.preview_model.columnCount():
+            return
+        header = self.preview_model.headers()[column]
+        rows = [(header,)]
+        rows.extend(
+            (
+                _clipboard_text(
+                    self.preview_model.copy_value(self.preview_model.index(row, column))
+                ),
+            )
+            for row in range(self.preview_model.rowCount())
+        )
+        QApplication.clipboard().setText(_csv_text(rows))
+
+    def _copy_preview_row(self, row: int, *, as_json: bool = False) -> None:
+        values = self.preview_model.row_mapping(row)
+        if not values:
+            return
+        text = (
+            json.dumps(values, indent=2, ensure_ascii=False)
+            if as_json
+            else _csv_text(
+                (tuple(values), tuple(map(_clipboard_text, values.values())))
+            )
+        )
+        QApplication.clipboard().setText(text)
+
+    def _copy_preview_table(self) -> None:
+        rows = [self.preview_model.headers()]
+        rows.extend(
+            tuple(map(_clipboard_text, self.preview_model.row_mapping(row).values()))
+            for row in range(self.preview_model.rowCount())
+        )
+        QApplication.clipboard().setText(_csv_text(rows))
 
     def _save(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -455,6 +609,23 @@ def _compact(value: Any, limit: int = 160) -> str:
     else:
         text = str(value)
     return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
+def _clipboard_text(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _csv_text(rows: tuple[tuple[str, ...], ...] | list[tuple[str, ...]]) -> str:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerows(rows)
+    return stream.getvalue().rstrip("\n")
 
 
 def _expanded_preview_rows(

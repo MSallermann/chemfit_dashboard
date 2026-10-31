@@ -236,6 +236,58 @@ def test_inspector_values_and_paths_can_be_copied(chemfit_document, qapp):
     assert json.loads(qapp.clipboard().text()) == 3.0
 
 
+def test_extraction_configuration_and_preview_can_be_copied(qapp):
+    panel = DataExtractionPanel()
+    assert (
+        panel.selections.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+    )
+    assert panel.preview.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+    selector = FieldSelector((), "fields", ("energy",), "energy")
+    panel.add_selector(selector)
+    panel.copy_config_button.click()
+
+    copied_config = json.loads(qapp.clipboard().text())
+    assert copied_config == panel.config.to_dict()
+
+    panel._copy_selector_json(0)  # noqa: SLF001
+    copied_selector = json.loads(qapp.clipboard().text())
+    assert copied_selector["column"] == "energy"
+    assert copied_selector["path"] == ["energy"]
+
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record-1",
+                "step_1.json",
+                (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
+            ),
+        ),
+        1,
+    )
+    value_index = panel.preview_model.index(0, 3)
+    panel._copy_preview_cell(value_index)  # noqa: SLF001
+    assert qapp.clipboard().text() == "3.5"
+
+    panel._copy_preview_column(3)  # noqa: SLF001
+    assert qapp.clipboard().text().splitlines() == ["energy", "3.5"]
+
+    panel._copy_preview_row(0, as_json=True)  # noqa: SLF001
+    copied_row = json.loads(qapp.clipboard().text())
+    assert copied_row == {
+        "Index": 0,
+        "Filename": "step_1.json",
+        "Record ID": "record-1",
+        "energy": 3.5,
+    }
+
+    panel._copy_preview_table()  # noqa: SLF001
+    assert qapp.clipboard().text().splitlines() == [
+        "Index,Filename,Record ID,energy",
+        "0,step_1.json,record-1,3.5",
+    ]
+
+
 def test_extraction_options_immediately_rebuild_preview_shape():
     panel = DataExtractionPanel()
     panel.add_selector(FieldSelector((), "fields", column="payload"))

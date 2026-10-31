@@ -5,6 +5,7 @@ import json
 import weakref
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
 from chemfit_dashboard.appearance import active_color_scheme
@@ -46,9 +47,7 @@ def test_value_search_can_be_toggled_off():
 def test_metadata_search_can_be_toggled_off(chemfit_document):
     index = ContextSearchIndex(chemfit_document)
 
-    included = index.search(
-        "chemfit.structure", mode="exact", include_values=False
-    )
+    included = index.search("chemfit.structure", mode="exact", include_values=False)
     excluded = index.search(
         "chemfit.structure",
         mode="exact",
@@ -63,9 +62,7 @@ def test_metadata_search_can_be_toggled_off(chemfit_document):
 def test_component_name_search_can_be_toggled_off(chemfit_document):
     index = ContextSearchIndex(chemfit_document)
 
-    included = index.search(
-        "compute_quantities", mode="exact", include_values=False
-    )
+    included = index.search("compute_quantities", mode="exact", include_values=False)
     excluded = index.search(
         "compute_quantities",
         mode="exact",
@@ -124,6 +121,35 @@ def test_search_panel_ranks_repeated_fields_with_context_labels(chemfit_document
     assert ">output</span>" in first_label.text()
     assert first_hit.text(2) == "100.0%"
     assert "best match first" in panel.status.text()
+
+
+def test_search_results_expose_useful_clipboard_formats(qapp):
+    hit = SearchHit(
+        node_path=(1, 0),
+        breadcrumb="Evaluation root / optimizer",
+        context_status="complete",
+        section="fields",
+        value_path=("output", 0),
+        field_label="output[0]",
+        preview="3.5",
+        score=0.91,
+        record_id="record-1",
+        record_name="step_1.json",
+    )
+    panel = ContextSearchPanel()
+    assert panel.results.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+    panel._copy_hit_value(hit)  # noqa: SLF001
+    assert qapp.clipboard().text() == "3.5"
+    panel._copy_hit_field_path(hit)  # noqa: SLF001
+    assert qapp.clipboard().text() == "fields/output[0]"
+    panel._copy_hit_json(hit)  # noqa: SLF001
+
+    copied = json.loads(qapp.clipboard().text())
+    assert copied["evaluation"] == "step_1.json"
+    assert copied["node_path"] == [1, 0]
+    assert copied["value_path"] == ["output", 0]
+    assert copied["preview"] == "3.5"
 
 
 def test_search_rows_reserve_height_for_context_detail_text(chemfit_document):

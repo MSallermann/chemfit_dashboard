@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -14,8 +15,10 @@ if TYPE_CHECKING:
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHeaderView,
     QLabel,
+    QMenu,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -236,6 +239,8 @@ class ContextSearchPanel(QWidget):
         self.results.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.results.header().resizeSection(2, 72)
         self.results.currentItemChanged.connect(self._current_item_changed)
+        self.results.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.results.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.results, 1)
 
     def set_index(self, index: ContextSearchIndex | None) -> None:
@@ -424,6 +429,55 @@ class ContextSearchPanel(QWidget):
         hit = current.data(0, HIT_ROLE)
         if isinstance(hit, SearchHit):
             self.hit_selected.emit(hit)
+
+    def _show_context_menu(self, position) -> None:  # noqa: ANN001
+        item = self.results.itemAt(position)
+        if item is None:
+            return
+        hit = item.data(0, HIT_ROLE)
+        if not isinstance(hit, SearchHit):
+            return
+        menu = QMenu(self.results)
+        copy_value = menu.addAction("Copy value preview")
+        copy_field_path = menu.addAction("Copy field path")
+        copy_context = menu.addAction("Copy context breadcrumb")
+        copy_filename = menu.addAction("Copy evaluation filename")
+        copy_filename.setEnabled(bool(hit.record_name))
+        menu.addSeparator()
+        copy_json = menu.addAction("Copy result as JSON")
+        selected = menu.exec(self.results.viewport().mapToGlobal(position))
+        if selected is copy_value:
+            self._copy_hit_value(hit)
+        elif selected is copy_field_path:
+            self._copy_hit_field_path(hit)
+        elif selected is copy_context:
+            QApplication.clipboard().setText(hit.breadcrumb)
+        elif selected is copy_filename:
+            QApplication.clipboard().setText(hit.record_name)
+        elif selected is copy_json:
+            self._copy_hit_json(hit)
+
+    def _copy_hit_value(self, hit: SearchHit) -> None:
+        QApplication.clipboard().setText(hit.preview)
+
+    def _copy_hit_field_path(self, hit: SearchHit) -> None:
+        QApplication.clipboard().setText(_hit_field_path(hit))
+
+    def _copy_hit_json(self, hit: SearchHit) -> None:
+        payload = {
+            "evaluation": hit.record_name,
+            "record_id": hit.record_id,
+            "component": hit.breadcrumb,
+            "node_path": list(hit.node_path),
+            "section": hit.section,
+            "value_path": list(hit.value_path),
+            "field": hit.field_label,
+            "preview": hit.preview,
+            "score": hit.score,
+        }
+        QApplication.clipboard().setText(
+            json.dumps(payload, indent=2, ensure_ascii=False)
+        )
 
 
 def _index_document(
@@ -740,10 +794,7 @@ def _fuzzy_match_indexes(value: str, query: str) -> set[int]:
             key=lambda word: ratio(token, word.group()),
             default=None,
         )
-        if (
-            closest is not None
-            and ratio(token, closest.group()) >= 68.0
-        ):
+        if closest is not None and ratio(token, closest.group()) >= 68.0:
             indexes.update(
                 index
                 for index in mapping[closest.start() : closest.end()]
@@ -782,3 +833,11 @@ def _normalized_with_mapping(value: str) -> tuple[str, list[int | None]]:
         characters.extend(token)
         mapping.extend(range(match.start(), match.end()))
     return "".join(characters), mapping
+
+
+def _hit_field_path(hit: SearchHit) -> str:
+    section = hit.section or "context"
+    result = section
+    for segment in hit.value_path:
+        result += f"[{segment}]" if isinstance(segment, int) else f"/{segment}"
+    return result

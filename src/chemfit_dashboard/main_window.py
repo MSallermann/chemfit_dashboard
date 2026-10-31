@@ -129,6 +129,7 @@ SESSION_GEOMETRY_SETTING = "session/geometry"
 SESSION_MAIN_SPLITTER_SETTING = "session/main_splitter"
 SESSION_CONTEXT_SPLITTER_SETTING = "session/context_splitter"
 SESSION_WORKSPACE_TAB_SETTING = "session/workspace_tab"
+SESSION_WORKSPACE_KEY_SETTING = "session/workspace_key"
 SESSION_HIERARCHY_TAB_SETTING = "session/hierarchy_tab"
 MAX_RECENT_LOCATIONS = 10
 
@@ -303,6 +304,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(header)
 
         self.context_workspace = QSplitter(Qt.Orientation.Horizontal)
+        self.context_workspace.setObjectName("contextWorkspace")
         self.context_workspace.setChildrenCollapsible(False)
         self.context_workspace.addWidget(self._build_tree_panel())
         self.inspector = Inspector()
@@ -317,6 +319,7 @@ class MainWindow(QMainWindow):
         self.context_workspace.setSizes([440, 745])
 
         self.collection_analysis = CollectionAnalysisPanel()
+        self.collection_analysis.setObjectName("collectionOverviewWorkspace")
         self.collection_analysis.failure_selected.connect(
             self._failure_occurrence_selected
         )
@@ -326,7 +329,11 @@ class MainWindow(QMainWindow):
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.addTab(self.context_workspace, "Context inspector")
         self.workspace_tabs.addTab(self.collection_analysis, "Collection overview")
+        self._search_tab_index = self.workspace_tabs.addTab(
+            self.search_workspace, "Search"
+        )
         self.extraction = DataExtractionPanel()
+        self.extraction.setObjectName("dataExtractionWorkspace")
         self.extraction.selectors_changed.connect(self._refresh_extraction_preview)
         self.extraction.selectors_changed.connect(self._update_extraction_tab_badge)
         self.extraction.export_requested.connect(self._export_extraction)
@@ -565,8 +572,9 @@ class MainWindow(QMainWindow):
         self.search_panel = ContextSearchPanel()
         self.search_panel.hit_selected.connect(self._search_hit_selected)
         self.search_workspace = QWidget()
+        self.search_workspace.setObjectName("searchWorkspace")
         search_workspace_layout = QVBoxLayout(self.search_workspace)
-        search_workspace_layout.setContentsMargins(0, 0, 0, 0)
+        search_workspace_layout.setContentsMargins(8, 8, 8, 8)
         search_workspace_layout.setSpacing(8)
         search_workspace_layout.addWidget(search_options)
         search_workspace_layout.addWidget(self.search_panel, 1)
@@ -574,7 +582,6 @@ class MainWindow(QMainWindow):
         self.hierarchy_tabs.addTab(self.tree, "Tree")
         self._data_flow_tab_index = self.hierarchy_tabs.addTab(self.graph, "Data Flow")
         self._plot_tab_index = self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
-        self.hierarchy_tabs.addTab(self.search_workspace, "Search")
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
         layout.addWidget(self.hierarchy_tabs, 1)
         return panel
@@ -674,9 +681,25 @@ class MainWindow(QMainWindow):
         context_sizes = self._setting_ints(SESSION_CONTEXT_SPLITTER_SETTING)
         if len(context_sizes) == 2:
             self.context_workspace.setSizes(context_sizes)
+        workspace_key = str(
+            self._settings.value(SESSION_WORKSPACE_KEY_SETTING, "") or ""
+        )
         workspace_tab = self._setting_int(SESSION_WORKSPACE_TAB_SETTING)
         hierarchy_tab = self._setting_int(SESSION_HIERARCHY_TAB_SETTING)
-        if 0 <= workspace_tab < self.workspace_tabs.count():
+        restored_workspace = next(
+            (
+                self.workspace_tabs.widget(index)
+                for index in range(self.workspace_tabs.count())
+                if self.workspace_tabs.widget(index).objectName() == workspace_key
+            ),
+            None,
+        )
+        if restored_workspace is not None:
+            self.workspace_tabs.setCurrentWidget(restored_workspace)
+        elif workspace_tab == 2:
+            # Before Search became a top-level workspace, index 2 was Extraction.
+            self.workspace_tabs.setCurrentWidget(self.extraction)
+        elif 0 <= workspace_tab < self.workspace_tabs.count():
             self.workspace_tabs.setCurrentIndex(workspace_tab)
         if 0 <= hierarchy_tab < self.hierarchy_tabs.count():
             self.hierarchy_tabs.setCurrentIndex(hierarchy_tab)
@@ -698,6 +721,11 @@ class MainWindow(QMainWindow):
         )
         self._settings.setValue(
             SESSION_WORKSPACE_TAB_SETTING, self.workspace_tabs.currentIndex()
+        )
+        current_workspace = self.workspace_tabs.currentWidget()
+        self._settings.setValue(
+            SESSION_WORKSPACE_KEY_SETTING,
+            current_workspace.objectName() if current_workspace is not None else "",
         )
         self._settings.setValue(
             SESSION_HIERARCHY_TAB_SETTING, self.hierarchy_tabs.currentIndex()
@@ -1599,9 +1627,9 @@ class MainWindow(QMainWindow):
         self._cancel_operation("search")
         if text.strip():
             self._search_generation += 1
-            if self.hierarchy_tabs.currentWidget() is not self.search_workspace:
-                self._tab_before_search = self.hierarchy_tabs.currentWidget()
-            self.hierarchy_tabs.setCurrentWidget(self.search_workspace)
+            if self.workspace_tabs.currentWidget() is not self.search_workspace:
+                self._tab_before_search = self.workspace_tabs.currentWidget()
+            self.workspace_tabs.setCurrentWidget(self.search_workspace)
             self._search_timer.start()
         else:
             self._search_timer.stop()
@@ -1610,17 +1638,17 @@ class MainWindow(QMainWindow):
                 "Type above to search context fields and values."
             )
             if (
-                self.hierarchy_tabs.currentWidget() is self.search_workspace
+                self.workspace_tabs.currentWidget() is self.search_workspace
                 and self._tab_before_search is not None
             ):
-                self.hierarchy_tabs.setCurrentWidget(self._tab_before_search)
+                self.workspace_tabs.setCurrentWidget(self._tab_before_search)
             self._tab_before_search = None
 
     def _focus_field_search(self) -> None:
-        current = self.hierarchy_tabs.currentWidget()
+        current = self.workspace_tabs.currentWidget()
         if current is not self.search_workspace:
             self._tab_before_search = current
-            self.hierarchy_tabs.setCurrentWidget(self.search_workspace)
+            self.workspace_tabs.setCurrentWidget(self.search_workspace)
         self.field_search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.field_search.selectAll()
 
@@ -1629,10 +1657,10 @@ class MainWindow(QMainWindow):
             self.field_search.clear()
             return
         if (
-            self.hierarchy_tabs.currentWidget() is self.search_workspace
+            self.workspace_tabs.currentWidget() is self.search_workspace
             and self._tab_before_search is not None
         ):
-            self.hierarchy_tabs.setCurrentWidget(self._tab_before_search)
+            self.workspace_tabs.setCurrentWidget(self._tab_before_search)
             self._tab_before_search = None
 
     def _run_field_search(self) -> None:
@@ -1849,6 +1877,8 @@ class MainWindow(QMainWindow):
             self.tree.setCurrentIndex(tree_index)
             self.tree.scrollTo(tree_index)
         self.graph.select_path(hit.node_path)
+        self.hierarchy_tabs.setCurrentWidget(self.tree)
+        self.workspace_tabs.setCurrentWidget(self.context_workspace)
         self._remember_context_selection(hit.node_path)
         if hit.section is not None:
             self.inspector.focus_value(hit.section, hit.value_path)
