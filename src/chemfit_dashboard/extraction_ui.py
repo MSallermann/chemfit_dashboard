@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
     QPersistentModelIndex,
+    QPoint,
     QSettings,
     Qt,
     Signal,
@@ -88,6 +89,8 @@ class ExtractionPreviewModel(QAbstractTableModel):
         super().__init__(parent)
         self._columns: tuple[_PreviewColumn, ...] = ()
         self._rows: tuple[ExtractionRow, ...] = ()
+        self._sort_column: int | None = None
+        self._sort_descending = False
 
     def set_data(
         self, selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
@@ -96,6 +99,10 @@ class ExtractionPreviewModel(QAbstractTableModel):
         expanded_rows = _expanded_preview_rows(rows, selectors)
         self._rows = expanded_rows[:PREVIEW_LIMIT]
         self._columns = _preview_columns(selectors, self._rows)
+        if self._sort_column is not None and self._sort_column >= 3 + len(
+            self._columns
+        ):
+            self._sort_column = None
         self.endResetModel()
 
     def rowCount(  # noqa: N802
@@ -116,12 +123,35 @@ class ExtractionPreviewModel(QAbstractTableModel):
         orientation: Qt.Orientation,
         role: int = Qt.ItemDataRole.DisplayRole,
     ) -> Any:
+        if orientation == Qt.Orientation.Vertical:
+            return section + 1 if role == Qt.ItemDataRole.DisplayRole else None
+        if role == Qt.ItemDataRole.ToolTipRole and section >= 3:
+            label = self._columns[section - 3].label
+            reason = self.sort_unavailable_reason(section)
+            if reason is not None:
+                return reason
+            return f"Click to sort the collection by {label}; click again to reverse"
         if role != Qt.ItemDataRole.DisplayRole:
             return None
-        if orientation == Qt.Orientation.Vertical:
-            return section + 1
         fixed = ("Index", "Filename", "Record ID")
-        return fixed[section] if section < 3 else self._columns[section - 3].label
+        label = fixed[section] if section < 3 else self._columns[section - 3].label
+        if section == self._sort_column:
+            arrow = "↓" if self._sort_descending else "↑"
+            return f"SORTED {arrow}  {label}"
+        return label
+
+    def set_sort_column(self, column: int | None, descending: bool = False) -> None:
+        """Emphasize the preview column controlling collection order."""
+        previous = self._sort_column
+        self._sort_column = column
+        self._sort_descending = descending
+        changed = [item for item in (previous, column) if item is not None]
+        if changed:
+            self.headerDataChanged.emit(
+                Qt.Orientation.Horizontal,
+                min(changed),
+                max(changed),
+            )
 
     def data(  # noqa: PLR0911
         self,
@@ -191,6 +221,26 @@ class ExtractionPreviewModel(QAbstractTableModel):
         """Return extraction metadata for a visible preview column."""
         index = column - 3
         return self._columns[index] if 0 <= index < len(self._columns) else None
+
+    def sort_unavailable_reason(self, column: int) -> str | None:
+        """Explain why a preview column cannot define collection order."""
+        preview_column = self.extraction_column(column)
+        if preview_column is None:
+            return "Only extracted value columns can sort the collection."
+        found_value = False
+        for row in range(self.rowCount()):
+            extracted = self._extracted_value(self.index(row, column))
+            if extracted.status != ExtractionStatus.AVAILABLE or extracted.value is None:
+                continue
+            found_value = True
+            if not isinstance(extracted.value, (bool, int, float, str)):
+                return (
+                    f"{preview_column.label} contains component or array values. "
+                    "Flatten it or select a scalar field before sorting."
+                )
+        if not found_value:
+            return f"{preview_column.label} has no available scalar values to sort."
+        return None
 
     def _extracted_value(
         self, index: QModelIndex | QPersistentModelIndex
@@ -266,7 +316,7 @@ class DataExtractionPanel(QWidget):
         )
         self.selections.ensurePolished()
         self.selections.verticalHeader().setDefaultSectionSize(
-            max(36, self.selections.fontMetrics().height() + 14)
+            max(40, self.selections.fontMetrics().height() + 18)
         )
         self.selections.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -293,6 +343,21 @@ class DataExtractionPanel(QWidget):
         controls.addWidget(self.clear_button)
         layout.addLayout(controls)
 
+        column_actions = QHBoxLayout()
+        self.preview_column_label = QLabel("Column actions: select a preview column")
+        self.preview_column_label.setObjectName("mutedLabel")
+        column_actions.addWidget(self.preview_column_label)
+        column_actions.addStretch()
+        self.rename_column_button = QPushButton("Rename column")
+        self.rename_column_button.setEnabled(False)
+        self.rename_column_button.clicked.connect(self._rename_selected_preview_column)
+        column_actions.addWidget(self.rename_column_button)
+        self.remove_column_button = QPushButton("Remove column")
+        self.remove_column_button.setEnabled(False)
+        self.remove_column_button.clicked.connect(self._remove_selected_preview_column)
+        column_actions.addWidget(self.remove_column_button)
+        layout.addLayout(column_actions)
+
         self.preview_model = ExtractionPreviewModel(self)
         self.preview = QTableView()
         self.preview.setModel(self.preview_model)
@@ -303,8 +368,21 @@ class DataExtractionPanel(QWidget):
         self.preview.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive
         )
+        self.preview.horizontalHeader().setSectionsClickable(True)
+        self.preview.horizontalHeader().sectionPressed.connect(
+            self._select_preview_column
+        )
+        self.preview.horizontalHeader().sectionClicked.connect(
+            self._toggle_preview_sort
+        )
+        self._preview_sort_column: int | None = None
+        self._preview_sort_descending = False
+        self._selected_preview_column: int | None = None
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview.customContextMenuRequested.connect(self._show_preview_context_menu)
+        self.preview.clicked.connect(
+            lambda index: self._select_preview_column(index.column())
+        )
         self._preview_copy_shortcut = QShortcut(
             QKeySequence.StandardKey.Copy, self.preview
         )
@@ -390,6 +468,8 @@ class DataExtractionPanel(QWidget):
 
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
         self.preview_model.set_data(self.selectors, rows)
+        selected_column = self._preview_sort_column or 3
+        self._select_preview_column(selected_column)
         shown = self.preview_model.rowCount()
         suffix = " (limited)" if total > len(rows) or shown >= PREVIEW_LIMIT else ""
         self.status.setText(
@@ -436,6 +516,14 @@ class DataExtractionPanel(QWidget):
         )
         layout.addWidget(move_down)
 
+        rename = _action_button(
+            "renameAction", "Rename", f"Rename extraction column {selector.column}"
+        )
+        rename.clicked.connect(
+            lambda _checked=False, target=row: self._edit_column_name(target)
+        )
+        layout.addWidget(rename)
+
         flatten = _action_button(
             "flattenAction",
             "Flatten all",
@@ -464,7 +552,7 @@ class DataExtractionPanel(QWidget):
 
         remove = _action_button(
             "removeAction",
-            "\N{MULTIPLICATION SIGN}",
+            "Remove",
             f"Remove {selector.column} from extraction",
         )
         remove.clicked.connect(
@@ -474,6 +562,7 @@ class DataExtractionPanel(QWidget):
         return actions
 
     def _emit_changed(self) -> None:
+        self._select_preview_column(-1)
         self._update_controls()
         self._update_dirty_indicator()
         self.selectors_changed.emit(self.selectors)
@@ -496,6 +585,13 @@ class DataExtractionPanel(QWidget):
             self._selectors[item.row()], column=column
         )
         self._emit_changed()
+
+    def _edit_column_name(self, row: int) -> None:
+        item = self.selections.item(row, 0)
+        if item is None:
+            return
+        self.selections.setCurrentCell(row, 0)
+        self.selections.editItem(item)
 
     def _set_option(self, row: int, option: str, checked: bool) -> None:
         if 0 <= row < len(self._selectors):
@@ -591,7 +687,9 @@ class DataExtractionPanel(QWidget):
             "Copied extraction field configuration as JSON",
         )
 
-    def _show_preview_context_menu(self, position) -> None:  # noqa: ANN001
+    def _show_preview_context_menu(  # noqa: PLR0912
+        self, position: QPoint
+    ) -> None:
         index = self.preview.indexAt(position)
         if not index.isValid():
             return
@@ -610,6 +708,11 @@ class DataExtractionPanel(QWidget):
             sort_menu = menu.addMenu("Sort collection by this column")
             sort_ascending = sort_menu.addAction("Sort ↑")
             sort_descending = sort_menu.addAction("Sort ↓")
+            sort_reason = self.preview_model.sort_unavailable_reason(index.column())
+            if sort_reason is not None:
+                sort_menu.setTitle("Sorting unavailable (non-scalar column)")
+                sort_menu.setToolTip(sort_reason)
+                sort_menu.setEnabled(False)
             if preview_column.nested_path is not None:
                 rename_flattened = menu.addAction("Rename flattened column…")
                 remove_flattened = menu.addAction("Remove flattened column")
@@ -625,25 +728,93 @@ class DataExtractionPanel(QWidget):
         elif selected is copy_preview:
             self._copy_preview_table()
         elif selected is sort_ascending and preview_column is not None:
-            self.sort_requested.emit(
-                (
-                    self._selectors[preview_column.selector_index],
-                    preview_column.nested_path,
-                ),
-                False,
-            )
+            self._request_preview_sort(index.column(), preview_column, False)
         elif selected is sort_descending and preview_column is not None:
-            self.sort_requested.emit(
-                (
-                    self._selectors[preview_column.selector_index],
-                    preview_column.nested_path,
-                ),
-                True,
-            )
+            self._request_preview_sort(index.column(), preview_column, True)
         elif selected is remove_flattened and preview_column is not None:
             self._exclude_flattened_column(preview_column)
         elif selected is rename_flattened and preview_column is not None:
             self._rename_flattened_column(preview_column)
+
+    def _toggle_preview_sort(self, column: int) -> None:
+        preview_column = self.preview_model.extraction_column(column)
+        if preview_column is None:
+            return
+        descending = (
+            not self._preview_sort_descending
+            if self._preview_sort_column == column
+            else False
+        )
+        self._request_preview_sort(column, preview_column, descending)
+
+    def _select_preview_column(self, column: int) -> None:
+        preview_column = self.preview_model.extraction_column(column)
+        self._selected_preview_column = column if preview_column is not None else None
+        enabled = preview_column is not None
+        self.rename_column_button.setEnabled(enabled)
+        self.remove_column_button.setEnabled(enabled)
+        if preview_column is None:
+            label = "Column actions: select a preview column"
+        else:
+            label = f"Column actions: {preview_column.label}"
+            if self.preview_model.sort_unavailable_reason(column) is not None:
+                label += " · sorting unavailable for non-scalar values"
+        self.preview_column_label.setText(label)
+
+    def _selected_column(self) -> _PreviewColumn | None:
+        if self._selected_preview_column is None:
+            return None
+        return self.preview_model.extraction_column(self._selected_preview_column)
+
+    def _rename_selected_preview_column(self) -> None:
+        preview_column = self._selected_column()
+        if preview_column is None:
+            return
+        if preview_column.nested_path is None:
+            self._edit_column_name(preview_column.selector_index)
+        else:
+            self._rename_flattened_column(preview_column)
+
+    def _remove_selected_preview_column(self) -> None:
+        preview_column = self._selected_column()
+        if preview_column is None:
+            return
+        if preview_column.nested_path is None:
+            self._remove_row(preview_column.selector_index)
+        else:
+            self._exclude_flattened_column(preview_column)
+        self._select_preview_column(-1)
+
+    def _request_preview_sort(
+        self,
+        column: int,
+        preview_column: _PreviewColumn,
+        descending: bool,
+    ) -> None:
+        reason = self.preview_model.sort_unavailable_reason(column)
+        if reason is not None:
+            self.status_message.emit(reason)
+            return
+        self._preview_sort_column = column
+        self._preview_sort_descending = descending
+        order = (
+            Qt.SortOrder.DescendingOrder
+            if descending
+            else Qt.SortOrder.AscendingOrder
+        )
+        header = self.preview.horizontalHeader()
+        header.setSortIndicator(column, order)
+        header.setSortIndicatorShown(True)
+        self.preview_model.set_sort_column(column, descending)
+        self._select_preview_column(column)
+        header.resizeSection(column, max(header.sectionSize(column), 150))
+        self.sort_requested.emit(
+            (
+                self._selectors[preview_column.selector_index],
+                preview_column.nested_path,
+            ),
+            descending,
+        )
 
     def _exclude_flattened_column(self, column: _PreviewColumn) -> None:
         path = column.nested_path

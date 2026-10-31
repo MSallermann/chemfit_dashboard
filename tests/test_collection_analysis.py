@@ -100,6 +100,20 @@ def test_failure_navigator_cycles_through_occurrences(tmp_path):
     ]
 
 
+def test_large_collection_analysis_can_be_explicitly_deferred():
+    panel = CollectionAnalysisPanel()
+    requested = []
+    panel.refresh_requested.connect(lambda: requested.append(True))
+
+    panel.show_deferred(50_000)
+
+    assert "50,000 evaluations loaded" in panel.summary_label.text()
+    assert "deferred" in panel.summary_label.text()
+    assert panel.refresh_button.text() == "Analyze"
+    panel.refresh_button.click()
+    assert requested == [True]
+
+
 def test_example_collection_reports_originating_failure_not_propagated_parent():
     source = JsonFileSource()
     records = source.discover(["examples/context_collection"])

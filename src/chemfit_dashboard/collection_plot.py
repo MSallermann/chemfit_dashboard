@@ -271,7 +271,7 @@ class CollectionPlotPanel(QWidget):
         self.plot_mode.currentIndexChanged.connect(self._plot_mode_changed)
         view_controls.addWidget(self.plot_mode)
         self.histogram_bins = QSpinBox()
-        self.histogram_bins.setRange(5, 100)
+        self.histogram_bins.setRange(1, 100)
         self.histogram_bins.setValue(30)
         self.histogram_bins.setPrefix("Bins: ")
         self.histogram_bins.setToolTip("Number of equal-width histogram bins")
@@ -680,8 +680,9 @@ class CollectionPlotPanel(QWidget):
         bar_series.attachAxis(y_axis)
         chart.legend().setVisible(len(visible_collection) > 1)
         self.chart_view.setChart(chart)
+        bin_label = "bin" if bins == 1 else "bins"
         self.status.setText(
-            f"{len(values):,} values in {bins} equal-width bins · "
+            f"{len(values):,} values in {bins} equal-width {bin_label} · "
             f"range {minimum:.8g} to {maximum:.8g}"
         )
 

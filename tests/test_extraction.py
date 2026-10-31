@@ -382,6 +382,15 @@ def test_extraction_options_immediately_rebuild_preview_shape():
     )
     assert panel.preview_model.data(panel.preview_model.index(0, 3)) == "1"
     assert panel.preview_model.data(panel.preview_model.index(1, 3)) == "2"
+    assert panel.preview_column_label.text() == (
+        "Column actions: payload.metrics/energy"
+    )
+    assert panel.rename_column_button.isEnabled()
+    assert panel.remove_column_button.isEnabled()
+
+    panel.remove_column_button.click()
+
+    assert panel.selectors[0].excluded_paths == (("metrics", "energy"),)
 
 
 def test_flattened_columns_can_be_filtered_renamed_and_round_trip(tmp_path):
@@ -444,6 +453,9 @@ def test_field_specific_extraction_controls_are_inline():
     assert not _inline_action(panel, 1, "moveDownAction").isEnabled()
     assert _inline_action(panel, 0, "flattenAction").isCheckable()
     assert _inline_action(panel, 0, "expandAction").isCheckable()
+    assert _inline_action(panel, 0, "renameAction").text() == "Rename"
+    assert _inline_action(panel, 0, "removeAction").text() == "Remove"
+    assert panel.selections.verticalHeader().defaultSectionSize() >= 40
     assert (
         panel.selections.horizontalHeader().sectionResizeMode(2)
         == QHeaderView.ResizeMode.Interactive
@@ -461,13 +473,85 @@ def test_field_specific_extraction_controls_are_inline():
     assert panel.selections.columnWidth(2) == 480
 
 
+def test_extraction_preview_header_toggles_collection_sort():
+    panel = DataExtractionPanel()
+    energy = FieldSelector((), "fields", ("energy",), "energy")
+    panel.add_selector(energy)
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record-1",
+                "step_1.json",
+                (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
+            ),
+        ),
+        1,
+    )
+    requested_sorts = []
+    panel.sort_requested.connect(
+        lambda request, descending: requested_sorts.append((request, descending))
+    )
+    header = panel.preview.horizontalHeader()
+
+    header.sectionClicked.emit(3)
+    header.sectionClicked.emit(3)
+
+    assert requested_sorts == [((energy, None), False), ((energy, None), True)]
+    assert header.isSortIndicatorShown()
+    assert header.sortIndicatorSection() == 3
+    assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal).startswith(
+        "SORTED ↓"
+    )
+    assert "click again to reverse" in str(
+        panel.preview_model.headerData(
+            3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
+        )
+    ).lower()
+
+
+def test_extraction_preview_rejects_opaque_component_sorting():
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "component", column="whole_component"))
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record-1",
+                "step_1.json",
+                (
+                    ExtractionValue(
+                        {"energy": 3.5}, ExtractionStatus.AVAILABLE
+                    ),
+                ),
+            ),
+        ),
+        1,
+    )
+    requested_sorts = []
+    messages = []
+    panel.sort_requested.connect(lambda *args: requested_sorts.append(args))
+    panel.status_message.connect(messages.append)
+
+    panel.preview.horizontalHeader().sectionClicked.emit(3)
+
+    assert not requested_sorts
+    assert "flatten it or select a scalar field" in messages[-1].lower()
+    assert "sorting unavailable" in panel.preview_column_label.text().lower()
+    assert "component or array values" in str(
+        panel.preview_model.headerData(
+            3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
+        )
+    ).lower()
+
+
 def test_extraction_column_editor_fits_inside_table_row():
     panel = DataExtractionPanel()
     panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
     panel.show()
-    item = panel.selections.item(0, 0)
 
-    panel.selections.editItem(item)
+    _inline_action(panel, 0, "renameAction").click()
     QApplication.processEvents()
 
     editor = panel.selections.findChild(QLineEdit)

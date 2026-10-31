@@ -17,6 +17,7 @@ from chemfit_dashboard.collection_plot import (
     ordered_records,
     selector_for_document,
 )
+from chemfit_dashboard.context_search import SearchHit
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.source import JsonFileSource
@@ -209,6 +210,11 @@ def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
         for series in panel.chart_view.chart().series()
     )
     assert "bins" in panel.status.text()
+
+    panel.histogram_bins.setValue(1)
+
+    assert panel.histogram_bins.minimum() == 1
+    assert "1 equal-width bin" in panel.status.text()
 
     panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("statistics"))
     assert panel.statistics_table.rowCount() == 1
@@ -574,9 +580,6 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
         lambda name, value, total: progress_updates.append((name, value, total))
     )
     monkeypatch.setattr(
-        "chemfit_dashboard.main_window.time.monotonic", lambda: 100.0
-    )
-    monkeypatch.setattr(
         window.tasks,
         "submit",
         lambda function, on_success, on_error: submitted.append(
@@ -594,6 +597,42 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
     assert failed_records == 0
     assert not cancelled
     assert progress_updates == [("search", 0, 2), ("search", 2, 2)]
+    window.collection_search.shutdown(wait_for_workers=True)
+
+
+def test_superseded_collection_search_cannot_replace_current_results():
+    window = MainWindow()
+    window._search_generation = 2  # noqa: SLF001
+    window.search_panel.show_message("Current collection has no search yet")
+    stale_hit = SearchHit(
+        (),
+        "Evaluation root",
+        "complete",
+        "fields",
+        ("output",),
+        "output",
+        "1",
+        score=1.0,
+        record_id="old-record",
+        record_name="old.json",
+    )
+
+    window._search_loaded(  # noqa: SLF001
+        1,
+        ([stale_hit], 0, False),
+        query="output",
+        include_keys=True,
+        include_values=True,
+        include_metadata=True,
+        include_components=True,
+        mode="fuzzy",
+        scope_label="whole collection",
+        searched_records=1,
+    )
+
+    assert window.search_panel.results.topLevelItemCount() == 0
+    assert window.search_panel.status.text() == "Current collection has no search yet"
+    window.collection_search.shutdown(wait_for_workers=False)
 
 
 def test_series_follows_component_identity_when_runtime_tree_shifts(tmp_path):

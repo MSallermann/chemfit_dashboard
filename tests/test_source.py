@@ -193,6 +193,7 @@ def test_cache_access_is_thread_safe(tmp_path):
     assert all(
         document.details(()).fields["output"][50] == 50 for document in documents
     )
+    assert all(document is documents[0] for document in documents)
     assert source.cache_info[0] == 1
 
 

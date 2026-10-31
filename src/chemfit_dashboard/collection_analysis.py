@@ -313,7 +313,20 @@ class CollectionAnalysisPanel(QWidget):
         self.summary_label.setText(
             f"Analyzing {count:,} evaluation{'s' if count != 1 else ''} in the background…"
         )
+        self.refresh_button.setText("Refresh")
         self.refresh_button.setEnabled(False)
+
+    def show_deferred(self, count: int) -> None:
+        """Offer explicit analysis for collections too large to scan automatically."""
+        self.summary_label.setText(
+            f"{count:,} evaluations loaded. Collection analysis is deferred to keep "
+            "the dashboard responsive; click Analyze when you need the overview."
+        )
+        self.issue_label.clear()
+        self.numeric_table.setRowCount(0)
+        self.failure_tree.clear()
+        self.refresh_button.setText("Analyze")
+        self.refresh_button.setEnabled(True)
 
     def show_error(self, message: str) -> None:
         self.summary_label.setText(message)
@@ -332,9 +345,11 @@ class CollectionAnalysisPanel(QWidget):
         self._current_occurrence = -1
         self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
+        self.refresh_button.setText("Refresh")
         self.refresh_button.setEnabled(True)
 
     def set_summary(self, summary: CollectionSummary) -> None:
+        self.refresh_button.setText("Refresh")
         self.refresh_button.setEnabled(True)
         self.summary_label.setText(
             f"{summary.total_records:,} evaluations · "

@@ -329,7 +329,7 @@ def test_large_background_search_cooperatively_yields(tmp_path, monkeypatch):
     document = source.load(source.discover([path])[0])
     yields: list[int] = []
     monkeypatch.setattr(
-        "chemfit_dashboard.context_search.time.sleep",
+        "chemfit_dashboard.search_core.time.sleep",
         lambda _duration: yields.append(1),
     )
 

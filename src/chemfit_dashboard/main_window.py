@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
@@ -116,6 +115,7 @@ from chemfit_dashboard.extraction_ui import PREVIEW_LIMIT, DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.models import ContextTreeModel, EvaluationListModel
+from chemfit_dashboard.process_search import CollectionSearchExecutor, SearchOptions
 from chemfit_dashboard.semantic import (
     NodeTrail,
     component_trail_for_path,
@@ -154,6 +154,7 @@ SESSION_HIERARCHY_TAB_SETTING = "session/hierarchy_tab"
 MAX_RECENT_LOCATIONS = 10
 SEARCH_PROGRESS_INTERVAL_SECONDS = 0.1
 DOCUMENT_ACTIVITY_DELAY_MS = 200
+AUTO_ANALYSIS_RECORD_LIMIT = 5_000
 
 
 def _report_search_progress(
@@ -185,6 +186,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.source = source or JsonFileSource()
         self.tasks = TaskRunner(self)
+        self.collection_search = CollectionSearchExecutor()
         self._collection_generation = 0
         self._load_generation = 0
         self._plot_generation = 0
@@ -391,7 +393,7 @@ class MainWindow(QMainWindow):
             self._failure_occurrence_selected
         )
         self.collection_analysis.refresh_requested.connect(
-            self._refresh_collection_analysis
+            lambda: self._refresh_collection_analysis(force=True)
         )
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.addTab(self.context_workspace, "Context inspector")
@@ -1131,6 +1133,7 @@ class MainWindow(QMainWindow):
             token.cancel()
         self.graph.view.cancel_pending_layout()
         self.tasks.cancel_pending()
+        self.collection_search.shutdown(wait_for_workers=False)
         super().closeEvent(event)
 
     def _change_font_scale(self, change: float) -> None:
@@ -2105,13 +2108,16 @@ class MainWindow(QMainWindow):
             self._remember_context_selection(path)
         return True
 
-    def _refresh_collection_analysis(self) -> None:
+    def _refresh_collection_analysis(self, *, force: bool = False) -> None:
         records = list(self.file_model.records)
         self._cancel_operation("analysis")
         self._analysis_generation += 1
         generation = self._analysis_generation
         if not records:
             self.collection_analysis.clear()
+            return
+        if not force and len(records) > AUTO_ANALYSIS_RECORD_LIMIT:
+            self.collection_analysis.show_deferred(len(records))
             return
         cancellation = self._begin_operation("analysis", "analyzing collection")
         self.collection_analysis.show_loading(len(records))
@@ -2274,7 +2280,7 @@ class MainWindow(QMainWindow):
             self.workspace_tabs.setCurrentWidget(self._tab_before_search)
             self._tab_before_search = None
 
-    def _run_field_search(self) -> None:
+    def _run_field_search(self) -> None:  # noqa: PLR0915
         query = self.field_search.text().strip()
         if not query:
             return
@@ -2317,6 +2323,24 @@ class MainWindow(QMainWindow):
         )
 
         def search_records() -> tuple[list[SearchHit], int, bool]:
+            if scope == "collection":
+                result = self.collection_search.search(
+                    records,
+                    SearchOptions(
+                        query=query,
+                        include_keys=include_keys,
+                        include_values=include_values,
+                        include_metadata=include_metadata,
+                        include_components=include_components,
+                        mode=mode,
+                    ),
+                    component_label_key=self._component_label_metadata_key,
+                    cancellation=cancellation,
+                    progress=lambda value, total: self.operation_progress.emit(
+                        "search", value, total
+                    ),
+                )
+                return result.hits, result.failed_records, result.cancelled
             hits = TopKSearchHits(MAX_RESULTS)
             failed_records = 0
             last_progress_at = time.monotonic()
@@ -2735,6 +2759,15 @@ class MainWindow(QMainWindow):
                 if extracted.status != ExtractionStatus.AVAILABLE or value is None:
                     missing.append(row.record_id)
                     continue
+                if isinstance(value, float) and math.isnan(value):
+                    missing.append(row.record_id)
+                    continue
+                if not isinstance(value, (bool, int, float, str)):
+                    message = (
+                        f"Extraction column {selector.column!r} contains non-scalar "
+                        "values; flatten it or select a scalar field before sorting"
+                    )
+                    raise ValueError(message)
                 present.append((_sortable_value(value), row.index, row.record_id))
             present.sort(key=lambda item: (item[0], item[1]))
             return tuple(item[2] for item in present), tuple(missing)
@@ -3015,7 +3048,7 @@ class MainWindow(QMainWindow):
         message.exec()
 
 
-def _sortable_value(value) -> tuple[int, object]:  # noqa: ANN001
+def _sortable_value(value: bool | float | str) -> tuple[int, object]:
     if isinstance(value, bool):
         return (0, int(value))
     if isinstance(value, (int, float)) and not (
@@ -3024,10 +3057,7 @@ def _sortable_value(value) -> tuple[int, object]:  # noqa: ANN001
         return (0, float(value))
     if isinstance(value, str):
         return (1, value.casefold())
-    return (
-        2,
-        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str),
-    )
+    raise TypeError(type(value).__name__)
 
 
 def _chevron_icon(direction: int, color: str) -> QIcon:

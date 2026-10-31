@@ -314,6 +314,7 @@ class Inspector(QWidget):
         self.tabs.addTab(self.raw, "Raw fields")
         layout.addWidget(self.tabs, 1)
         self._details: NodeDetails | None = None
+        self._populated_tabs: set[QWidget] = set()
         self._component_label = ""
         self._number_selector: NumberSelector | None = None
         self._field_selector: FieldSelector | None = None
@@ -343,6 +344,7 @@ class Inspector(QWidget):
         self.raw.value_selected.connect(
             lambda selection: self._value_selected("raw", selection)
         )
+        self.tabs.currentChanged.connect(lambda _index: self._populate_current_tab())
 
     def clear(self) -> None:
         self._details = None
@@ -360,6 +362,12 @@ class Inspector(QWidget):
         self.metadata.set_value({})
         self.structure.set_structure(None)
         self.raw.set_value({})
+        self._populated_tabs = {
+            self.summary,
+            self.metadata,
+            self.structure,
+            self.raw,
+        }
 
     def set_details(
         self, details: NodeDetails, component_label: str | None = None
@@ -377,10 +385,23 @@ class Inspector(QWidget):
         self.title.setText(self._component_label)
         recorded = "recorded" if info.recorded else "declaration only"
         self.subtitle.setText(f"Path {info.path_text} · {info.status} · {recorded}")
-        self.summary.set_value(details.fields)
-        self.metadata.set_value(details.metadata)
-        self.structure.set_structure(details.structure)
-        self.raw.set_value(details.raw)
+        self._populated_tabs.clear()
+        self._populate_current_tab()
+
+    def _populate_current_tab(self) -> None:
+        details = self._details
+        current = self.tabs.currentWidget()
+        if details is None or current is None or current in self._populated_tabs:
+            return
+        if current is self.summary:
+            self.summary.set_value(details.fields)
+        elif current is self.metadata:
+            self.metadata.set_value(details.metadata)
+        elif current is self.structure:
+            self.structure.set_structure(details.structure)
+        elif current is self.raw:
+            self.raw.set_value(details.raw)
+        self._populated_tabs.add(current)
 
     def focus_value(self, section: str, path: tuple[str | int, ...]) -> bool:
         """Open the appropriate inspector tab and reveal a searched value."""

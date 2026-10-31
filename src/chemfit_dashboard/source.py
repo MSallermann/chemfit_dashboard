@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 NodePath = tuple[int, ...]
 DEFAULT_COMPONENT_LABEL_METADATA_KEY = "name"
+COOPERATIVE_WORK_INTERVAL_SECONDS = 0.004
+COOPERATIVE_PAUSE_SECONDS = 0.001
 
 
 def alphanumeric_key(value: str) -> tuple[tuple[int, int | str], ...]:
@@ -45,6 +47,14 @@ class RecordRef:
     @property
     def location(self) -> str:
         return str(self.path.parent)
+
+
+@dataclass(slots=True)
+class _InflightDocument:
+    signature: tuple[int, int]
+    ready: threading.Event
+    document: ContextDocument | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,14 +198,14 @@ class ContextDocument:
         if self._component_label_metadata_keys is not None:
             return self._component_label_metadata_keys
         keys: set[str] = set()
-        next_yield = time.monotonic() + 0.01
+        next_yield = time.monotonic() + COOPERATIVE_WORK_INTERVAL_SECONDS
         for path in self._nodes:
             for key, value in self.details(path).metadata.items():
                 if isinstance(key, str) and isinstance(value, str) and value.strip():
                     keys.add(key)
             if time.monotonic() >= next_yield:
-                time.sleep(0)
-                next_yield = time.monotonic() + 0.01
+                time.sleep(COOPERATIVE_PAUSE_SECONDS)
+                next_yield = time.monotonic() + COOPERATIVE_WORK_INTERVAL_SECONDS
         self._component_label_metadata_keys = tuple(sorted(keys, key=str.casefold))
         return self._component_label_metadata_keys
 
@@ -204,10 +214,21 @@ class ContextDocument:
         pending: list[tuple[NodePath, Any, str, bool]] = [
             ((), self.raw, root_label, True)
         ]
-        next_yield = time.monotonic() + 0.01
+        component_label_keys: set[str] = set()
+        next_yield = time.monotonic() + COOPERATIVE_WORK_INTERVAL_SECONDS
 
         while pending:
             path, value, label, recorded = pending.pop()
+            if isinstance(value, dict):
+                metadata = value.get("meta")
+                if isinstance(metadata, dict):
+                    component_label_keys.update(
+                        key
+                        for key, candidate in metadata.items()
+                        if isinstance(key, str)
+                        and isinstance(candidate, str)
+                        and candidate.strip()
+                    )
             declaration_map = self._declarations(value)
             actual_children = self._actual_children(value)
             child_indices = sorted(
@@ -245,8 +266,11 @@ class ContextDocument:
                     ((*path, index), child_value, child_label, child_recorded)
                 )
             if time.monotonic() >= next_yield:
-                time.sleep(0)
-                next_yield = time.monotonic() + 0.01
+                time.sleep(COOPERATIVE_PAUSE_SECONDS)
+                next_yield = time.monotonic() + COOPERATIVE_WORK_INTERVAL_SECONDS
+        self._component_label_metadata_keys = tuple(
+            sorted(component_label_keys, key=str.casefold)
+        )
 
     @staticmethod
     def _actual_children(value: Any) -> list[Any]:
@@ -388,6 +412,7 @@ class JsonFileSource(ContextSource):
         )
         self._cache_bytes = 0
         self._lock = threading.RLock()
+        self._inflight: dict[str, _InflightDocument] = {}
         self._remote_cache = tempfile.TemporaryDirectory(
             prefix="chemfit-dashboard-remote-"
         )
@@ -497,7 +522,7 @@ class JsonFileSource(ContextSource):
             raise ContextSourceError(message)
         return destination
 
-    def load(self, record: RecordRef) -> ContextDocument:
+    def load(self, record: RecordRef) -> ContextDocument:  # noqa: PLR0912
         try:
             stat = record.path.stat()
         except OSError as exc:
@@ -514,38 +539,76 @@ class JsonFileSource(ContextSource):
                 self._cache_bytes -= cached[1]
                 del self._cache[record.id]
 
-        try:
-            with record.path.open(encoding="utf-8") as stream:
-                raw = json.load(stream)
-        except (OSError, json.JSONDecodeError) as exc:
-            message = f"Cannot load {record.path.name}: {exc}"
-            raise ContextSourceError(message) from exc
+            inflight = self._inflight.get(record.id)
+            if inflight is not None and inflight.signature == signature:
+                should_load = False
+            else:
+                inflight = _InflightDocument(signature, threading.Event())
+                self._inflight[record.id] = inflight
+                should_load = True
 
-        document = ContextDocument(
-            record,
-            raw,
-            component_label_metadata_key=self.component_label_metadata_key,
-        )
+        if not should_load:
+            inflight.ready.wait()
+            if inflight.error is not None:
+                raise ContextSourceError(inflight.error)
+            if inflight.document is None:
+                message = f"Concurrent load of {record.path.name} produced no document"
+                raise ContextSourceError(message)
+            return self.configure_document(inflight.document)
+
+        try:
+            try:
+                with record.path.open(encoding="utf-8") as stream:
+                    raw = json.load(stream)
+            except (OSError, json.JSONDecodeError) as exc:
+                message = f"Cannot load {record.path.name}: {exc}"
+                raise ContextSourceError(message) from exc
+
+            document = ContextDocument(
+                record,
+                raw,
+                component_label_metadata_key=self.component_label_metadata_key,
+            )
+        except Exception as error:
+            self._complete_inflight(record.id, inflight, error=str(error))
+            raise
         estimated_cost = max(1, round(stat.st_size * self.object_overhead_factor))
-        if (
-            self.cache_capacity == 0
-            or self.cache_memory_budget == 0
-            or estimated_cost > self.cache_memory_budget
-        ):
-            return document
         with self._lock:
-            previous = self._cache.pop(record.id, None)
-            if previous is not None:
-                self._cache_bytes -= previous[1]
-            self._cache[record.id] = (signature, estimated_cost, document)
-            self._cache_bytes += estimated_cost
-            while self._cache and (
-                len(self._cache) > self.cache_capacity
-                or self._cache_bytes > self.cache_memory_budget
+            if (
+                self.cache_capacity > 0
+                and self.cache_memory_budget > 0
+                and estimated_cost <= self.cache_memory_budget
             ):
-                _key, (_signature, cost, _document) = self._cache.popitem(last=False)
-                self._cache_bytes -= cost
+                previous = self._cache.pop(record.id, None)
+                if previous is not None:
+                    self._cache_bytes -= previous[1]
+                self._cache[record.id] = (signature, estimated_cost, document)
+                self._cache_bytes += estimated_cost
+                while self._cache and (
+                    len(self._cache) > self.cache_capacity
+                    or self._cache_bytes > self.cache_memory_budget
+                ):
+                    _key, (_signature, cost, _document) = self._cache.popitem(
+                        last=False
+                    )
+                    self._cache_bytes -= cost
+        self._complete_inflight(record.id, inflight, document=document)
         return document
+
+    def _complete_inflight(
+        self,
+        record_id: str,
+        inflight: _InflightDocument,
+        *,
+        document: ContextDocument | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._lock:
+            inflight.document = document
+            inflight.error = error
+            if self._inflight.get(record_id) is inflight:
+                self._inflight.pop(record_id, None)
+            inflight.ready.set()
 
 
 def _preview(value: Any, limit: int = 80) -> str:

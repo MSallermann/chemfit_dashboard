@@ -411,11 +411,11 @@ QListView::item {{ padding: 9px 7px; border-bottom: 1px solid {scheme.border}; }
 QTreeView::item, QTableView::item {{ padding: 4px; }}
 QTableWidget#extractionSelections QLineEdit {{
     background: {scheme.input}; border: 1px solid {scheme.accent}; border-radius: 2px;
-    padding: 1px 4px; margin: 0;
+    padding: 2px 4px; margin: 0;
 }}
 QTableWidget#extractionSelections QToolButton {{
     background: transparent; color: {scheme.text}; border: 1px solid transparent;
-    border-radius: 3px; padding: 3px 5px;
+    border-radius: 3px; min-height: 22px; padding: 3px 5px;
 }}
 QTableWidget#extractionSelections QToolButton:hover {{
     background: {scheme.input}; border-color: {scheme.border_strong};

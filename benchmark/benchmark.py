@@ -5,8 +5,10 @@ import json
 import os
 import resource
 import tempfile
+import threading
 import time
 import tracemalloc
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -47,6 +49,7 @@ from chemfit_dashboard.extraction import (
 from chemfit_dashboard.graph_layout import data_flow_layout
 from chemfit_dashboard.graph_view import MAX_FLOW_COMPONENTS, DataFlowPanel
 from chemfit_dashboard.models import EvaluationListModel
+from chemfit_dashboard.process_search import CollectionSearchExecutor, SearchOptions
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import iter_collection
 
@@ -129,16 +132,37 @@ def measure(
     *,
     trace_allocations: bool = True,
 ) -> Measurement:
+    stop_sampling = threading.Event()
+    process_tree_peak = [_process_tree_rss_megabytes()]
+
+    def sample_process_tree() -> None:
+        while not stop_sampling.wait(0.01):
+            process_tree_peak[0] = max(
+                process_tree_peak[0], _process_tree_rss_megabytes()
+            )
+
+    sampler = threading.Thread(target=sample_process_tree, daemon=True)
+    sampler.start()
     if trace_allocations:
         tracemalloc.start()
     started = time.perf_counter()
-    result = operation()
-    duration = time.perf_counter() - started
+    try:
+        result = operation()
+    finally:
+        duration = time.perf_counter() - started
+        stop_sampling.set()
+        sampler.join()
+        process_tree_peak[0] = max(
+            process_tree_peak[0], _process_tree_rss_megabytes()
+        )
     peak = 0
     if trace_allocations:
         _current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-    process_peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    process_peak = max(
+        process_tree_peak[0],
+        resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+    )
     gui_stall = result.max_stall_ms if isinstance(result, _GuiMeasurementResult) else None
     return Measurement(
         name,
@@ -147,6 +171,31 @@ def measure(
         process_peak,
         gui_stall,
     )
+
+
+def _process_tree_rss_megabytes() -> float:
+    """Return current Linux RSS for this process and all live descendants."""
+    pending = [os.getpid()]
+    seen: set[int] = set()
+    total_kib = 0
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+            children = Path(f"/proc/{pid}/task/{pid}/children").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            continue
+        for line in status.splitlines():
+            if line.startswith("VmRSS:"):
+                total_kib += int(line.split()[1])
+                break
+        pending.extend(int(child) for child in children.split())
+    return total_kib / 1024
 
 
 def create_collection(
@@ -302,19 +351,74 @@ def run(  # noqa: PLR0915
         )
         clear_search_caches()
 
-        def search() -> None:
-            results = {query: TopKSearchHits(120) for query in search_queries}
+        def serial_search(query: str) -> list:
+            collector = TopKSearchHits()
             for item in iter_collection(source, records):
                 if item.document is not None:
-                    index = ContextSearchIndex(item.document)
-                    for query, query_results in results.items():
-                        query_results.extend(index.search(query))
-            for query_results in results.values():
-                query_results.results()
+                    collector.extend(ContextSearchIndex(item.document).search(query))
+            return collector.results()
 
-        query_count = len(search_queries)
-        query_unit = "query" if query_count == 1 else "queries"
-        record(f"collection search ({query_count} {query_unit})", search)
+        record(
+            "serial collection search",
+            lambda: serial_search(search_queries[0]),
+        )
+        application = QApplication.instance() or QApplication([])
+        for worker_count in (1, 2, 4):
+            executor = CollectionSearchExecutor(max_workers=worker_count)
+            record(
+                f"process search {worker_count}w cold/startup",
+                lambda executor=executor: executor.search(
+                    records,
+                    SearchOptions(search_queries[0]),
+                    component_label_key="name",
+                ),
+            )
+            record(
+                f"process search {worker_count}w warm",
+                lambda executor=executor: [
+                    executor.search(
+                        records,
+                        SearchOptions(query),
+                        component_label_key="name",
+                    )
+                    for query in search_queries
+                ],
+            )
+            executor.shutdown(wait_for_workers=True)
+
+        responsive_executor = CollectionSearchExecutor(max_workers=2)
+
+        def responsive_search() -> _GuiMeasurementResult:
+            heartbeat_times: list[float] = []
+            last_heartbeat = time.perf_counter()
+
+            def heartbeat() -> None:
+                nonlocal last_heartbeat
+                now = time.perf_counter()
+                heartbeat_times.append(now - last_heartbeat)
+                last_heartbeat = now
+
+            timer = QTimer()
+            timer.setInterval(10)
+            timer.timeout.connect(heartbeat)
+            timer.start()
+            with ThreadPoolExecutor(max_workers=1) as coordinator:
+                future = coordinator.submit(
+                    responsive_executor.search,
+                    records,
+                    SearchOptions(search_queries[0]),
+                    component_label_key="name",
+                )
+                while not future.done():
+                    application.processEvents()
+                future.result()
+            timer.stop()
+            tail = time.perf_counter() - last_heartbeat
+            maximum_interval = max([tail, *heartbeat_times], default=tail)
+            return _GuiMeasurementResult(max(0.0, maximum_interval - 0.010) * 1_000)
+
+        record("process search GUI responsiveness", responsive_search)
+        responsive_executor.shutdown(wait_for_workers=True)
         selectors = (
             FieldSelector((), "fields", ("output", "loss"), "loss"),
             FieldSelector((), "fields", ("input", "parameters"), "parameters"),
@@ -369,8 +473,6 @@ def run(  # noqa: PLR0915
             "data-flow layout",
             lambda: data_flow_layout(flow_nodes, flow_edges),
         )
-
-        application = QApplication.instance() or QApplication([])
 
         model = EvaluationListModel()
         record("evaluation model build/sort", lambda: model.set_records(records))
