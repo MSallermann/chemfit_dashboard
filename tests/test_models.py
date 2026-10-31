@@ -796,6 +796,12 @@ def test_collection_overview_shows_opening_hints_when_empty(tmp_path, monkeypatc
     assert "drag and drop" in empty_text.casefold()
     assert "Ctrl+O" in empty_text
     assert "Ctrl+Shift+O" in empty_text
+    assert window.evaluation_stack.currentWidget() is window.evaluation_empty_state
+    evaluation_hint = window.evaluation_empty_state.text()
+    assert "No collection loaded" in evaluation_hint
+    assert "drag and drop" in evaluation_hint.casefold()
+    assert "Ctrl+O" in evaluation_hint
+    assert "Ctrl+Shift+O" in evaluation_hint
 
     context_path = tmp_path / "context.json"
     context_path.write_text('{"value": 1}', encoding="utf-8")
@@ -806,12 +812,14 @@ def test_collection_overview_shows_opening_hints_when_empty(tmp_path, monkeypatc
         lambda function, on_success, _on_error: on_success(function()),
     )
     window._records_discovered(records)  # noqa: SLF001
+    assert window.evaluation_stack.currentWidget() is window.file_list
     window.close_collection()
 
     closed_text = window.collection_analysis.summary_label.text()
     assert "No collection loaded" in closed_text
     assert "Ctrl+O" in closed_text
     assert "Ctrl+Shift+O" in closed_text
+    assert window.evaluation_stack.currentWidget() is window.evaluation_empty_state
 
 
 def test_evaluation_sidebar_persists_across_top_level_workspaces(qapp):

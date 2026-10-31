@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import threading
+import time
 from collections import OrderedDict
 from contextlib import suppress
 from itertools import islice
@@ -54,6 +55,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QStyle,
     QTabWidget,
     QToolButton,
@@ -150,6 +152,21 @@ SESSION_WORKSPACE_TAB_SETTING = "session/workspace_tab"
 SESSION_WORKSPACE_KEY_SETTING = "session/workspace_key"
 SESSION_HIERARCHY_TAB_SETTING = "session/hierarchy_tab"
 MAX_RECENT_LOCATIONS = 10
+SEARCH_PROGRESS_INTERVAL_SECONDS = 0.1
+
+
+def _report_search_progress(
+    emit: Callable[[str, int, int], None],
+    completed: int,
+    total: int,
+    last_progress_at: float,
+) -> float:
+    """Emit bounded-rate progress so worker updates cannot flood Qt's event queue."""
+    now = time.monotonic()
+    if completed == total or now - last_progress_at >= SEARCH_PROGRESS_INTERVAL_SECONDS:
+        emit("search", completed, total)
+        return now
+    return last_progress_at
 
 
 class MainWindow(QMainWindow):
@@ -476,7 +493,24 @@ class MainWindow(QMainWindow):
             Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self._file_copy_shortcut.activated.connect(self._copy_current_evaluation)
-        layout.addWidget(self.file_list, 1)
+        self.evaluation_empty_state = QLabel(
+            "No collection loaded.\n\n"
+            "Drag and drop a file or folder here, or use:\n"
+            "Ctrl+O — open one file\n"
+            "Ctrl+Shift+O — open one folder"
+        )
+        self.evaluation_empty_state.setObjectName("evaluationEmptyState")
+        self.evaluation_empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.evaluation_empty_state.setWordWrap(True)
+        self.evaluation_empty_state.setTextFormat(Qt.TextFormat.PlainText)
+        self.evaluation_stack = QStackedWidget()
+        self.evaluation_stack.addWidget(self.evaluation_empty_state)
+        self.evaluation_stack.addWidget(self.file_list)
+        layout.addWidget(self.evaluation_stack, 1)
+        self.file_model.modelReset.connect(self._update_evaluation_empty_state)
+        self.file_model.rowsInserted.connect(self._update_evaluation_empty_state)
+        self.file_model.rowsRemoved.connect(self._update_evaluation_empty_state)
+        self._update_evaluation_empty_state()
 
         self.focus_selected_button = QPushButton("Focus selected")
         self.focus_selected_button.setToolTip(
@@ -520,6 +554,13 @@ class MainWindow(QMainWindow):
         self.reset_order_button.clicked.connect(self._reset_collection_order)
         layout.addWidget(self.reset_order_button)
         return panel
+
+    def _update_evaluation_empty_state(self, *_args: object) -> None:
+        """Show opening instructions in the evaluation list when it has no records."""
+        target = (
+            self.file_list if self.file_model.records else self.evaluation_empty_state
+        )
+        self.evaluation_stack.setCurrentWidget(target)
 
     def _build_tree_panel(self) -> QWidget:  # noqa: PLR0915
         panel = QFrame()
@@ -960,7 +1001,8 @@ class MainWindow(QMainWindow):
         if not has_operations:
             self.activity_toggle.setChecked(False)
             self.activity_panel.hide()
-        self._rebuild_activity_panel()
+        if self.activity_panel.isVisible():
+            self._rebuild_activity_panel()
 
     def _operation_progressed(self, name: str, value: int, total: int) -> None:
         if name not in self._operation_labels:
@@ -2238,6 +2280,7 @@ class MainWindow(QMainWindow):
         def search_records() -> tuple[list[SearchHit], int, bool]:
             hits = TopKSearchHits(MAX_RESULTS)
             failed_records = 0
+            last_progress_at = time.monotonic()
             for completed, record in enumerate(records, start=1):
                 if cancellation.cancelled:
                     return [], failed_records, True
@@ -2271,7 +2314,12 @@ class MainWindow(QMainWindow):
                     failed_records += 1
                 finally:
                     if not cancellation.cancelled:
-                        self.operation_progress.emit("search", completed, count)
+                        last_progress_at = _report_search_progress(
+                            self.operation_progress.emit,
+                            completed,
+                            count,
+                            last_progress_at,
+                        )
             return hits.results(), failed_records, False
 
         self.tasks.submit(

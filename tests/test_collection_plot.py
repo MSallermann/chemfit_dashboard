@@ -569,6 +569,13 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
     window.search_scope.setCurrentIndex(window.search_scope.findData("collection"))
     window.field_search.setText("output")
     submitted = []
+    progress_updates = []
+    window.operation_progress.connect(
+        lambda name, value, total: progress_updates.append((name, value, total))
+    )
+    monkeypatch.setattr(
+        "chemfit_dashboard.main_window.time.monotonic", lambda: 100.0
+    )
     monkeypatch.setattr(
         window.tasks,
         "submit",
@@ -586,6 +593,7 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
     assert hits
     assert failed_records == 0
     assert not cancelled
+    assert progress_updates == [("search", 0, 2), ("search", 2, 2)]
 
 
 def test_series_follows_component_identity_when_runtime_tree_shifts(tmp_path):
