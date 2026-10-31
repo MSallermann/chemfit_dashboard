@@ -153,6 +153,7 @@ SESSION_WORKSPACE_KEY_SETTING = "session/workspace_key"
 SESSION_HIERARCHY_TAB_SETTING = "session/hierarchy_tab"
 MAX_RECENT_LOCATIONS = 10
 SEARCH_PROGRESS_INTERVAL_SECONDS = 0.1
+DOCUMENT_ACTIVITY_DELAY_MS = 200
 
 
 def _report_search_progress(
@@ -446,6 +447,12 @@ class MainWindow(QMainWindow):
         self.activity_panel_layout = QVBoxLayout(self.activity_panel)
         self.activity_panel_layout.setContentsMargins(10, 8, 10, 8)
         self.activity_panel_layout.setSpacing(6)
+        activity_heading = QLabel("BACKGROUND OPERATIONS")
+        activity_heading.setObjectName("sectionLabel")
+        self.activity_panel_layout.addWidget(activity_heading)
+        self._activity_rows: dict[
+            str, tuple[QWidget, QLabel, QProgressBar]
+        ] = {}
         self.activity_panel.hide()
         self._show_status("Ready")
 
@@ -950,14 +957,30 @@ class MainWindow(QMainWindow):
         self._operation_tokens[name] = token
         return token
 
-    def _begin_operation(self, name: str, label: str) -> CancellationToken:
+    def _begin_operation(
+        self, name: str, label: str, *, display_delay_ms: int = 0
+    ) -> CancellationToken:
         token = self._new_operation(name)
-        self._operation_labels[name] = label
         self._operation_progress[name] = None
+        if display_delay_ms > 0 and name not in self._operation_labels:
+            QTimer.singleShot(
+                display_delay_ms,
+                lambda: self._show_delayed_operation(name, label, token),
+            )
+            return token
+        self._show_delayed_operation(name, label, token)
+        return token
+
+    def _show_delayed_operation(
+        self, name: str, label: str, token: CancellationToken
+    ) -> None:
+        """Reveal an operation only if the same work is still active."""
+        if self._operation_tokens.get(name) is not token:
+            return
+        self._operation_labels[name] = label
         self._active_progress_name = name
         self._update_activity_status()
         self._show_status(f"Started: {label}")
-        return token
 
     def _finish_operation(self, name: str, message: str | None = None) -> None:
         self._operation_labels.pop(name, None)
@@ -999,10 +1022,14 @@ class MainWindow(QMainWindow):
                 self.activity_progress.setValue(value)
                 self.activity_progress.setFormat("%p%")
         if not has_operations:
-            self.activity_toggle.setChecked(False)
-            self.activity_panel.hide()
-        if self.activity_panel.isVisible():
             self._rebuild_activity_panel()
+            self.activity_panel.hide()
+        elif self.activity_toggle.isChecked():
+            self._rebuild_activity_panel()
+            if not self.activity_panel.isVisible():
+                self._position_activity_panel()
+                self.activity_panel.show()
+                self.activity_panel.raise_()
 
     def _operation_progressed(self, name: str, value: int, total: int) -> None:
         if name not in self._operation_labels:
@@ -1028,22 +1055,31 @@ class MainWindow(QMainWindow):
     def _rebuild_activity_panel(self) -> None:
         if not hasattr(self, "activity_panel_layout"):
             return
-        while self.activity_panel_layout.count():
-            item = self.activity_panel_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        heading = QLabel("BACKGROUND OPERATIONS")
-        heading.setObjectName("sectionLabel")
-        self.activity_panel_layout.addWidget(heading)
+        structure_changed = False
+        for name in tuple(self._activity_rows):
+            if name in self._operation_labels:
+                continue
+            row, _label, _progress_bar = self._activity_rows.pop(name)
+            self.activity_panel_layout.removeWidget(row)
+            row.deleteLater()
+            structure_changed = True
         for name, label in self._operation_labels.items():
-            row = QWidget(self.activity_panel)
-            layout = QHBoxLayout(row)
-            layout.setContentsMargins(0, 0, 0, 0)
-            operation_label = QLabel(label)
-            layout.addWidget(operation_label, 1)
-            progress_bar = QProgressBar()
-            progress_bar.setFixedWidth(180)
+            widgets = self._activity_rows.get(name)
+            if widgets is None:
+                row = QWidget(self.activity_panel)
+                layout = QHBoxLayout(row)
+                layout.setContentsMargins(0, 0, 0, 0)
+                operation_label = QLabel()
+                layout.addWidget(operation_label, 1)
+                progress_bar = QProgressBar()
+                progress_bar.setFixedWidth(180)
+                layout.addWidget(progress_bar)
+                self.activity_panel_layout.addWidget(row)
+                widgets = (row, operation_label, progress_bar)
+                self._activity_rows[name] = widgets
+                structure_changed = True
+            _row, operation_label, progress_bar = widgets
+            operation_label.setText(label)
             progress = self._operation_progress.get(name)
             if progress is None:
                 progress_bar.setRange(0, 0)
@@ -1053,11 +1089,10 @@ class MainWindow(QMainWindow):
                 progress_bar.setRange(0, max(1, total))
                 progress_bar.setValue(value)
                 progress_bar.setFormat(f"{value:,}/{total:,}  %p%")
-            layout.addWidget(progress_bar)
-            self.activity_panel_layout.addWidget(row)
-        self.activity_panel.setFixedWidth(min(520, max(360, self.width() // 3)))
-        self.activity_panel.adjustSize()
-        if self.activity_panel.isVisible():
+        if structure_changed:
+            self.activity_panel.setFixedWidth(min(520, max(360, self.width() // 3)))
+            self.activity_panel.adjustSize()
+        if structure_changed and self.activity_panel.isVisible():
             self._position_activity_panel()
 
     def _position_activity_panel(self) -> None:
@@ -1672,7 +1707,11 @@ class MainWindow(QMainWindow):
             self.search_panel.set_available(False)
         self.inspector.clear()
         self.node_count.setText("loading…")
-        self._begin_operation("document", f"loading {record.name}")
+        self._begin_operation(
+            "document",
+            f"loading {record.name}",
+            display_delay_ms=DOCUMENT_ACTIVITY_DELAY_MS,
+        )
         self.tasks.submit(
             lambda: self._load_document(record),
             lambda document: self._document_loaded(generation, document),

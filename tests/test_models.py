@@ -164,9 +164,45 @@ def test_status_footer_expands_to_show_concurrent_operations(qapp):
     qapp.processEvents()
     assert window.activity_panel.isVisible()
     assert window.activity_panel_layout.count() == 3
+    search_row = window._activity_rows["search"][0]  # noqa: SLF001
+    window.operation_progress.emit("search", 5, 10)
+    qapp.processEvents()
+    assert window.activity_panel.isVisible()
+    assert window._activity_rows["search"][0] is search_row  # noqa: SLF001
 
     window._finish_operation("plot")  # noqa: SLF001
-    assert window._operation_progress["search"] == (4, 10)  # noqa: SLF001
+    assert window._operation_progress["search"] == (5, 10)  # noqa: SLF001
+
+    window._cancel_operation("search")  # noqa: SLF001
+    assert window.activity_toggle.isChecked()
+    assert not window.activity_panel.isVisible()
+    window._begin_operation("search", "searching collection")  # noqa: SLF001
+    qapp.processEvents()
+    assert window.activity_toggle.isChecked()
+    assert window.activity_panel.isVisible()
+
+
+def test_delayed_activity_avoids_short_operation_footer_flash():
+    window = MainWindow()
+
+    quick_token = window._begin_operation(  # noqa: SLF001
+        "document", "loading quick.json", display_delay_ms=200
+    )
+    assert "document" not in window._operation_labels  # noqa: SLF001
+    window._finish_operation("document")  # noqa: SLF001
+    window._show_delayed_operation(  # noqa: SLF001
+        "document", "loading quick.json", quick_token
+    )
+    assert "document" not in window._operation_labels  # noqa: SLF001
+
+    slow_token = window._begin_operation(  # noqa: SLF001
+        "document", "loading slow.json", display_delay_ms=200
+    )
+    window._show_delayed_operation(  # noqa: SLF001
+        "document", "loading slow.json", slow_token
+    )
+    assert window._operation_labels["document"] == "loading slow.json"  # noqa: SLF001
+    window._finish_operation("document")  # noqa: SLF001
 
 
 def test_copy_feedback_appears_beside_cursor(monkeypatch, qapp):
