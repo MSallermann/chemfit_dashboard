@@ -5,12 +5,16 @@ import io
 import json
 import math
 import re
+import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCharts import (
+    QBarCategoryAxis,
+    QBarSeries,
+    QBarSet,
     QChart,
     QChartView,
     QLineSeries,
@@ -27,12 +31,14 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QShortcut,
+    QWheelEvent,
 )
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -46,6 +52,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QToolButton,
     QToolTip,
     QVBoxLayout,
@@ -71,6 +80,7 @@ if TYPE_CHECKING:
 JsonPath = tuple[str | int, ...]
 RASTER_EXPORT_DPI = 300
 SCREEN_DPI = 96
+MAX_RENDERED_POINTS_PER_SERIES = 4_000
 
 __all__ = [
     "CollectionPlotPanel",
@@ -253,6 +263,21 @@ class CollectionPlotPanel(QWidget):
         layout.addLayout(series_controls)
 
         view_controls = QHBoxLayout()
+        self.plot_mode = QComboBox()
+        self.plot_mode.addItem("Line", "line")
+        self.plot_mode.addItem("Histogram", "histogram")
+        self.plot_mode.addItem("Statistics", "statistics")
+        self.plot_mode.setToolTip("Choose a line plot, binned histogram, or statistics")
+        self.plot_mode.currentIndexChanged.connect(self._plot_mode_changed)
+        view_controls.addWidget(self.plot_mode)
+        self.histogram_bins = QSpinBox()
+        self.histogram_bins.setRange(5, 100)
+        self.histogram_bins.setValue(30)
+        self.histogram_bins.setPrefix("Bins: ")
+        self.histogram_bins.setToolTip("Number of equal-width histogram bins")
+        self.histogram_bins.valueChanged.connect(lambda _value: self._render_series())
+        self.histogram_bins.hide()
+        view_controls.addWidget(self.histogram_bins)
         view_controls.addStretch()
         self.normalize = QCheckBox("Normalize")
         self.normalize.setToolTip("Scale every series independently to the 0-1 range")
@@ -278,8 +303,18 @@ class CollectionPlotPanel(QWidget):
             QChartView.RubberBand.RectangleRubberBand
             | QChartView.RubberBand.ClickThroughRubberBand
         )
+        self.chart_view.setInteractive(True)
         self.chart_view.coordinate_changed.connect(self._cursor_moved)
         layout.addWidget(self.chart_view, 1)
+        self.statistics_table = QTableWidget(0, 7)
+        self.statistics_table.setHorizontalHeaderLabels(
+            ("Series", "Count", "Missing", "Minimum", "Maximum", "Mean", "Std dev")
+        )
+        self.statistics_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.statistics_table.hide()
+        layout.addWidget(self.statistics_table, 1)
         self.cursor_coordinates = QLabel("Cursor: —")
         self.cursor_coordinates.setSizePolicy(
             QSizePolicy.Policy.Ignored,
@@ -350,6 +385,19 @@ class CollectionPlotPanel(QWidget):
             for series in data_collection
             if series.selector not in self._hidden_selectors
         )
+        mode = self.plot_mode.currentData()
+        self.chart_view.setVisible(mode != "statistics")
+        self.statistics_table.setVisible(mode == "statistics")
+        self.histogram_bins.setVisible(mode == "histogram")
+        self.normalize.setEnabled(mode == "line")
+        self.log_y.setEnabled(mode == "line" and not self.normalize.isChecked())
+        self.reset_zoom_button.setEnabled(mode != "statistics")
+        if mode == "statistics":
+            self._render_statistics(visible_collection)
+            return
+        if mode == "histogram":
+            self._render_histogram(visible_collection)
+            return
         self._labels = data.labels
         self.selection_label.setText(
             f"Currently plotting: {data.selector.label}"
@@ -385,6 +433,7 @@ class CollectionPlotPanel(QWidget):
             )
             nonpositive += len(transformed) - len(visible)
             all_points.extend(visible)
+            rendered = _sample_points(visible, MAX_RENDERED_POINTS_PER_SERIES)
             series_colors = self._scheme.series
             color = QColor(series_colors[data_index % len(series_colors)])
             markers = QScatterSeries()
@@ -392,9 +441,9 @@ class CollectionPlotPanel(QWidget):
             markers.setMarkerSize(9.0)
             markers.setColor(color)
             markers.setBorderColor(color.lighter(145))
-            marker_points = [QPointF(point.index, point.value) for point in visible]
+            marker_points = [QPointF(point.index, point.value) for point in rendered]
             markers.replace(marker_points)
-            for point in visible:
+            for point in rendered:
                 self._rendered_points[point.index].append(
                     QPointF(point.index, point.value)
                 )
@@ -406,8 +455,19 @@ class CollectionPlotPanel(QWidget):
                 )
             lines: list[QLineSeries] = []
             contiguous: list[SeriesPoint] = []
+            run_by_index: dict[int, int] = {}
+            run = 0
+            previous_index: int | None = None
             for point in visible:
-                if contiguous and point.index != contiguous[-1].index + 1:
+                if previous_index is not None and point.index != previous_index + 1:
+                    run += 1
+                run_by_index[point.index] = run
+                previous_index = point.index
+            for point in rendered:
+                if (
+                    contiguous
+                    and run_by_index[point.index] != run_by_index[contiguous[-1].index]
+                ):
                     _append_line(chart, lines, contiguous, color)
                     contiguous = []
                 contiguous.append(point)
@@ -494,6 +554,12 @@ class CollectionPlotPanel(QWidget):
         if nonpositive:
             notes.append(f"{nonpositive:,} nonpositive omitted for log scale")
         suffix = f" · {' · '.join(notes)}" if notes else ""
+        rendered_count = sum(
+            min(len(series.points), MAX_RENDERED_POINTS_PER_SERIES)
+            for series in visible_collection
+        )
+        if rendered_count < len(all_points):
+            suffix += f" · {rendered_count:,} representative points rendered"
         self.status.setText(
             f"{len(all_points):,} points across {len(data.labels):,} contexts{suffix}"
             if len(visible_collection) > 1
@@ -546,6 +612,78 @@ class CollectionPlotPanel(QWidget):
             self.log_y.setChecked(False)
         self.log_y.setEnabled(not checked)
         self._render_series()
+
+    def _plot_mode_changed(self, _index: int) -> None:
+        self._render_series()
+
+    def _render_statistics(
+        self, visible_collection: tuple[CollectionSeries, ...]
+    ) -> None:
+        self.statistics_table.setRowCount(len(visible_collection))
+        for row, series in enumerate(visible_collection):
+            values = [point.value for point in series.points]
+            cells: tuple[str, ...] = (
+                series.selector.label,
+                f"{len(values):,}",
+                f"{series.missing_count:,}",
+                f"{min(values):.8g}" if values else "—",
+                f"{max(values):.8g}" if values else "—",
+                f"{statistics.fmean(values):.8g}" if values else "—",
+                f"{statistics.pstdev(values):.8g}" if len(values) > 1 else "0",
+            )
+            for column, value in enumerate(cells):
+                self.statistics_table.setItem(row, column, QTableWidgetItem(value))
+        self.statistics_table.resizeColumnsToContents()
+        self.status.setText(
+            f"Statistics for {len(visible_collection):,} visible series"
+            if visible_collection
+            else "All series are hidden."
+        )
+
+    def _render_histogram(
+        self, visible_collection: tuple[CollectionSeries, ...]
+    ) -> None:
+        chart = _base_chart("Binned value distribution", self._scheme)
+        values = [
+            point.value for series in visible_collection for point in series.points
+        ]
+        if not values:
+            self.chart_view.setChart(chart)
+            self.status.setText("No numeric values are available for a histogram.")
+            return
+        minimum, maximum = min(values), max(values)
+        bins = self.histogram_bins.value()
+        width = (maximum - minimum) / bins if maximum != minimum else 1.0
+        bar_series = QBarSeries()
+        for data_index, series in enumerate(visible_collection):
+            counts = [0] * bins
+            for point in series.points:
+                index = min(bins - 1, max(0, int((point.value - minimum) / width)))
+                counts[index] += 1
+            bar_set = QBarSet(series.selector.label)
+            bar_set.append(counts)
+            bar_set.setColor(
+                QColor(self._scheme.series[data_index % len(self._scheme.series)])
+            )
+            bar_series.append(bar_set)
+        chart.addSeries(bar_series)
+        categories = [f"{minimum + index * width:.4g}" for index in range(bins)]
+        x_axis = QBarCategoryAxis()
+        x_axis.append(categories)
+        x_axis.setTitleText("Bin lower bound")
+        y_axis = QValueAxis()
+        y_axis.setTitleText("Count")
+        y_axis.setLabelFormat("%d")
+        chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
+        chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
+        bar_series.attachAxis(x_axis)
+        bar_series.attachAxis(y_axis)
+        chart.legend().setVisible(len(visible_collection) > 1)
+        self.chart_view.setChart(chart)
+        self.status.setText(
+            f"{len(values):,} values in {bins} equal-width bins · "
+            f"range {minimum:.8g} to {maximum:.8g}"
+        )
 
     def _reset_zoom(self) -> None:
         self.chart_view.chart().zoomReset()
@@ -974,6 +1112,18 @@ class CoordinateChartView(QChartView):
         self.coordinate_changed.emit(chart.mapToValue(chart_position))
         super().mouseMoveEvent(event)
 
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        """Zoom interactively around the cursor while keeping axes synchronized."""
+        if not self.chart().axes():
+            super().wheelEvent(event)
+            return
+        steps = event.angleDelta().y() / 120
+        if not steps:
+            return
+        factor = 1.18**steps
+        self.chart().zoom(factor)
+        event.accept()
+
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
         self.coordinate_changed.emit(None)
         super().leaveEvent(event)
@@ -989,6 +1139,29 @@ def _selector_path_label(selector: NumberSelector) -> str:
     for segment in selector.value_path:
         value_path += f"[{segment}]" if isinstance(segment, int) else f"/{segment}"
     return f"{component} / {selector.section}{value_path}"
+
+
+def _sample_points(
+    points: tuple[SeriesPoint, ...], maximum: int
+) -> tuple[SeriesPoint, ...]:
+    """Bound Qt scene complexity while retaining endpoints and the full range."""
+    if len(points) <= maximum:
+        return points
+    step = (len(points) - 1) / (maximum - 1)
+    indexes = {0, len(points) - 1}
+    indexes.update(round(index * step) for index in range(1, maximum - 1))
+    required = {
+        0,
+        len(points) - 1,
+        min(range(len(points)), key=lambda index: points[index].value),
+        max(range(len(points)), key=lambda index: points[index].value),
+    }
+    indexes.update(required)
+    if len(indexes) > maximum:
+        removable = [index for index in sorted(indexes) if index not in required]
+        for index in removable[: len(indexes) - maximum]:
+            indexes.remove(index)
+    return tuple(points[index] for index in sorted(indexes))
 
 
 def _selected_value(document: ContextDocument, selector: NumberSelector) -> Any:

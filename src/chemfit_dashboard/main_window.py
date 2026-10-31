@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import math
 import re
 import threading
 from collections import OrderedDict
@@ -16,9 +18,12 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     Qt,
     QTimer,
+    QUrl,
+    Signal,
 )
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QColor,
     QCursor,
     QFont,
@@ -28,6 +33,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -45,6 +51,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QStyle,
@@ -60,7 +67,9 @@ from chemfit_dashboard.appearance import (
     COLOR_SCHEMES,
     COMPONENT_LABEL_METADATA_KEY_SETTING,
     DEFAULT_COLOR_SCHEME,
+    DENSITY_SETTING,
     FONT_SCALE_SETTING,
+    STYLE_PROFILE_SETTING,
     ColorScheme,
     application_settings,
     color_scheme,
@@ -92,6 +101,7 @@ from chemfit_dashboard.context_search import (
 )
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
+    ExtractionStatus,
     FieldSelector,
     export_csv,
     export_jsonl,
@@ -143,6 +153,8 @@ MAX_RECENT_LOCATIONS = 10
 
 
 class MainWindow(QMainWindow):
+    operation_progress = Signal(str, int, int)
+
     def __init__(  # noqa: PLR0915
         self,
         source: ContextSource | None = None,
@@ -192,8 +204,13 @@ class MainWindow(QMainWindow):
         self._restored_record_path: str | None = None
         self._font_scale = 1.0
         self._color_scheme_key = DEFAULT_COLOR_SCHEME
+        self._style_profile = "classic"
+        self._density = "comfortable"
         self._base_font: QFont | None = None
         self._base_stylesheet = ""
+        self._operation_labels: dict[str, str] = {}
+        self._operation_progress: dict[str, tuple[int, int] | None] = {}
+        self._active_progress_name: str | None = None
         self._expanded_data_flow_dialog: QDialog | None = None
         self._data_flow_placeholder: QWidget | None = None
         self._data_flow_tab_index = 1
@@ -212,6 +229,7 @@ class MainWindow(QMainWindow):
         self.resize(1460, 860)
         self.setMinimumSize(980, 620)
         self._build_ui()
+        self.operation_progress.connect(self._operation_progressed)
         self._build_menu()
         self._clipboard_toast = QLabel(self)
         self._clipboard_toast.setObjectName("clipboardToast")
@@ -260,6 +278,12 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             font_scale = 1.0
         self._font_scale = min(1.6, max(0.8, round(font_scale, 1)))
+        self._style_profile = str(
+            self._settings.value(STYLE_PROFILE_SETTING, "classic") or "classic"
+        )
+        self._density = str(
+            self._settings.value(DENSITY_SETTING, "comfortable") or "comfortable"
+        )
         saved_scheme = self._settings.value(COLOR_SCHEME_SETTING, DEFAULT_COLOR_SCHEME)
         self._color_scheme_key = color_scheme(str(saved_scheme)).key
         scheme = set_active_color_scheme(self._color_scheme_key)
@@ -271,7 +295,9 @@ class MainWindow(QMainWindow):
             else:
                 self._base_font = QFont(application.font())
                 application.setProperty("chemfitBaseFont", self._base_font)
-        self._base_stylesheet = stylesheet_for(scheme)
+        self._base_stylesheet = stylesheet_for(
+            scheme, style_profile=self._style_profile, density=self._density
+        )
         self._apply_application_font()
         self._apply_application_stylesheet()
 
@@ -305,18 +331,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.back_button)
         header_layout.addWidget(self.forward_button)
         header_layout.addStretch()
-        scheme_label = QLabel("COLOR")
-        scheme_label.setObjectName("sectionLabel")
-        header_layout.addWidget(scheme_label)
-        self.color_scheme = QComboBox()
-        self.color_scheme.setToolTip("Choose and persist the interface color scheme")
-        for scheme in COLOR_SCHEMES:
-            self.color_scheme.addItem(scheme.label, scheme.key)
-        scheme_index = self.color_scheme.findData(self._color_scheme_key)
-        self.color_scheme.setCurrentIndex(max(0, scheme_index))
-        self.color_scheme.currentIndexChanged.connect(self._color_scheme_changed)
-        header_layout.addWidget(self.color_scheme)
-        files_button = QPushButton("Open files")
+        files_button = QPushButton("Open file")
         files_button.clicked.connect(self.open_files)
         directory_button = QPushButton("Open directory")
         directory_button.clicked.connect(self.open_directory)
@@ -341,6 +356,9 @@ class MainWindow(QMainWindow):
         self.inspector.plot_requested.connect(self._plot_requested)
         self.inspector.plot_add_requested.connect(self._plot_add_requested)
         self.inspector.order_requested.connect(self._order_requested)
+        self.inspector.order_descending_requested.connect(
+            lambda selector: self._order_requested(selector, descending=True)
+        )
         self.inspector.extraction_requested.connect(self._add_extraction_selector)
         self.inspector.component_extraction_requested.connect(
             self._add_extraction_selector
@@ -369,6 +387,7 @@ class MainWindow(QMainWindow):
         self.extraction.selectors_changed.connect(self._refresh_extraction_preview)
         self.extraction.selectors_changed.connect(self._update_extraction_tab_badge)
         self.extraction.export_requested.connect(self._export_extraction)
+        self.extraction.sort_requested.connect(self._order_extraction_requested)
         self.workspace_tabs.setObjectName("workspaceTabs")
         self.workspace_tabs.tabBar().setObjectName("workspaceTabBar")
         self._extraction_tab_index = self.workspace_tabs.addTab(
@@ -388,7 +407,30 @@ class MainWindow(QMainWindow):
         self.main_workspace.setSizes([275, 1185])
         outer.addWidget(self.main_workspace, 1)
         self.setCentralWidget(container)
-        self.statusBar().showMessage("Ready")
+        self.activity_toggle = QToolButton()
+        self.activity_toggle.setCheckable(True)
+        self.activity_toggle.setAutoRaise(True)
+        self.activity_toggle.setText("\N{BLACK UP-POINTING TRIANGLE}")
+        self.activity_toggle.setToolTip("Show all background operations")
+        self.activity_toggle.toggled.connect(self._toggle_activity_panel)
+        self.activity_toggle.hide()
+        self.statusBar().addPermanentWidget(self.activity_toggle)
+        self.activity_status = QLabel()
+        self.activity_status.setObjectName("activityStatus")
+        self.statusBar().addPermanentWidget(self.activity_status)
+        self.activity_progress = QProgressBar()
+        self.activity_progress.setFixedWidth(150)
+        self.activity_progress.setTextVisible(True)
+        self.activity_progress.hide()
+        self.statusBar().addPermanentWidget(self.activity_progress)
+        self.activity_panel = QFrame(self)
+        self.activity_panel.setObjectName("activityPanel")
+        self.activity_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        self.activity_panel_layout = QVBoxLayout(self.activity_panel)
+        self.activity_panel_layout.setContentsMargins(10, 8, 10, 8)
+        self.activity_panel_layout.setSpacing(6)
+        self.activity_panel.hide()
+        self._show_status("Ready")
 
     def _build_evaluation_panel(self) -> QWidget:  # noqa: PLR0915
         panel = QFrame()
@@ -427,7 +469,21 @@ class MainWindow(QMainWindow):
         self.file_list.selectionModel().selectionChanged.connect(
             self._evaluation_selected
         )
+        self._file_copy_shortcut = QShortcut(
+            QKeySequence.StandardKey.Copy, self.file_list
+        )
+        self._file_copy_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._file_copy_shortcut.activated.connect(self._copy_current_evaluation)
         layout.addWidget(self.file_list, 1)
+
+        self.focus_selected_button = QPushButton("Focus selected")
+        self.focus_selected_button.setToolTip(
+            "Reveal and center the currently loaded evaluation"
+        )
+        self.focus_selected_button.clicked.connect(self._focus_selected_record)
+        layout.addWidget(self.focus_selected_button)
 
         self.file_count = QLabel("No files loaded")
         self.file_count.setObjectName("mutedLabel")
@@ -439,14 +495,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.order_status)
         order_controls = QHBoxLayout()
         order_controls.setSpacing(6)
-        self.ascending_order_button = QPushButton("Ascending")
+        self.ascending_order_button = QPushButton("Sort ↑")
         self.ascending_order_button.setToolTip("Sort the collection in ascending order")
         self.ascending_order_button.setEnabled(False)
         self.ascending_order_button.clicked.connect(
             lambda: self._set_collection_order(descending=False)
         )
         order_controls.addWidget(self.ascending_order_button)
-        self.descending_order_button = QPushButton("Descending")
+        self.descending_order_button = QPushButton("Sort ↓")
         self.descending_order_button.setToolTip(
             "Sort the collection in descending order"
         )
@@ -531,8 +587,8 @@ class MainWindow(QMainWindow):
         self.search_mode.currentIndexChanged.connect(self._search_mode_changed)
         search_controls.addWidget(self.search_mode)
         self.search_scope = QComboBox()
-        self.search_scope.addItem("Current evaluation", "current")
         self.search_scope.addItem("Whole collection", "collection")
+        self.search_scope.addItem("Current evaluation", "current")
         self.search_scope.setToolTip(
             "Search one evaluation or every loaded context file"
         )
@@ -587,6 +643,11 @@ class MainWindow(QMainWindow):
         self.tree.header().resizeSection(1, 110)
         self.tree.header().resizeSection(2, 220)
         self.tree.selectionModel().selectionChanged.connect(self._context_selected)
+        self._tree_copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self.tree)
+        self._tree_copy_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._tree_copy_shortcut.activated.connect(self._copy_current_tree_component)
 
         self.data_flow = DataFlowPanel()
         # ``graph`` remains a private compatibility handle for integrations
@@ -620,9 +681,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.hierarchy_tabs, 1)
         return panel
 
-    def _build_menu(self) -> None:
+    def _build_menu(self) -> None:  # noqa: PLR0915
         file_menu = self.menuBar().addMenu("&File")
-        open_files = QAction("Open &files…", self)
+        open_files = QAction("Open &file…", self)
         open_files.setShortcut(QKeySequence.StandardKey.Open)
         open_files.triggered.connect(self.open_files)
         file_menu.addAction(open_files)
@@ -630,6 +691,13 @@ class MainWindow(QMainWindow):
         open_directory.setShortcut("Ctrl+Shift+O")
         open_directory.triggered.connect(self.open_directory)
         file_menu.addAction(open_directory)
+        file_menu.addSeparator()
+        add_files = QAction("&Add files to collection…", self)
+        add_files.triggered.connect(self.add_files_to_collection)
+        file_menu.addAction(add_files)
+        add_directory = QAction("Add &directory to collection…", self)
+        add_directory.triggered.connect(self.add_directory_to_collection)
+        file_menu.addAction(add_directory)
         self.recent_menu = QMenu("Open &recent", self)
         file_menu.addMenu(self.recent_menu)
         self._rebuild_recent_menu()
@@ -678,6 +746,64 @@ class MainWindow(QMainWindow):
         navigate_menu.addAction(self.forward_action)
         self.forward_button.setDefaultAction(self.forward_action)
         self._set_navigation_icons(color_scheme(self._color_scheme_key))
+
+        settings_menu = self.menuBar().addMenu("&Settings")
+        self.settings_menu = settings_menu
+        self.color_scheme = QComboBox(self)
+        self.color_scheme.hide()
+        self.theme_menu = settings_menu.addMenu("Theme")
+        self._theme_actions = QActionGroup(self)
+        self._theme_actions.setExclusive(True)
+        for scheme in COLOR_SCHEMES:
+            self.color_scheme.addItem(scheme.label, scheme.key)
+            action = self.theme_menu.addAction(scheme.label)
+            action.setCheckable(True)
+            action.setData(scheme.key)
+            action.setChecked(scheme.key == self._color_scheme_key)
+            self._theme_actions.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False,
+                key=scheme.key: self.color_scheme.setCurrentIndex(
+                    self.color_scheme.findData(key)
+                )
+            )
+        scheme_index = self.color_scheme.findData(self._color_scheme_key)
+        self.color_scheme.setCurrentIndex(max(0, scheme_index))
+        self.color_scheme.currentIndexChanged.connect(self._color_scheme_changed)
+
+        style_menu = settings_menu.addMenu("Interface style")
+        self._style_actions = QActionGroup(self)
+        self._style_actions.setExclusive(True)
+        for label, key in (("Classic", "classic"), ("Lightweight", "lightweight")):
+            action = style_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == self._style_profile)
+            self._style_actions.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, value=key: self._set_style_profile(value)
+            )
+
+        density_menu = settings_menu.addMenu("Spacing")
+        self._density_actions = QActionGroup(self)
+        self._density_actions.setExclusive(True)
+        for label, key in (
+            ("Compact", "compact"),
+            ("Comfortable", "comfortable"),
+            ("Spacious", "spacious"),
+        ):
+            action = density_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == self._density)
+            self._density_actions.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, value=key: self._set_density(value)
+            )
+
+        help_menu = self.menuBar().addMenu("&Help")
+        shortcuts_action = QAction("Keyboard shortcuts…", self)
+        shortcuts_action.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        shortcuts_action.triggered.connect(self._show_keyboard_shortcuts)
+        help_menu.addAction(shortcuts_action)
 
     def _set_navigation_icons(self, scheme: ColorScheme) -> None:
         self.back_action.setIcon(_chevron_icon(-1, scheme.text_strong))
@@ -783,10 +909,142 @@ class MainWindow(QMainWindow):
         self._operation_tokens[name] = token
         return token
 
+    def _begin_operation(self, name: str, label: str) -> CancellationToken:
+        token = self._new_operation(name)
+        self._operation_labels[name] = label
+        self._operation_progress[name] = None
+        self._active_progress_name = name
+        self._update_activity_status()
+        self._show_status(f"Started: {label}")
+        return token
+
+    def _finish_operation(self, name: str, message: str | None = None) -> None:
+        self._operation_labels.pop(name, None)
+        self._operation_progress.pop(name, None)
+        self._operation_tokens.pop(name, None)
+        if self._active_progress_name == name:
+            self._active_progress_name = next(
+                reversed(self._operation_labels), None
+            )
+        self._update_activity_status()
+        if message:
+            self._show_status(message, 4000)
+
+    def _update_activity_status(self) -> None:
+        if not hasattr(self, "activity_status"):
+            return
+        labels = tuple(self._operation_labels.values())
+        active_name = self._active_progress_name
+        if active_name not in self._operation_labels:
+            active_name = next(reversed(self._operation_labels), None)
+            self._active_progress_name = active_name
+        activity_text = ""
+        if labels and active_name is not None:
+            activity_text = f"● Working: {self._operation_labels[active_name]}"
+            if len(labels) > 1:
+                activity_text += f" (+{len(labels) - 1})"
+        self.activity_status.setText(activity_text)
+        has_operations = bool(labels)
+        self.activity_toggle.setVisible(has_operations)
+        self.activity_progress.setVisible(has_operations)
+        if active_name is not None:
+            progress = self._operation_progress.get(active_name)
+            if progress is None:
+                self.activity_progress.setRange(0, 0)
+                self.activity_progress.setFormat("")
+            else:
+                value, total = progress
+                self.activity_progress.setRange(0, max(1, total))
+                self.activity_progress.setValue(value)
+                self.activity_progress.setFormat("%p%")
+        if not has_operations:
+            self.activity_toggle.setChecked(False)
+            self.activity_panel.hide()
+        self._rebuild_activity_panel()
+
+    def _operation_progressed(self, name: str, value: int, total: int) -> None:
+        if name not in self._operation_labels:
+            return
+        self._operation_progress[name] = (value, max(1, total))
+        self._active_progress_name = name
+        self._update_activity_status()
+
+    def _toggle_activity_panel(self, expanded: bool) -> None:
+        self.activity_toggle.setText(
+            "\N{BLACK DOWN-POINTING TRIANGLE}"
+            if expanded
+            else "\N{BLACK UP-POINTING TRIANGLE}"
+        )
+        if expanded and self._operation_labels:
+            self._rebuild_activity_panel()
+            self._position_activity_panel()
+            self.activity_panel.show()
+            self.activity_panel.raise_()
+        else:
+            self.activity_panel.hide()
+
+    def _rebuild_activity_panel(self) -> None:
+        if not hasattr(self, "activity_panel_layout"):
+            return
+        while self.activity_panel_layout.count():
+            item = self.activity_panel_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        heading = QLabel("BACKGROUND OPERATIONS")
+        heading.setObjectName("sectionLabel")
+        self.activity_panel_layout.addWidget(heading)
+        for name, label in self._operation_labels.items():
+            row = QWidget(self.activity_panel)
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(0, 0, 0, 0)
+            operation_label = QLabel(label)
+            layout.addWidget(operation_label, 1)
+            progress_bar = QProgressBar()
+            progress_bar.setFixedWidth(180)
+            progress = self._operation_progress.get(name)
+            if progress is None:
+                progress_bar.setRange(0, 0)
+                progress_bar.setFormat("")
+            else:
+                value, total = progress
+                progress_bar.setRange(0, max(1, total))
+                progress_bar.setValue(value)
+                progress_bar.setFormat(f"{value:,}/{total:,}  %p%")
+            layout.addWidget(progress_bar)
+            self.activity_panel_layout.addWidget(row)
+        self.activity_panel.setFixedWidth(min(520, max(360, self.width() // 3)))
+        self.activity_panel.adjustSize()
+        if self.activity_panel.isVisible():
+            self._position_activity_panel()
+
+    def _position_activity_panel(self) -> None:
+        if not hasattr(self, "activity_panel"):
+            return
+        status_geometry = self.statusBar().geometry()
+        x = max(8, self.width() - self.activity_panel.width() - 8)
+        y = max(8, status_geometry.top() - self.activity_panel.height() - 4)
+        self.activity_panel.move(x, y)
+
+    def _show_status(self, message: str, timeout: int = 0) -> None:
+        self.statusBar().showMessage(message, timeout)
+
     def _cancel_operation(self, name: str) -> None:
         token = self._operation_tokens.get(name)
         if token is not None:
             token.cancel()
+        self._operation_labels.pop(name, None)
+        self._operation_progress.pop(name, None)
+        if self._active_progress_name == name:
+            self._active_progress_name = next(
+                reversed(self._operation_labels), None
+            )
+        self._update_activity_status()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
+        super().resizeEvent(event)
+        if hasattr(self, "activity_panel") and self.activity_panel.isVisible():
+            self._position_activity_panel()
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
         self._save_session_state()
@@ -821,11 +1079,16 @@ class MainWindow(QMainWindow):
         key = str(self.color_scheme.currentData())
         scheme = set_active_color_scheme(key)
         self._color_scheme_key = scheme.key
-        self._base_stylesheet = stylesheet_for(scheme)
+        self._base_stylesheet = stylesheet_for(
+            scheme, style_profile=self._style_profile, density=self._density
+        )
         self._apply_application_stylesheet()
         self._settings.setValue(COLOR_SCHEME_SETTING, scheme.key)
         self._settings.sync()
         self._set_navigation_icons(scheme)
+        if hasattr(self, "_theme_actions"):
+            for action in self._theme_actions.actions():
+                action.setChecked(action.data() == scheme.key)
         self.graph.set_color_scheme(scheme)
         self.collection_plot.set_color_scheme(scheme)
         self.file_list.viewport().update()
@@ -833,6 +1096,50 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Color scheme: {scheme.label} · saved in {self._settings.fileName()}",
             4000,
+        )
+
+    def _set_style_profile(self, profile: str) -> None:
+        self._style_profile = profile
+        self._settings.setValue(STYLE_PROFILE_SETTING, profile)
+        self._settings.sync()
+        self._base_stylesheet = stylesheet_for(
+            color_scheme(self._color_scheme_key),
+            style_profile=self._style_profile,
+            density=self._density,
+        )
+        self._apply_application_stylesheet()
+        self._show_status(
+            "Interface style: Lightweight"
+            if profile == "lightweight"
+            else "Interface style: Classic",
+            3000,
+        )
+
+    def _set_density(self, density: str) -> None:
+        self._density = density
+        self._settings.setValue(DENSITY_SETTING, density)
+        self._settings.sync()
+        self._base_stylesheet = stylesheet_for(
+            color_scheme(self._color_scheme_key),
+            style_profile=self._style_profile,
+            density=self._density,
+        )
+        self._apply_application_stylesheet()
+        self._show_status(f"Interface spacing: {density}", 3000)
+
+    def _show_keyboard_shortcuts(self) -> None:
+        QMessageBox.information(
+            self,
+            "Keyboard shortcuts",
+            "Ctrl+O  Open one context file\n"
+            "Ctrl+Shift+O  Open one directory\n"
+            "Ctrl+F  Search contexts\n"
+            "Esc  Clear search and return to the previous workspace\n"
+            "Ctrl+C  Copy the selection in trees, tables, plots, and previews\n"
+            "Alt+Left / Alt+Right  Navigate context history\n"
+            "Ctrl+W  Close the current collection\n"
+            "Ctrl+Q  Quit\n"
+            "F1  Show this help",
         )
 
     def _component_label_key_changed(self) -> None:
@@ -913,19 +1220,40 @@ class MainWindow(QMainWindow):
         application.setFont(font)
 
     def open_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
+        path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open ChemFit context files",
+            "Open ChemFit context file",
             "",
             "JSON files (*.json);;All files (*)",
         )
-        if paths:
-            self.add_locations(paths)
+        if path:
+            if self.file_model.records:
+                self.close_collection()
+            self.add_locations([path])
 
     def open_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open context directory")
         if path:
+            if self.file_model.records:
+                self.close_collection()
             self.add_locations([path])
+
+    def add_files_to_collection(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add context files to collection",
+            "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if paths:
+            self.add_locations(paths, append=True)
+
+    def add_directory_to_collection(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self, "Add context directory to collection"
+        )
+        if path:
+            self.add_locations([path], append=True)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802, ANN001
         if self._drop_locations(event.mimeData()):
@@ -940,7 +1268,12 @@ class MainWindow(QMainWindow):
             return
         if self.file_model.records:
             self.close_collection()
-        self.add_locations(locations)
+        self.add_locations(locations[:1])
+        if len(locations) > 1:
+            self._show_status(
+                "Opened the first dropped item; use File > Add files to add more.",
+                5000,
+            )
         event.acceptProposedAction()
 
     @staticmethod
@@ -949,13 +1282,21 @@ class MainWindow(QMainWindow):
             return []
         locations: list[str] = []
         for url in mime_data.urls():
-            if not url.isLocalFile():
+            if not isinstance(url, QUrl):
                 continue
-            path = Path(url.toLocalFile()).expanduser()
-            if path.is_dir() or (path.is_file() and path.suffix.casefold() == ".json"):
-                resolved = str(path.resolve())
-                if resolved not in locations:
-                    locations.append(resolved)
+            if url.isLocalFile():
+                path = Path(url.toLocalFile()).expanduser()
+                if path.is_dir() or (
+                    path.is_file() and path.suffix.casefold() == ".json"
+                ):
+                    resolved = str(path.resolve())
+                    if resolved not in locations:
+                        locations.append(resolved)
+                continue
+            if url.isValid() and url.scheme() not in {"", "file"}:
+                remote = url.toString()
+                if remote not in locations:
+                    locations.append(remote)
         return locations
 
     def _clipboard_copied(self, message: str) -> None:
@@ -963,6 +1304,47 @@ class MainWindow(QMainWindow):
         # Queue the toast so it is raised after that teardown instead of beneath it.
         self._pending_clipboard_message = message
         self._clipboard_toast_show_timer.start(0)
+        self._show_status(message, 2500)
+
+    def _copy_current_evaluation(self) -> None:
+        record = self.file_model.record(
+            self.file_proxy.mapToSource(self.file_list.currentIndex())
+        )
+        if record is not None:
+            QApplication.clipboard().setText(record.name)
+            self._clipboard_copied("Copied evaluation filename")
+
+    def _copy_current_tree_component(self) -> None:
+        info = self.tree_model.node_info(self.tree.currentIndex())
+        if info is None or self._current_document is None:
+            return
+        QApplication.clipboard().setText(
+            self._current_document.component_label(info.path)
+        )
+        self._clipboard_copied("Copied component name")
+
+    def _focus_selected_record(self) -> None:
+        record_id = self._selected_record_id()
+        if record_id is None and self._current_document is not None:
+            record_id = self._current_document.record.id
+        if record_id is None:
+            self._show_status("No evaluation is selected.", 3000)
+            return
+        if self.search.text():
+            self.search.clear()
+        source_index = self.file_model.index_for_record_id(record_id)
+        proxy_index = self.file_proxy.mapFromSource(source_index)
+        if not proxy_index.isValid():
+            return
+        parent = proxy_index.parent()
+        while parent.isValid():
+            self.file_list.expand(parent)
+            parent = parent.parent()
+        self.file_list.setCurrentIndex(proxy_index)
+        self.file_list.scrollTo(
+            proxy_index, QAbstractItemView.ScrollHint.PositionAtCenter
+        )
+        self.file_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _show_clipboard_toast(self) -> None:
         message = self._pending_clipboard_message
@@ -1069,6 +1451,10 @@ class MainWindow(QMainWindow):
         self.tasks.cancel_pending()
         self.graph.view.cancel_pending_layout()
         self._operation_tokens.clear()
+        self._operation_labels.clear()
+        self._operation_progress.clear()
+        self._active_progress_name = None
+        self._update_activity_status()
         self._collection_generation += 1
         self._load_generation += 1
         self._plot_generation += 1
@@ -1123,9 +1509,16 @@ class MainWindow(QMainWindow):
             self._settings.sync()
         self.statusBar().showMessage("Closed context collection", 3000)
 
-    def add_locations(self, locations: Sequence[str | Path]) -> None:
+    def add_locations(
+        self, locations: Sequence[str | Path], *, append: bool = False
+    ) -> None:
         locations = [
-            str(Path(location).expanduser().resolve()) for location in locations
+            (
+                str(location)
+                if isinstance(location, str) and "://" in location
+                else str(Path(location).expanduser().resolve())
+            )
+            for location in locations
         ]
         if self._session_enabled:
             for location in locations:
@@ -1143,36 +1536,58 @@ class MainWindow(QMainWindow):
             self._settings.sync()
             self._rebuild_recent_menu()
         collection_generation = self._collection_generation
-        self.statusBar().showMessage("Scanning for context files…")
+        self._begin_operation("discovery", "scanning context files")
+
+        def discovery_failed(details: str) -> None:
+            self._finish_operation("discovery")
+            self._show_error("Could not scan locations", details)
+
         self.tasks.submit(
             lambda: self.source.discover(locations),
-            lambda records: self._records_discovered(records, collection_generation),
-            lambda details: self._show_error("Could not scan locations", details),
+            lambda records: self._records_discovered(
+                records, collection_generation, append=append
+            ),
+            discovery_failed,
         )
 
     def _records_discovered(
         self,
         records: list[RecordRef],
         collection_generation: int | None = None,
+        *,
+        append: bool = False,
     ) -> None:
         if (
             collection_generation is not None
             and collection_generation != self._collection_generation
         ):
             return
+        selected_id = (
+            self._current_document.record.id
+            if self._current_document is not None
+            else self._selected_record_id()
+        )
+        if append:
+            merged = {record.id: record for record in self.file_model.records}
+            merged.update({record.id: record for record in records})
+            records = list(merged.values())
         self.file_model.set_records(records)
         count = len(self.file_model.records)
         self.file_count.setText(f"{count} file{'s' if count != 1 else ''}")
         self.ascending_order_button.setEnabled(count > 1)
         self.descending_order_button.setEnabled(count > 1)
         self.close_collection_action.setEnabled(count > 0)
-        self.statusBar().showMessage(f"Found {len(records)} context files", 3500)
+        self._finish_operation("discovery", f"Found {len(records)} context files")
         self._refresh_collection_analysis()
         self._refresh_extraction_preview(self.extraction.selectors)
         if not self.file_list.currentIndex().isValid() and count:
             root_index = self.file_proxy.index(0, 0)
             self.file_list.expand(root_index)
             source_index = self.file_model.first_record_index()
+            if selected_id is not None:
+                selected_index = self.file_model.index_for_record_id(selected_id)
+                if selected_index.isValid():
+                    source_index = selected_index
             if self._restored_record_path is not None:
                 restored = next(
                     (
@@ -1215,18 +1630,25 @@ class MainWindow(QMainWindow):
             self.search_panel.set_available(False)
         self.inspector.clear()
         self.node_count.setText("loading…")
-        self.statusBar().showMessage(f"Loading {record.name}…")
+        self._begin_operation("document", f"loading {record.name}")
         self.tasks.submit(
-            lambda: self.source.configure_document(self.source.load(record)),
+            lambda: self._load_document(record),
             lambda document: self._document_loaded(generation, document),
             lambda details: self._load_failed(generation, record, details),
         )
+
+    def _load_document(self, record: RecordRef) -> ContextDocument:
+        document = self.source.configure_document(self.source.load(record))
+        # Warm this collection-wide metadata scan off the GUI thread.
+        _ = document.component_label_metadata_keys
+        return document
 
     def _document_loaded(  # noqa: PLR0912, PLR0915
         self, generation: int, document: ContextDocument
     ) -> None:
         if generation != self._load_generation:
             return
+        self._finish_operation("document")
         document.set_component_label_metadata_key(self._component_label_metadata_key)
         self._current_document = document
         current_key = self.component_label_key.currentText()
@@ -1319,6 +1741,7 @@ class MainWindow(QMainWindow):
     def _load_failed(self, generation: int, record: RecordRef, details: str) -> None:
         if generation != self._load_generation:
             return
+        self._finish_operation("document")
         self._navigation_replaying = False
         if (
             self._pending_search_hit is not None
@@ -1603,12 +2026,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_collection_analysis(self) -> None:
         records = list(self.file_model.records)
+        self._cancel_operation("analysis")
         self._analysis_generation += 1
         generation = self._analysis_generation
-        cancellation = self._new_operation("analysis")
         if not records:
-            self.collection_analysis.show_error("No context collection is loaded.")
+            self.collection_analysis.clear()
             return
+        cancellation = self._begin_operation("analysis", "analyzing collection")
         self.collection_analysis.show_loading(len(records))
 
         def load_summary() -> CollectionSummary:
@@ -1628,11 +2052,13 @@ class MainWindow(QMainWindow):
 
     def _analysis_loaded(self, generation: int, summary: CollectionSummary) -> None:
         if generation == self._analysis_generation:
+            self._finish_operation("analysis", "Finished analyzing collection")
             self.collection_analysis.set_summary(summary)
 
     def _analysis_failed(self, generation: int, details: str) -> None:
         if generation != self._analysis_generation:
             return
+        self._finish_operation("analysis")
         logger.error("Could not analyze context collection\n%s", details)
         self.collection_analysis.show_error("Could not build the collection summary.")
 
@@ -1739,12 +2165,8 @@ class MainWindow(QMainWindow):
             self.search_panel.show_message(
                 "Type above to search context fields and values."
             )
-            if (
-                self.workspace_tabs.currentWidget() is self.search_workspace
-                and self._tab_before_search is not None
-            ):
-                self.workspace_tabs.setCurrentWidget(self._tab_before_search)
-            self._tab_before_search = None
+            # Stay in Search when the final character is deleted. The explicit
+            # Escape action handles returning to the previous workspace.
 
     def _focus_field_search(self) -> None:
         current = self.workspace_tabs.currentWidget()
@@ -1757,6 +2179,12 @@ class MainWindow(QMainWindow):
     def _clear_field_search(self) -> None:
         if self.field_search.text():
             self.field_search.clear()
+            if (
+                self.workspace_tabs.currentWidget() is self.search_workspace
+                and self._tab_before_search is not None
+            ):
+                self.workspace_tabs.setCurrentWidget(self._tab_before_search)
+                self._tab_before_search = None
             return
         if (
             self.workspace_tabs.currentWidget() is self.search_workspace
@@ -1799,8 +2227,9 @@ class MainWindow(QMainWindow):
 
         self._search_generation += 1
         generation = self._search_generation
-        cancellation = self._new_operation("search")
+        cancellation = self._begin_operation("search", "searching collection")
         count = len(records)
+        self.operation_progress.emit("search", 0, count)
         self.search_panel.show_loading(
             f"Searching {count:,} evaluation{'s' if count != 1 else ''} "
             "in the background…"
@@ -1809,7 +2238,7 @@ class MainWindow(QMainWindow):
         def search_records() -> tuple[list[SearchHit], int, bool]:
             hits = TopKSearchHits(MAX_RESULTS)
             failed_records = 0
-            for record in records:
+            for completed, record in enumerate(records, start=1):
                 if cancellation.cancelled:
                     return [], failed_records, True
                 try:
@@ -1840,6 +2269,9 @@ class MainWindow(QMainWindow):
                     )
                 except ContextSourceError:
                     failed_records += 1
+                finally:
+                    if not cancellation.cancelled:
+                        self.operation_progress.emit("search", completed, count)
             return hits.results(), failed_records, False
 
         self.tasks.submit(
@@ -1923,6 +2355,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if generation != self._search_generation:
             return
+        self._finish_operation("search", "Finished searching collection")
         hits, failed_records, cancelled = result
         if cancelled:
             return
@@ -1942,6 +2375,7 @@ class MainWindow(QMainWindow):
     def _search_failed(self, generation: int, details: str) -> None:
         if generation != self._search_generation:
             return
+        self._finish_operation("search")
         logger.error("Could not search context collection\n%s", details)
         self.search_panel.show_message("Could not search the context collection.")
 
@@ -2008,15 +2442,16 @@ class MainWindow(QMainWindow):
     ) -> None:
         selected = (selectors,) if isinstance(selectors, NumberSelector) else selectors
         records = list(self.file_model.records)
+        self._cancel_operation("plot")
         self._plot_generation += 1
         generation = self._plot_generation
-        cancellation = self._new_operation("plot")
         if activate:
             self.hierarchy_tabs.setCurrentWidget(self.collection_plot)
         self.collection_plot.show_loading(selected, len(records))
         if not records:
             self.collection_plot.show_error("No context collection is loaded.")
             return
+        cancellation = self._begin_operation("plot", "loading plot values")
 
         def load_series() -> tuple[CollectionSeries, ...]:
             pairs = (
@@ -2048,6 +2483,7 @@ class MainWindow(QMainWindow):
         data: CollectionSeries | tuple[CollectionSeries, ...],
     ) -> None:
         if generation == self._plot_generation:
+            self._finish_operation("plot", "Finished loading plot values")
             collection = (data,) if isinstance(data, CollectionSeries) else data
             self.collection_plot.set_series_collection(collection)
             self.collection_plot.select_record(self._selected_record_id())
@@ -2055,6 +2491,7 @@ class MainWindow(QMainWindow):
     def _plot_failed(self, generation: int, details: str) -> None:
         if generation != self._plot_generation:
             return
+        self._finish_operation("plot")
         logger.error("Could not build collection plot\n%s", details)
         self.collection_plot.show_error("Could not build the collection plot.")
 
@@ -2079,7 +2516,9 @@ class MainWindow(QMainWindow):
         self._active_plot_selectors = []
         self.collection_plot.clear()
 
-    def _order_requested(self, selector: NumberSelector) -> None:
+    def _order_requested(
+        self, selector: NumberSelector, *, descending: bool = False
+    ) -> None:
         if self._current_document is not None:
             selector = selector_for_document(self._current_document, selector)
         records = list(self.file_model.filename_ordered_records)
@@ -2088,7 +2527,7 @@ class MainWindow(QMainWindow):
             return
         self._order_generation += 1
         generation = self._order_generation
-        cancellation = self._new_operation("order")
+        cancellation = self._begin_operation("order", "loading sort values")
         self.order_status.setText("Order: loading selected values…")
         self.statusBar().showMessage(
             f"Ordering {len(records):,} contexts by {selector.label}…"
@@ -2105,7 +2544,9 @@ class MainWindow(QMainWindow):
 
         self.tasks.submit(
             load_order_values,
-            lambda result: self._order_loaded(generation, *result),
+            lambda result: self._order_loaded(
+                generation, *result, descending=descending
+            ),
             lambda details: self._order_failed(generation, details),
         )
 
@@ -2114,9 +2555,12 @@ class MainWindow(QMainWindow):
         generation: int,
         records: list[RecordRef],
         data: CollectionSeries,
+        *,
+        descending: bool = False,
     ) -> None:
         if generation != self._order_generation:
             return
+        self._finish_operation("order")
         selected_id = self._selected_record_id()
         sorted_points = sorted(
             data.points, key=lambda point: (point.value, point.index)
@@ -2151,13 +2595,104 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Ordered {len(data.points):,} contexts by selected number{suffix}", 5000
         )
+        if descending:
+            self._set_collection_order(descending=True)
 
     def _order_failed(self, generation: int, details: str) -> None:
         if generation != self._order_generation:
             return
+        self._finish_operation("order")
         logger.error("Could not order context collection\n%s", details)
         self.order_status.setText("Order: filename")
         self.statusBar().showMessage("Could not order the context collection.", 5000)
+
+    def _order_extraction_requested(self, request: object, descending: bool) -> None:
+        if not (
+            isinstance(request, tuple)
+            and len(request) == 2
+            and isinstance(request[0], FieldSelector)
+        ):
+            return
+        selector, nested_path = request
+        path = nested_path if isinstance(nested_path, tuple) else ()
+        records = list(self.file_model.filename_ordered_records)
+        if not records:
+            self._show_status("No context collection is loaded.", 3000)
+            return
+        self._order_generation += 1
+        generation = self._order_generation
+        cancellation = self._begin_operation(
+            "order", f"sorting by extraction column {selector.column}"
+        )
+
+        def load_values():
+            present: list[tuple[tuple, int, str]] = []
+            missing: list[str] = []
+            for row in extract_fields(
+                self.source, records, (selector,), cancellation=cancellation
+            ):
+                extracted = row.values[0]
+                value = extracted.value
+                for part in path:
+                    if isinstance(part, str) and isinstance(value, dict):
+                        value = value.get(part)
+                    elif (
+                        isinstance(part, int)
+                        and isinstance(value, list)
+                        and 0 <= part < len(value)
+                    ):
+                        value = value[part]
+                    else:
+                        value = None
+                        break
+                if extracted.status != ExtractionStatus.AVAILABLE or value is None:
+                    missing.append(row.record_id)
+                    continue
+                present.append((_sortable_value(value), row.index, row.record_id))
+            present.sort(key=lambda item: (item[0], item[1]))
+            return tuple(item[2] for item in present), tuple(missing)
+
+        self.tasks.submit(
+            load_values,
+            lambda result: self._extraction_order_loaded(
+                generation,
+                selector.column,
+                result[0],
+                result[1],
+                descending,
+            ),
+            lambda details: self._order_failed(generation, details),
+        )
+
+    def _extraction_order_loaded(
+        self,
+        generation: int,
+        label: str,
+        present: tuple[str, ...],
+        missing: tuple[str, ...],
+        descending: bool,
+    ) -> None:
+        if generation != self._order_generation:
+            return
+        self._finish_operation("order")
+        selected_id = self._selected_record_id()
+        self._numeric_order_present = present
+        self._numeric_order_missing = missing
+        self._numeric_order_label = label
+        self._filename_reversed = False
+        ordered_present = tuple(reversed(present)) if descending else present
+        self.file_model.set_record_order((*ordered_present, *missing))
+        self._order_descending = descending
+        self._restore_record_selection(selected_id)
+        self._refresh_active_plot()
+        self._refresh_extraction_preview(self.extraction.selectors)
+        arrow = "↓" if descending else "↑"
+        self.order_status.setText(f"Order: {label} {arrow}")
+        self.order_status.setToolTip(
+            f"Sorted by extraction column {label}; missing values last"
+        )
+        self.reset_order_button.setEnabled(True)
+        self._show_status(f"Sorted collection by extraction column {label}", 4000)
 
     def _reset_collection_order(self) -> None:
         self._cancel_operation("order")
@@ -2262,9 +2797,9 @@ class MainWindow(QMainWindow):
         if not all(isinstance(item, FieldSelector) for item in selected):
             selected = self.extraction.selectors
         records = list(self.file_model.records)
+        self._cancel_operation("extraction_preview")
         self._extraction_generation += 1
         generation = self._extraction_generation
-        cancellation = self._new_operation("extraction_preview")
         if not selected:
             self.extraction.preview_model.set_data((), ())
             self.extraction.status.setText(
@@ -2274,6 +2809,9 @@ class MainWindow(QMainWindow):
         if not records:
             self.extraction.show_error("No context collection is loaded.")
             return
+        cancellation = self._begin_operation(
+            "extraction_preview", "building extraction preview"
+        )
         self.extraction.show_loading(len(records))
 
         def preview():
@@ -2301,11 +2839,15 @@ class MainWindow(QMainWindow):
         self, generation: int, rows: tuple, total: int
     ) -> None:
         if generation == self._extraction_generation:
+            self._finish_operation(
+                "extraction_preview", "Finished building extraction preview"
+            )
             self.extraction.set_preview(rows, total)
 
     def _extraction_failed(self, generation: int, details: str) -> None:
         if generation != self._extraction_generation:
             return
+        self._finish_operation("extraction_preview")
         logger.error("Could not build extraction preview\n%s", details)
         self.extraction.show_error("Could not build the extraction preview.")
 
@@ -2313,7 +2855,9 @@ class MainWindow(QMainWindow):
         self, path: str, format_name: str, config: ExtractionConfig
     ) -> None:
         records = list(self.file_model.records)
-        cancellation = self._new_operation("extraction_export")
+        cancellation = self._begin_operation(
+            "extraction_export", "exporting extracted data"
+        )
         self.extraction.status.setText(
             f"Exporting {len(records):,} evaluations to {format_name.upper()}…"
         )
@@ -2335,14 +2879,21 @@ class MainWindow(QMainWindow):
                 cancellation=cancellation,
             )
 
+        def export_finished(count: int) -> None:
+            message = f"Exported {count:,} rows to {path}"
+            self._finish_operation("extraction_export", message)
+            self.extraction.status.setText(message)
+
+        def export_failed(_details: str) -> None:
+            self._finish_operation("extraction_export")
+            self.extraction.show_error(
+                "Could not export extraction; see the application log."
+            )
+
         self.tasks.submit(
             write_export,
-            lambda count: self.extraction.status.setText(
-                f"Exported {count:,} rows to {path}"
-            ),
-            lambda _details: self.extraction.show_error(
-                "Could not export extraction; see the application log."
-            ),
+            export_finished,
+            export_failed,
         )
 
     def _selected_record_id(self) -> str | None:
@@ -2375,6 +2926,21 @@ class MainWindow(QMainWindow):
         message.setText(title)
         message.setDetailedText(details)
         message.exec()
+
+
+def _sortable_value(value) -> tuple[int, object]:  # noqa: ANN001
+    if isinstance(value, bool):
+        return (0, int(value))
+    if isinstance(value, (int, float)) and not (
+        isinstance(value, float) and math.isnan(value)
+    ):
+        return (0, float(value))
+    if isinstance(value, str):
+        return (1, value.casefold())
+    return (
+        2,
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str),
+    )
 
 
 def _chevron_icon(direction: int, color: str) -> QIcon:

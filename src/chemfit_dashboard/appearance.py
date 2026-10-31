@@ -8,6 +8,10 @@ from PySide6.QtCore import QSettings, QStandardPaths
 SETTINGS_FILENAME = "settings.ini"
 COLOR_SCHEME_SETTING = "appearance/color_scheme"
 FONT_SCALE_SETTING = "appearance/font_scale"
+STYLE_PROFILE_SETTING = "appearance/style_profile"
+DENSITY_SETTING = "appearance/density"
+STYLE_PROFILE_SETTING = "appearance/style_profile"
+DENSITY_SETTING = "appearance/density"
 COMPONENT_LABEL_METADATA_KEY_SETTING = "display/component_label_metadata_key"
 COMBO_CHEVRON_PATH = (
     Path(__file__).with_name("icons").joinpath("chevron_down.svg").as_posix()
@@ -254,11 +258,16 @@ def application_settings(config_directory: str | Path | None = None) -> QSetting
     )
 
 
-def stylesheet_for(scheme: ColorScheme) -> str:
+def stylesheet_for(
+    scheme: ColorScheme,
+    *,
+    style_profile: str = "classic",
+    density: str = "comfortable",
+) -> str:
     checkmark_path = (
         CHECKMARK_LIGHT_PATH if scheme.key == "light" else CHECKMARK_DARK_PATH
     )
-    return f"""
+    base = f"""
 QWidget {{
     background: {scheme.window};
     color: {scheme.text};
@@ -276,6 +285,11 @@ QMenuBar::item:selected, QMenu::item:selected {{ background: {scheme.selection};
 #historyBackButton:hover, #historyForwardButton:hover {{
     background: {scheme.accent_soft}; border-color: {scheme.accent};
 }}
+#breadcrumbButton {{
+    background: transparent; color: {scheme.text}; border: none;
+    padding: 2px 4px; font-weight: 500;
+}}
+#breadcrumbButton:hover {{ background: {scheme.input}; color: {scheme.text_strong}; }}
 #historyBackButton:disabled, #historyForwardButton:disabled {{
     background: {scheme.chrome}; border-color: {scheme.border};
 }}
@@ -293,6 +307,15 @@ QMenuBar::item:selected, QMenu::item:selected {{ background: {scheme.selection};
     border: 1px solid {scheme.accent}; border-radius: 5px;
     padding: 5px 8px; font-weight: 650;
 }}
+#activityPanel {{
+    background: {scheme.panel}; border: 1px solid {scheme.border_strong};
+    border-radius: 6px;
+}}
+QProgressBar {{
+    background: {scheme.input}; color: {scheme.text_strong};
+    border: 1px solid {scheme.border}; border-radius: 4px; text-align: center;
+}}
+QProgressBar::chunk {{ background: {scheme.accent}; border-radius: 3px; }}
 #mutedLabel {{ color: {scheme.muted}; }}
 #sidePanel {{ background: {scheme.panel}; border-right: 1px solid {scheme.border}; }}
 #treePanel {{ background: {scheme.panel_alt}; border-right: 1px solid {scheme.border}; }}
@@ -433,3 +456,32 @@ QTabBar#workspaceTabBar::tab:selected {{
 QSplitter::handle {{ background: {scheme.border}; width: 1px; }}
 QFrame[frameShape="4"], QFrame[frameShape="5"] {{ color: {scheme.border}; }}
 """
+    density_css = {
+        "compact": """
+QPushButton { padding: 5px 9px; }
+QLineEdit, QComboBox { padding: 5px 7px; }
+QTreeView::item, QTableView::item { padding: 2px; }
+QTabBar::tab { padding: 6px 10px; }
+""",
+        "spacious": """
+QPushButton { padding: 10px 16px; }
+QLineEdit, QComboBox { padding: 10px 11px; }
+QTreeView::item, QTableView::item { padding: 7px; }
+QTabBar::tab { padding: 12px 18px; }
+""",
+    }.get(density, "")
+    lightweight_css = (
+        f"""
+#appHeader {{ border-bottom: 1px solid {scheme.border}; }}
+QPushButton {{ background: transparent; color: {scheme.text_strong}; border-color: {scheme.border}; font-weight: 500; }}
+QPushButton:hover {{ background: {scheme.input}; border-color: {scheme.border_strong}; }}
+QTabWidget#workspaceTabs::pane {{ border: none; border-top: 1px solid {scheme.border}; }}
+QTabBar#workspaceTabBar::tab {{ min-width: 120px; font-size: 13px; font-weight: 500; padding: 9px 14px; border: none; }}
+QTabBar#workspaceTabBar::tab:selected {{ background: transparent; border: none; border-bottom: 2px solid {scheme.accent}; padding-top: 9px; }}
+#hierarchySearchControls, #inspectorActions {{ border-color: {scheme.border}; border-radius: 3px; }}
+QListView, QTreeView, QTableView {{ border-color: {scheme.border}; border-radius: 2px; }}
+"""
+        if style_profile == "lightweight"
+        else ""
+    )
+    return base + density_css + lightweight_css

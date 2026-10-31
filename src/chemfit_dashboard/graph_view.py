@@ -275,7 +275,8 @@ class DataFlowView(QGraphicsView):
             self.centerOn(padded.center())
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        steps = event.angleDelta().y() / 120
+        factor = 1.08**steps
         self.scale(factor, factor)
         event.accept()
 
@@ -727,6 +728,7 @@ class DataFlowPanel(QWidget):
                 separator.setObjectName("mutedLabel")
                 self.breadcrumbs.addWidget(separator)
             button = QPushButton(self._breadcrumb_label(level))
+            button.setObjectName("breadcrumbButton")
             button.setFlat(True)
             button.setEnabled(level != path)
             button.clicked.connect(

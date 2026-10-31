@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
         "paths",
         nargs="+",
         metavar="PATH",
-        help="Context JSON file or directory; directories are searched recursively.",
+        help="Context JSON file or directory; only immediate JSON files are used.",
     )
     parser.add_argument(
         "-c",

@@ -3,13 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
+import tempfile
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, unquote, urlparse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -92,6 +96,7 @@ class ContextDocument:
         self._details_cache: OrderedDict[NodePath, NodeDetails] = OrderedDict()
         self._details_cache_capacity = 64
         self._details_lock = threading.RLock()
+        self._component_label_metadata_keys: tuple[str, ...] | None = None
         self._build_index()
 
     @property
@@ -108,6 +113,13 @@ class ContextDocument:
 
     def children(self, path: NodePath) -> tuple[NodeInfo, ...]:
         return tuple(self._nodes[child].info for child in self._children.get(path, ()))
+
+    def children_slice(
+        self, path: NodePath, start: int, stop: int
+    ) -> tuple[NodeInfo, ...]:
+        """Return a bounded child window for incremental GUI models."""
+        child_paths = self._children.get(path, ())[start:stop]
+        return tuple(self._nodes[child].info for child in child_paths)
 
     def details(self, path: NodePath) -> NodeDetails:
         with self._details_lock:
@@ -173,18 +185,26 @@ class ContextDocument:
     @property
     def component_label_metadata_keys(self) -> tuple[str, ...]:
         """Return string-valued metadata keys available as component labels."""
+        if self._component_label_metadata_keys is not None:
+            return self._component_label_metadata_keys
         keys: set[str] = set()
+        next_yield = time.monotonic() + 0.01
         for path in self._nodes:
             for key, value in self.details(path).metadata.items():
                 if isinstance(key, str) and isinstance(value, str) and value.strip():
                     keys.add(key)
-        return tuple(sorted(keys, key=str.casefold))
+            if time.monotonic() >= next_yield:
+                time.sleep(0)
+                next_yield = time.monotonic() + 0.01
+        self._component_label_metadata_keys = tuple(sorted(keys, key=str.casefold))
+        return self._component_label_metadata_keys
 
     def _build_index(self) -> None:
         root_label = self._identity(self.raw) or self.record.path.stem
         pending: list[tuple[NodePath, Any, str, bool]] = [
             ((), self.raw, root_label, True)
         ]
+        next_yield = time.monotonic() + 0.01
 
         while pending:
             path, value, label, recorded = pending.pop()
@@ -224,6 +244,9 @@ class ContextDocument:
                 pending.append(
                     ((*path, index), child_value, child_label, child_recorded)
                 )
+            if time.monotonic() >= next_yield:
+                time.sleep(0)
+                next_yield = time.monotonic() + 0.01
 
     @staticmethod
     def _actual_children(value: Any) -> list[Any]:
@@ -365,6 +388,9 @@ class JsonFileSource(ContextSource):
         )
         self._cache_bytes = 0
         self._lock = threading.RLock()
+        self._remote_cache = tempfile.TemporaryDirectory(
+            prefix="chemfit-dashboard-remote-"
+        )
 
     def set_component_label_metadata_key(self, key: str) -> None:
         super().set_component_label_metadata_key(key)
@@ -386,6 +412,9 @@ class JsonFileSource(ContextSource):
     def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
         paths: set[Path] = set()
         for location in locations:
+            if isinstance(location, str) and "://" in location:
+                paths.update(self._download_remote_location(location))
+                continue
             path = Path(location).expanduser()
             if not path.exists():
                 message = f"Path does not exist: {path}"
@@ -393,7 +422,7 @@ class JsonFileSource(ContextSource):
             if path.is_dir():
                 paths.update(
                     candidate
-                    for candidate in path.rglob("*.json")
+                    for candidate in path.glob("*.json")
                     if candidate.is_file()
                 )
             elif path.is_file():
@@ -421,6 +450,52 @@ class JsonFileSource(ContextSource):
                 )
             )
         return records
+
+    def _download_remote_location(self, uri: str) -> set[Path]:
+        """Materialize immediate JSON files from a GIO-backed remote location."""
+        parsed = urlparse(uri)
+        name = Path(unquote(parsed.path)).name
+        if name.casefold().endswith(".json"):
+            return {self._gio_copy(uri, name)}
+
+        listing = subprocess.run(  # noqa: S603
+            ["gio", "list", uri],  # noqa: S607
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if listing.returncode:
+            message = listing.stderr.strip() or f"Cannot read remote location: {uri}"
+            raise ContextSourceError(message)
+        downloaded: set[Path] = set()
+        base = uri if uri.endswith("/") else f"{uri}/"
+        for listed_name in listing.stdout.splitlines():
+            child_name = listed_name.strip()
+            if child_name.casefold().endswith(".json"):
+                downloaded.add(
+                    self._gio_copy(f"{base}{quote(child_name)}", child_name)
+                )
+        return downloaded
+
+    def _gio_copy(self, uri: str, name: str) -> Path:
+        name = Path(name).name
+        if not name or name in {".", ".."}:
+            message = f"Invalid remote file name: {name!r}"
+            raise ContextSourceError(message)
+        digest = hashlib.blake2s(uri.encode(), digest_size=8).hexdigest()
+        directory = Path(self._remote_cache.name) / digest
+        directory.mkdir(exist_ok=True)
+        destination = directory / name
+        copied = subprocess.run(  # noqa: S603
+            ["gio", "copy", "-T", uri, str(destination)],  # noqa: S607
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if copied.returncode:
+            message = copied.stderr.strip() or f"Cannot copy remote file: {uri}"
+            raise ContextSourceError(message)
+        return destination
 
     def load(self, record: RecordRef) -> ContextDocument:
         try:

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMenu,
     QPushButton,
@@ -44,7 +45,7 @@ from chemfit_dashboard.extraction import (
     ExtractionValue,
     FieldSelector,
     JsonPath,
-    format_json_path,
+    flattened_column_name,
     load_config,
     save_config,
 )
@@ -186,6 +187,11 @@ class ExtractionPreviewModel(QAbstractTableModel):
             for column, header in enumerate(self.headers())
         }
 
+    def extraction_column(self, column: int) -> _PreviewColumn | None:
+        """Return extraction metadata for a visible preview column."""
+        index = column - 3
+        return self._columns[index] if 0 <= index < len(self._columns) else None
+
     def _extracted_value(
         self, index: QModelIndex | QPersistentModelIndex
     ) -> ExtractionValue:
@@ -209,6 +215,7 @@ class DataExtractionPanel(QWidget):
     selectors_changed = Signal(object)
     export_requested = Signal(str, str, object)
     status_message = Signal(str)
+    sort_requested = Signal(object, bool)
 
     def __init__(  # noqa: PLR0915
         self,
@@ -596,6 +603,16 @@ class DataExtractionPanel(QWidget):
         copy_row_json = menu.addAction("Copy row as JSON")
         menu.addSeparator()
         copy_preview = menu.addAction("Copy preview as CSV")
+        preview_column = self.preview_model.extraction_column(index.column())
+        sort_ascending = sort_descending = remove_flattened = rename_flattened = None
+        if preview_column is not None:
+            menu.addSeparator()
+            sort_menu = menu.addMenu("Sort collection by this column")
+            sort_ascending = sort_menu.addAction("Sort ↑")
+            sort_descending = sort_menu.addAction("Sort ↓")
+            if preview_column.nested_path is not None:
+                rename_flattened = menu.addAction("Rename flattened column…")
+                remove_flattened = menu.addAction("Remove flattened column")
         selected = menu.exec(self.preview.viewport().mapToGlobal(position))
         if selected is copy_cell:
             self._copy_preview_cell(index)
@@ -607,6 +624,66 @@ class DataExtractionPanel(QWidget):
             self._copy_preview_row(index.row(), as_json=True)
         elif selected is copy_preview:
             self._copy_preview_table()
+        elif selected is sort_ascending and preview_column is not None:
+            self.sort_requested.emit(
+                (
+                    self._selectors[preview_column.selector_index],
+                    preview_column.nested_path,
+                ),
+                False,
+            )
+        elif selected is sort_descending and preview_column is not None:
+            self.sort_requested.emit(
+                (
+                    self._selectors[preview_column.selector_index],
+                    preview_column.nested_path,
+                ),
+                True,
+            )
+        elif selected is remove_flattened and preview_column is not None:
+            self._exclude_flattened_column(preview_column)
+        elif selected is rename_flattened and preview_column is not None:
+            self._rename_flattened_column(preview_column)
+
+    def _exclude_flattened_column(self, column: _PreviewColumn) -> None:
+        path = column.nested_path
+        if path is None:
+            return
+        selector = self._selectors[column.selector_index]
+        names = tuple(
+            (item_path, name)
+            for item_path, name in selector.flattened_column_names
+            if item_path != path
+        )
+        self._selectors[column.selector_index] = replace(
+            selector,
+            excluded_paths=(*selector.excluded_paths, path),
+            flattened_column_names=names,
+        )
+        self._emit_changed()
+
+    def _rename_flattened_column(self, column: _PreviewColumn) -> None:
+        path = column.nested_path
+        if path is None:
+            return
+        selector = self._selectors[column.selector_index]
+        current = flattened_column_name(selector, path)
+        name, accepted = QInputDialog.getText(
+            self,
+            "Rename flattened column",
+            "Column name:",
+            text=current,
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        names = dict(selector.flattened_column_names)
+        names[path] = name
+        self._selectors[column.selector_index] = replace(
+            selector,
+            flattened_column_names=tuple(names.items()),
+        )
+        self._emit_changed()
 
     def _copy_preview_cell(self, index: QModelIndex) -> None:
         value = self.preview_model.copy_value(index)
@@ -814,14 +891,15 @@ def _preview_columns(
                 value = row.values[selector_index].value
                 if isinstance(value, dict):
                     paths.update(_mapping_leaf_paths(value))
-        if paths:
+        if selector.flatten:
             result.extend(
                 _PreviewColumn(
                     selector_index,
                     path,
-                    f"{selector.column}.{format_json_path(path)}",
+                    flattened_column_name(selector, path),
                 )
                 for path in sorted(paths, key=lambda item: tuple(map(str, item)))
+                if path not in selector.excluded_paths
             )
         else:
             result.append(_PreviewColumn(selector_index, None, selector.column))

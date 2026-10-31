@@ -21,7 +21,10 @@ Built with Python and PySide6, the dashboard works directly with serialized eval
 - **Investigate failures:** Identify failed evaluations and navigate to the components responsible.
 - **Extract data:** Collect arbitrary values from evaluation contexts and export them as CSV or JSONL for further analysis.
 
-The application also supports several color themes, adjustable font sizes, keyboard navigation, and background processing of large collections.
+The application also supports several color themes, classic and lightweight visual
+styles, adjustable density and font sizes, keyboard navigation, and background
+processing of large collections. The expandable status footer shows concurrent
+operations and collection-search progress.
 
 ## Installation
 
@@ -63,7 +66,9 @@ chemfit-dashboard path/to/context.json
 chemfit-dashboard path/to/results/
 ```
 
-Multiple files and directories can be provided together. Directories are searched recursively.
+Multiple files and directories can be provided together. A directory contributes only
+its immediate JSON files; subdirectories are never opened automatically. Use **File →
+Add files to collection** to actively combine additional results with the open collection.
 
 The repository also includes example evaluation data:
 
@@ -139,6 +144,7 @@ The plotting interface supports:
 - Independent normalization of series to the 0–1 range.
 - Logarithmic Y-axis scaling.
 - Interactive zooming and coordinate inspection.
+- Line, binned-histogram, and descriptive-statistics display modes.
 - Selection of plotted points to open the corresponding evaluation.
 - A detachable, full-size plot window.
 
@@ -176,6 +182,8 @@ The extraction interface also supports nested data:
 - **+ Component** adds an entire component, including its fields and metadata.
 - **Flatten all** converts nested dictionary values into separate columns.
 - **Expand** converts the elements of a selected array into separate rows.
+- The preview context menu can rename or remove individual flattened columns and
+  sort the open collection by an extraction column.
 
 For example, extracting a dictionary containing `energy` and `forces` can produce separate columns for these values when flattening is enabled.
 
@@ -193,8 +201,8 @@ chemfit-extract path/to/results/ \
   --output values.csv
 ```
 
-Input paths may be individual context JSON files or directories, which are searched
-recursively. Multiple input paths can be supplied. JSONL output is supported in the
+Input paths may be individual context JSON files or directories. Directories contribute
+their immediate JSON files only. Multiple input paths can be supplied. JSONL output is supported in the
 same way:
 
 ```bash

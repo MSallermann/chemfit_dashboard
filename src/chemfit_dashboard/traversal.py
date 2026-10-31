@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,7 @@ def iter_collection(
     progress: Callable[[int, RecordRef], None] | None = None,
 ) -> Iterator[TraversalItem]:
     """Load collection documents one at a time and release them after yielding."""
+    next_yield = time.monotonic() + 0.01
     for index, record in enumerate(records):
         if cancellation is not None:
             cancellation.raise_if_cancelled()
@@ -62,3 +64,8 @@ def iter_collection(
         yield item
         if progress is not None:
             progress(index + 1, record)
+        # JSON decoding and Python indexing can otherwise monopolize the GIL on
+        # very large collections even though this iterator runs in a Qt worker.
+        if time.monotonic() >= next_yield:
+            time.sleep(0)
+            next_yield = time.monotonic() + 0.01

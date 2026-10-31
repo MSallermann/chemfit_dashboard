@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from bisect import bisect_left
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -256,6 +257,7 @@ class ContextTreeModel(QAbstractItemModel):
 
     columns = ("Component", "Status", "Output")
     NodeRole = Qt.ItemDataRole.UserRole.value + 1
+    FETCH_BATCH_SIZE = 200
 
     def __init__(self, parent: QObject | None = None):
         """Initialize an empty context hierarchy."""
@@ -350,7 +352,9 @@ class ContextTreeModel(QAbstractItemModel):
         if not parent.isValid():
             return False
         item = self._item(parent)
-        return bool(item.info and item.info.child_count and not item.fetched)
+        return bool(
+            item.info and item.info.child_count > len(item.children)
+        )
 
     def fetchMore(self, parent: ModelIndex) -> None:  # noqa: N802
         if self._document is None or not self.canFetchMore(parent):
@@ -358,16 +362,18 @@ class ContextTreeModel(QAbstractItemModel):
         item = self._item(parent)
         if item.info is None:
             return
-        children = self._document.children(item.info.path)
-        item.fetched = True
+        start = len(item.children)
+        stop = min(start + self.FETCH_BATCH_SIZE, item.info.child_count)
+        children = self._document.children_slice(item.info.path, start, stop)
+        item.fetched = stop >= item.info.child_count
         if not children:
             return
         qt_parent = QModelIndex(parent)  # type: ignore[arg-type]
-        self.beginInsertRows(qt_parent, 0, len(children) - 1)
-        item.children = [
+        self.beginInsertRows(qt_parent, start, stop - 1)
+        item.children.extend(
             _ContextItem(info=child, parent=item, row_index=row)
-            for row, child in enumerate(children)
-        ]
+            for row, child in enumerate(children, start=start)
+        )
         self.endInsertRows()
 
     def node_info(self, index: ModelIndex) -> NodeInfo | None:
@@ -382,10 +388,14 @@ class ContextTreeModel(QAbstractItemModel):
             return current
         prefix: tuple[int, ...] = ()
         for child_index in path:
-            if self.canFetchMore(current):
-                self.fetchMore(current)
             prefix = (*prefix, child_index)
             item = self._item(current)
+            while self.canFetchMore(current) and (
+                not item.children
+                or item.children[-1].info is None
+                or item.children[-1].info.path < prefix
+            ):
+                self.fetchMore(current)
             row = bisect_left(
                 item.children,
                 prefix,
@@ -413,29 +423,28 @@ class _JsonItem:
     parent: _JsonItem | None
     path: tuple[str | int, ...]
     children: list[_JsonItem] = field(default_factory=list)
-    fetched: bool = False
+    row_index: int = 0
 
     def row(self) -> int:
-        if self.parent is None:
-            return 0
-        return self.parent.children.index(self)
+        return self.row_index
 
 
 class JsonValueModel(QAbstractItemModel):
     """Generic, lazily expanded mapping/list viewer."""
 
     columns = ("Field", "Value", "Type")
+    FETCH_BATCH_SIZE = 200
 
     def __init__(self, value: Any = None, parent: QObject | None = None):
         """Initialize the model with one JSON-compatible value."""
         super().__init__(parent)
         self._root = _JsonItem("", value, None, ())
-        self._populate(self._root)
+        self._populate_batch(self._root)
 
     def set_value(self, value: Any) -> None:
         self.beginResetModel()
         self._root = _JsonItem("", value, None, ())
-        self._populate(self._root)
+        self._populate_batch(self._root)
         self.endResetModel()
 
     def columnCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
@@ -491,21 +500,21 @@ class JsonValueModel(QAbstractItemModel):
         return isinstance(item.value, (dict, list)) and bool(item.value)
 
     def canFetchMore(self, parent: ModelIndex) -> bool:  # noqa: N802
-        return (
-            parent.isValid()
-            and not self._item(parent).fetched
-            and self.hasChildren(parent)
+        item = self._item(parent)
+        return isinstance(item.value, (dict, list)) and len(item.children) < len(
+            item.value
         )
 
     def fetchMore(self, parent: ModelIndex) -> None:  # noqa: N802
         if not self.canFetchMore(parent):
             return
         item = self._item(parent)
-        count = len(item.value)
+        count = min(self.FETCH_BATCH_SIZE, len(item.value) - len(item.children))
         if count:
             qt_parent = QModelIndex(parent)  # type: ignore[arg-type]
-            self.beginInsertRows(qt_parent, 0, count - 1)
-            self._populate(item)
+            first = len(item.children)
+            self.beginInsertRows(qt_parent, first, first + count - 1)
+            self._populate_batch(item)
             self.endInsertRows()
 
     def value(self, index: ModelIndex) -> Any:
@@ -521,34 +530,46 @@ class JsonValueModel(QAbstractItemModel):
         parent = QModelIndex()
         prefix: tuple[str | int, ...] = ()
         for segment in path:
-            if parent.isValid() and self.canFetchMore(parent):
-                self.fetchMore(parent)
             prefix = (*prefix, segment)
             match = QModelIndex()
-            for row in range(self.rowCount(parent)):
-                candidate = self.index(row, 0, parent)
-                if self.value_path(candidate) == prefix:
-                    match = candidate
+            while True:
+                for row in range(self.rowCount(parent)):
+                    candidate = self.index(row, 0, parent)
+                    if self.value_path(candidate) == prefix:
+                        match = candidate
+                        break
+                if match.isValid() or not self.canFetchMore(parent):
                     break
+                self.fetchMore(parent)
             if not match.isValid():
                 return QModelIndex()
             parent = match
         return parent
 
-    def _populate(self, item: _JsonItem) -> None:
-        if item.fetched:
-            return
-        item.fetched = True
+    def _populate_batch(self, item: _JsonItem) -> None:
+        start = len(item.children)
+        stop = (
+            min(start + self.FETCH_BATCH_SIZE, len(item.value))
+            if isinstance(item.value, (dict, list))
+            else start
+        )
         if isinstance(item.value, dict):
-            item.children = [
-                _JsonItem(str(key), value, item, (*item.path, str(key)))
-                for key, value in item.value.items()
-            ]
+            entries = islice(item.value.items(), start, stop)
+            item.children.extend(
+                _JsonItem(str(key), value, item, (*item.path, str(key)), row_index=row)
+                for row, (key, value) in enumerate(entries, start=start)
+            )
         elif isinstance(item.value, list):
-            item.children = [
-                _JsonItem(f"[{index}]", value, item, (*item.path, index))
-                for index, value in enumerate(item.value)
-            ]
+            item.children.extend(
+                _JsonItem(
+                    f"[{index}]",
+                    item.value[index],
+                    item,
+                    (*item.path, index),
+                    row_index=index,
+                )
+                for index in range(start, stop)
+            )
 
     def _item(self, index: ModelIndex) -> _JsonItem:
         if not index.isValid():

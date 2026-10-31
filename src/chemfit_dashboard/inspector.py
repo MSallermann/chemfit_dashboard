@@ -29,6 +29,8 @@ from chemfit_dashboard.source import NodeDetails
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+MAX_STRUCTURE_TABLE_ROWS = 500
+
 
 class JsonView(QTreeView):
     numeric_selected = Signal(object)
@@ -174,11 +176,19 @@ class StructureView(QWidget):
             self.table.hide()
             return
 
+        limited = len(children) > MAX_STRUCTURE_TABLE_ROWS
+        suffix = (
+            f" · showing first {MAX_STRUCTURE_TABLE_ROWS:,}"
+            if limited
+            else ""
+        )
         self.note.setText(
-            f"{len(children)} declared components · outputs: "
+            f"{len(children)} declared components{suffix} · outputs: "
             f"{_format_sources(structure.get('outputs'))}"
         )
-        for fallback_index, child_value in enumerate(children):
+        for fallback_index, child_value in enumerate(
+            children[:MAX_STRUCTURE_TABLE_ROWS]
+        ):
             child = child_value if isinstance(child_value, dict) else {}
             index = child.get("index", fallback_index)
             row_inputs = (
@@ -209,6 +219,7 @@ class Inspector(QWidget):
     plot_requested = Signal(object)
     plot_add_requested = Signal(object)
     order_requested = Signal(object)
+    order_descending_requested = Signal(object)
     extraction_requested = Signal(object)
     component_extraction_requested = Signal(object)
     status_message = Signal(str)
@@ -263,6 +274,10 @@ class Inspector(QWidget):
         self.order_button.setEnabled(False)
         self.order_button.clicked.connect(self._request_order)
         action_layout.addWidget(self.order_button, 1, 3)
+        self.order_descending_button = QPushButton("Sort ↓")
+        self.order_descending_button.setEnabled(False)
+        self.order_descending_button.clicked.connect(self._request_order_descending)
+        action_layout.addWidget(self.order_descending_button, 1, 4)
 
         extraction_label = QLabel("EXTRACTION")
         extraction_label.setObjectName("actionGroupLabel")
@@ -285,7 +300,7 @@ class Inspector(QWidget):
             self._request_component_extraction
         )
         action_layout.addWidget(self.extract_component_button, 3, 2)
-        action_layout.setColumnStretch(4, 1)
+        action_layout.setColumnStretch(5, 1)
         layout.addWidget(actions)
 
         self.tabs = QTabWidget()
@@ -410,6 +425,7 @@ class Inspector(QWidget):
         self.plot_button.setEnabled(selector is not None)
         self.plot_add_button.setEnabled(selector is not None)
         self.order_button.setEnabled(selector is not None)
+        self.order_descending_button.setEnabled(selector is not None)
         selected = f"\nSelected: {selector.label}" if selector is not None else ""
         self.plot_button.setToolTip(
             f"Create a plot of this number across the collection.{selected}"
@@ -419,6 +435,9 @@ class Inspector(QWidget):
         )
         self.order_button.setToolTip(
             f"Sort contexts ascending by this number; missing values go last.{selected}"
+        )
+        self.order_descending_button.setToolTip(
+            f"Sort contexts descending by this number; missing values go last.{selected}"
         )
         self.plot_selection.setText(
             f"Selected: {selector.value_label}"
@@ -473,6 +492,10 @@ class Inspector(QWidget):
     def _request_order(self) -> None:
         if self._number_selector is not None:
             self.order_requested.emit(self._number_selector)
+
+    def _request_order_descending(self) -> None:
+        if self._number_selector is not None:
+            self.order_descending_requested.emit(self._number_selector)
 
     def _request_extraction(self) -> None:
         if self._field_selector is not None:

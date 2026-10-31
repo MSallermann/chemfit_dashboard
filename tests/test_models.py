@@ -12,8 +12,10 @@ from chemfit_dashboard import main_window as main_window_module
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
     COMPONENT_LABEL_METADATA_KEY_SETTING,
+    DENSITY_SETTING,
     FONT_SCALE_SETTING,
     SETTINGS_FILENAME,
+    STYLE_PROFILE_SETTING,
     application_settings,
     color_scheme,
 )
@@ -125,6 +127,46 @@ def test_dashboard_accepts_dropped_json_files_and_directories(tmp_path):
         str(contexts.resolve()),
         str(context.resolve()),
     ]
+
+
+def test_dashboard_accepts_remote_thunar_urls():
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl("smb://server/share/step_1.json")])
+
+    assert MainWindow._drop_locations(mime_data) == [  # noqa: SLF001
+        "smb://server/share/step_1.json"
+    ]
+
+
+def test_deleting_last_search_character_stays_in_search_workspace():
+    window = MainWindow()
+    window.workspace_tabs.setCurrentWidget(window.collection_analysis)
+    window.find_action.trigger()
+    window.field_search.setText("x")
+
+    window.field_search.setText("")
+
+    assert window.workspace_tabs.currentWidget() is window.search_workspace
+    assert window.search_scope.currentData() == "collection"
+
+
+def test_status_footer_expands_to_show_concurrent_operations(qapp):
+    window = MainWindow()
+    window.show()
+    window._begin_operation("search", "searching collection")  # noqa: SLF001
+    window.operation_progress.emit("search", 4, 10)
+    window._begin_operation("plot", "loading plot values")  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window.activity_toggle.isVisible()
+    assert "(+1)" in window.activity_status.text()
+    window.activity_toggle.setChecked(True)
+    qapp.processEvents()
+    assert window.activity_panel.isVisible()
+    assert window.activity_panel_layout.count() == 3
+
+    window._finish_operation("plot")  # noqa: SLF001
+    assert window._operation_progress["search"] == (4, 10)  # noqa: SLF001
 
 
 def test_copy_feedback_appears_beside_cursor(monkeypatch, qapp):
@@ -253,6 +295,18 @@ def test_find_shortcut_and_navigation_history(chemfit_document):
     assert selected.path == (1,)
 
 
+def test_tree_view_ctrl_c_copies_selected_component(chemfit_document, qapp):
+    window = MainWindow(source=JsonFileSource())
+    window._load_generation = 1  # noqa: SLF001
+    window._document_loaded(1, chemfit_document)  # noqa: SLF001
+    index = window.tree_model.index_for_path((0,))
+    window.tree.setCurrentIndex(index)
+
+    window._tree_copy_shortcut.activated.emit()  # noqa: SLF001
+
+    assert qapp.clipboard().text() == chemfit_document.component_label((0,))
+
+
 def test_collection_has_separate_ascending_and_descending_sort_buttons(tmp_path):
     for name in ("step_10.json", "step_1.json", "step_2.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
@@ -277,13 +331,17 @@ def test_collection_has_separate_ascending_and_descending_sort_buttons(tmp_path)
     ]
 
 
-def test_evaluation_model_groups_chemfit_contexts_by_folder(
+def test_folder_discovery_is_non_recursive_and_explicit_files_can_be_added(
     tmp_path, chemfit_context, chemfit_json_path
 ):
     nested = tmp_path / "nested"
     SaveMetaData(nested)(9, [chemfit_context])
-    records = JsonFileSource().discover([tmp_path])
+    source = JsonFileSource()
+    records = source.discover([tmp_path])
     assert chemfit_json_path in {record.path for record in records}
+    assert not any(record.path.parent == nested for record in records)
+
+    records = source.discover([tmp_path, nested / "step_9_ctx_0.json"])
     model = EvaluationListModel()
     model.set_records(records)
 
@@ -315,6 +373,28 @@ def test_context_tree_model_fetches_chemfit_children_only_on_demand(
     first = model.index(0, 0, root)
     assert model.data(first, Qt.ItemDataRole.DisplayRole) == "compute_quantities"
     assert model.parent(first) == root
+
+
+def test_large_context_and_json_models_materialize_in_bounded_batches(tmp_path):
+    path = tmp_path / "large.json"
+    path.write_text(
+        json.dumps({"children": [{"output": index} for index in range(1_000)]}),
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+    document = source.load(source.discover([path])[0])
+    context_model = ContextTreeModel()
+    context_model.set_document(document)
+    root = context_model.index(0, 0)
+
+    context_model.fetchMore(root)
+
+    assert context_model.rowCount(root) == context_model.FETCH_BATCH_SIZE
+    assert context_model.canFetchMore(root)
+
+    json_model = JsonValueModel(list(range(10_000)))
+    assert json_model.rowCount() == json_model.FETCH_BATCH_SIZE
+    assert json_model.canFetchMore(QModelIndex())
 
 
 def test_data_flow_view_renders_one_structural_level(chemfit_document):
@@ -708,6 +788,32 @@ def test_collection_overview_is_a_top_level_workspace():
     )
 
 
+def test_collection_overview_shows_opening_hints_when_empty(tmp_path, monkeypatch):
+    window = MainWindow()
+
+    empty_text = window.collection_analysis.summary_label.text()
+    assert "No collection loaded" in empty_text
+    assert "drag and drop" in empty_text.casefold()
+    assert "Ctrl+O" in empty_text
+    assert "Ctrl+Shift+O" in empty_text
+
+    context_path = tmp_path / "context.json"
+    context_path.write_text('{"value": 1}', encoding="utf-8")
+    records = window.source.discover([context_path])
+    monkeypatch.setattr(
+        window.tasks,
+        "submit",
+        lambda function, on_success, _on_error: on_success(function()),
+    )
+    window._records_discovered(records)  # noqa: SLF001
+    window.close_collection()
+
+    closed_text = window.collection_analysis.summary_label.text()
+    assert "No collection loaded" in closed_text
+    assert "Ctrl+O" in closed_text
+    assert "Ctrl+Shift+O" in closed_text
+
+
 def test_evaluation_sidebar_persists_across_top_level_workspaces(qapp):
     window = MainWindow()
     window.show()
@@ -878,6 +984,22 @@ def test_color_scheme_is_persisted_in_portable_settings_directory(tmp_path, qapp
 
     restored = MainWindow(settings=application_settings(config_directory))
     assert restored.color_scheme.currentData() == "light"
+
+
+def test_visual_style_and_spacing_are_persisted_in_settings_menu(tmp_path):
+    settings_directory = tmp_path / "settings"
+    settings = application_settings(settings_directory)
+    window = MainWindow(settings=settings)
+
+    window._set_style_profile("lightweight")  # noqa: SLF001
+    window._set_density("compact")  # noqa: SLF001
+
+    assert window.color_scheme.isHidden()
+    assert settings.value(STYLE_PROFILE_SETTING) == "lightweight"
+    assert settings.value(DENSITY_SETTING) == "compact"
+    restored = MainWindow(settings=application_settings(settings_directory))
+    assert restored._style_profile == "lightweight"  # noqa: SLF001
+    assert restored._density == "compact"  # noqa: SLF001
 
 
 def test_json_value_model_expands_nested_values_lazily():

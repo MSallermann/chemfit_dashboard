@@ -56,6 +56,8 @@ class FieldSelector:
     node_trail: NodeTrail | None = None
     flatten: bool = False
     expand_array: bool = False
+    excluded_paths: tuple[JsonPath, ...] = ()
+    flattened_column_names: tuple[tuple[JsonPath, str], ...] = ()
 
     @property
     def path_label(self) -> str:
@@ -126,6 +128,8 @@ def selector_for_document(
         node_trail=component_trail_for_path(document, selector.node_path),
         flatten=selector.flatten,
         expand_array=selector.expand_array,
+        excluded_paths=selector.excluded_paths,
+        flattened_column_names=selector.flattened_column_names,
     )
 
 
@@ -269,14 +273,14 @@ def export_csv(
     value_columns: list[tuple[int, JsonPath | None, str]] = []
     for selector_index, selector in enumerate(config.selectors):
         paths = flat_paths.get(selector_index)
-        if paths:
+        if selector.flatten:
             value_columns.extend(
                 (
                     selector_index,
                     nested_path,
-                    f"{selector.column}.{format_json_path(nested_path)}",
+                    flattened_column_name(selector, nested_path),
                 )
-                for nested_path in paths
+                for nested_path in paths or ()
             )
         else:
             value_columns.append((selector_index, None, selector.column))
@@ -340,6 +344,12 @@ def format_json_path(path: JsonPath) -> str:
     return "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in path)
 
 
+def flattened_column_name(selector: FieldSelector, path: JsonPath) -> str:
+    """Return the configured display/export name for one flattened leaf."""
+    renamed = dict(selector.flattened_column_names).get(path)
+    return renamed or f"{selector.column}.{format_json_path(path)}"
+
+
 def _get_json_path(root: Any, path: JsonPath, default: Any) -> Any:
     if _pydictnest_get_path is not None:
         return _pydictnest_get_path(root, path, default)
@@ -390,7 +400,11 @@ def _collect_flat_paths(
                         f"Flattening exceeds the {maximum:,}-column safeguard"
                     )
     return {
-        index: tuple(sorted(paths, key=lambda item: tuple(map(str, item))))
+        index: tuple(
+            path
+            for path in sorted(paths, key=lambda item: tuple(map(str, item)))
+            if path not in selectors[index].excluded_paths
+        )
         for index, paths in discovered.items()
     }
 
@@ -474,6 +488,11 @@ def _selector_to_dict(selector: FieldSelector) -> dict[str, Any]:
         "column": selector.column,
         "flatten": selector.flatten,
         "expand_array": selector.expand_array,
+        "excluded_paths": [list(path) for path in selector.excluded_paths],
+        "flattened_column_names": [
+            {"path": list(path), "column": column}
+            for path, column in selector.flattened_column_names
+        ],
     }
 
 
@@ -489,6 +508,12 @@ def _selector_from_dict(value: Any) -> FieldSelector:
         if isinstance(raw_trail, list)
         else None
     )
+    raw_names = value.get("flattened_column_names", ())
+    flattened_column_names = tuple(
+        (tuple(item.get("path", ())), str(item.get("column", "")))
+        for item in raw_names
+        if isinstance(item, dict) and str(item.get("column", "")).strip()
+    )
     return FieldSelector(
         node_path=tuple(component.get("preferred_path", ())),
         section=str(value.get("section", "fields")),
@@ -497,6 +522,12 @@ def _selector_from_dict(value: Any) -> FieldSelector:
         node_trail=trail,
         flatten=bool(value.get("flatten", False)),
         expand_array=bool(value.get("expand_array", False)),
+        excluded_paths=tuple(
+            tuple(path)
+            for path in value.get("excluded_paths", ())
+            if isinstance(path, list)
+        ),
+        flattened_column_names=flattened_column_names,
     )
 
 

@@ -384,6 +384,43 @@ def test_extraction_options_immediately_rebuild_preview_shape():
     assert panel.preview_model.data(panel.preview_model.index(1, 3)) == "2"
 
 
+def test_flattened_columns_can_be_filtered_renamed_and_round_trip(tmp_path):
+    selector = FieldSelector(
+        (),
+        "fields",
+        ("payload",),
+        "payload",
+        flatten=True,
+        excluded_paths=(("energy",),),
+        flattened_column_names=((("force",), "force_ev"),),
+    )
+    config = ExtractionConfig((selector,))
+    config_path = tmp_path / "extraction.json"
+    save_config(config_path, config)
+
+    restored = load_config(config_path)
+
+    assert restored.version == 1
+    assert restored.selectors[0].excluded_paths == (("energy",),)
+    assert restored.selectors[0].flattened_column_names == (
+        (("force",), "force_ev"),
+    )
+
+    context = tmp_path / "step_1.json"
+    context.write_text(
+        json.dumps({"payload": {"energy": 2.0, "force": 3.0}}),
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+    output = tmp_path / "values.csv"
+    export_csv(output, source, source.discover([context]), restored)
+
+    with output.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.reader(stream))
+    assert "payload.energy" not in rows[0]
+    assert "force_ev" in rows[0]
+
+
 def test_each_extraction_field_has_an_inline_remove_control():
     panel = DataExtractionPanel()
     panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))

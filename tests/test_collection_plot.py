@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCharts import QLogValueAxis, QScatterSeries
+from PySide6.QtCharts import QBarSeries, QLogValueAxis, QScatterSeries
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
@@ -86,6 +86,9 @@ def test_inspector_requests_plot_for_selected_intermediate_number(
     inspector.plot_button.click()
     inspector.plot_add_button.click()
     inspector.order_button.click()
+    descending_requested = []
+    inspector.order_descending_requested.connect(descending_requested.append)
+    inspector.order_descending_button.click()
 
     assert len(requested) == 1
     assert requested[0].node_path == (1,)
@@ -93,6 +96,7 @@ def test_inspector_requests_plot_for_selected_intermediate_number(
     assert requested[0].value_path == ("output",)
     assert add_requested == requested
     assert order_requested == requested
+    assert descending_requested == requested
 
 
 def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
@@ -102,6 +106,7 @@ def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
     assert inspector.plot_button.text() == "Plot"
     assert inspector.plot_add_button.text() == "+ Series"
     assert inspector.order_button.text() == "Sort ↑"
+    assert inspector.order_descending_button.text() == "Sort ↓"
     assert inspector.extract_button.text() == "+ Field"
     assert inspector.extract_component_button.text() == "+ Component"
     assert inspector.plot_button.property("primaryAction") == "true"
@@ -115,6 +120,7 @@ def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
     assert inspector.plot_selection.text() == "Selected: output"
     assert inspector.field_selection.text() == "Selected: output"
     assert inspector.order_button.isEnabled()
+    assert inspector.order_descending_button.isEnabled()
     assert inspector.extract_component_button.isEnabled()
     assert "across the collection" in inspector.plot_button.toolTip()
     assert "Data Extraction" in inspector.extract_button.toolTip()
@@ -177,6 +183,36 @@ def test_plot_reports_coordinates_and_can_hide_series(qapp):
     assert remove is not None
     remove.click()
     assert removed == [second.selector]
+
+
+def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
+    count = 5_000
+    labels = tuple(f"step_{index}.json" for index in range(count))
+    data = CollectionSeries(
+        NumberSelector((), "fields", ("loss",), "loss", "loss"),
+        labels,
+        tuple(SeriesPoint(index, labels[index], float(index)) for index in range(count)),
+    )
+    panel = CollectionPlotPanel()
+    panel.set_series(data)
+
+    scatter = next(
+        series
+        for series in panel.chart_view.chart().series()
+        if isinstance(series, QScatterSeries)
+    )
+    assert scatter.count() <= 4_000
+
+    panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("histogram"))
+    assert any(
+        isinstance(series, QBarSeries)
+        for series in panel.chart_view.chart().series()
+    )
+    assert "bins" in panel.status.text()
+
+    panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("statistics"))
+    assert panel.statistics_table.rowCount() == 1
+    assert panel.statistics_table.item(0, 1).text() == "5,000"
 
 
 def test_plot_can_expand_into_window_and_return(qapp):

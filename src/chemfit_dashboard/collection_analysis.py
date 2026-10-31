@@ -216,7 +216,10 @@ class CollectionAnalysisPanel(QWidget):
         layout.setSpacing(8)
 
         heading = QHBoxLayout()
-        self.summary_label = QLabel("Load a collection to build its summary.")
+        self.summary_label = QLabel(
+            "No collection loaded. Drag and drop a file or folder, use Ctrl+O "
+            "for one file, or Ctrl+Shift+O for one folder."
+        )
         self.summary_label.setWordWrap(True)
         heading.addWidget(self.summary_label, 1)
         self.refresh_button = QPushButton("Refresh")
@@ -318,7 +321,10 @@ class CollectionAnalysisPanel(QWidget):
 
     def clear(self) -> None:
         """Restore the unloaded collection state without retaining old results."""
-        self.summary_label.setText("Load a collection to build its summary.")
+        self.summary_label.setText(
+            "No collection loaded. Drag and drop a file or folder, use Ctrl+O "
+            "for one file, or Ctrl+Shift+O for one folder."
+        )
         self.issue_label.clear()
         self.numeric_table.setRowCount(0)
         self.failure_tree.clear()
