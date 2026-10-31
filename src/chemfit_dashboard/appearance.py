@@ -269,6 +269,16 @@ QMainWindow, QMenuBar, QMenu, QStatusBar {{ background: {scheme.chrome}; }}
 QMenuBar::item:selected, QMenu::item:selected {{ background: {scheme.selection}; }}
 #appHeader {{ background: {scheme.chrome}; border-bottom: 1px solid {scheme.border}; }}
 #brand {{ color: {scheme.text_strong}; font-size: 15px; font-weight: 700; letter-spacing: 2px; }}
+#historyBackButton, #historyForwardButton {{
+    background: {scheme.panel}; border: 1px solid {scheme.border_strong};
+    border-radius: 5px; padding: 6px; min-width: 22px; min-height: 22px;
+}}
+#historyBackButton:hover, #historyForwardButton:hover {{
+    background: {scheme.accent_soft}; border-color: {scheme.accent};
+}}
+#historyBackButton:disabled, #historyForwardButton:disabled {{
+    background: {scheme.chrome}; border-color: {scheme.border};
+}}
 #eyebrow, #sectionLabel {{ color: {scheme.accent}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
 #inspectorTitle {{ color: {scheme.text_strong}; font-size: 25px; font-weight: 650; }}
 #plotSelection {{ color: {scheme.text_strong}; font-size: 14px; font-weight: 650; }}

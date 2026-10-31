@@ -220,6 +220,22 @@ def test_inspector_and_workspace_manage_arbitrary_field_selection(chemfit_docume
     assert len(panel.selectors) == 1
 
 
+def test_inspector_values_and_paths_can_be_copied(chemfit_document, qapp):
+    inspector = Inspector()
+    inspector.set_details(chemfit_document.details((1,)))
+    output_index = inspector.summary.model().index(1, 1)
+    inspector.summary.setCurrentIndex(output_index)
+
+    inspector.summary.copy_current_value()
+    assert qapp.clipboard().text() == str(output_index.data())
+
+    inspector.summary.copy_current_path()
+    assert qapp.clipboard().text() == "fields/output"
+
+    inspector.summary.copy_current_value(as_json=True)
+    assert json.loads(qapp.clipboard().text()) == 3.0
+
+
 def test_extraction_options_immediately_rebuild_preview_shape():
     panel = DataExtractionPanel()
     panel.add_selector(FieldSelector((), "fields", column="payload"))

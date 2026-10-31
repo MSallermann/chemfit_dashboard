@@ -26,6 +26,7 @@ from chemfit_dashboard.models import (
     JsonValueModel,
 )
 from chemfit_dashboard.source import JsonFileSource
+from chemfit_dashboard.workers import TaskRunner
 
 
 def test_evaluation_model_uses_natural_filename_order(tmp_path):
@@ -99,6 +100,95 @@ def test_file_menu_closes_loaded_collection_without_quitting(tmp_path, monkeypat
         source.discover([context_path]), collection_generation
     )
     assert window.file_model.records == ()
+
+
+def test_session_restores_collection_layout_and_recent_location(
+    tmp_path, monkeypatch, qapp
+):
+    contexts = tmp_path / "contexts"
+    contexts.mkdir()
+    (contexts / "step_1.json").write_text('{"output": 1}', encoding="utf-8")
+    (contexts / "step_2.json").write_text('{"output": 2}', encoding="utf-8")
+    settings_directory = tmp_path / "settings"
+
+    monkeypatch.setattr(
+        TaskRunner,
+        "submit",
+        lambda _self, function, on_success, _on_error: on_success(function()),
+    )
+    first = MainWindow(
+        source=JsonFileSource(),
+        settings=application_settings(settings_directory),
+        restore_session=True,
+    )
+    first.add_locations([contexts])
+    second_record = first.file_model.records[1]
+    assert first._select_record_by_id(second_record.id)  # noqa: SLF001
+    first.back_action.trigger()
+    assert first._current_document is not None  # noqa: SLF001
+    assert first._current_document.record.name == "step_1.json"  # noqa: SLF001
+    first.forward_action.trigger()
+    assert first._current_document is not None  # noqa: SLF001
+    assert first._current_document.record.name == "step_2.json"  # noqa: SLF001
+    first.hierarchy_tabs.setCurrentWidget(first.collection_plot)
+    first.main_workspace.setSizes([320, 880])
+    first.close()
+    qapp.processEvents()
+
+    restored = MainWindow(
+        source=JsonFileSource(),
+        settings=application_settings(settings_directory),
+        restore_session=True,
+    )
+
+    assert len(restored.file_model.records) == 2
+    assert restored._current_document is not None  # noqa: SLF001
+    assert restored._current_document.record.name == "step_2.json"  # noqa: SLF001
+    assert restored.hierarchy_tabs.currentWidget() is restored.collection_plot
+    assert restored.recent_menu.actions()[0].toolTip() == str(contexts.resolve())
+
+    explicit = tmp_path / "explicit.json"
+    explicit.write_text('{"output": 3}', encoding="utf-8")
+    overridden = MainWindow(
+        source=JsonFileSource(),
+        initial_paths=[explicit],
+        settings=application_settings(settings_directory),
+        restore_session=True,
+    )
+    assert [record.name for record in overridden.file_model.records] == [
+        "explicit.json"
+    ]
+    assert overridden._session_locations == [str(explicit.resolve())]  # noqa: SLF001
+
+
+def test_find_shortcut_and_navigation_history(chemfit_document):
+    window = MainWindow(source=JsonFileSource())
+    window._load_generation = 1  # noqa: SLF001
+    window._document_loaded(1, chemfit_document)  # noqa: SLF001
+    window.hierarchy_tabs.setCurrentWidget(window.tree)
+
+    window.find_action.trigger()
+    assert window.hierarchy_tabs.currentWidget() is window.search_workspace
+    window.field_search.setText("output")
+    window.clear_search_action.trigger()
+    assert window.field_search.text() == ""
+    assert window.hierarchy_tabs.currentWidget() is window.tree
+
+    assert window._select_context_path((0,), remember=True)  # noqa: SLF001
+    assert window._select_context_path((1,), remember=True)  # noqa: SLF001
+    assert not window.back_button.icon().isNull()
+    assert not window.forward_button.icon().isNull()
+    assert window.back_button.isEnabled()
+    window.back_button.click()
+    selected = window.tree_model.node_info(window.tree.currentIndex())
+    assert selected is not None
+    assert selected.path == (0,)
+    assert window.forward_action.isEnabled()
+    assert window.forward_button.isEnabled()
+    window.forward_button.click()
+    selected = window.tree_model.node_info(window.tree.currentIndex())
+    assert selected is not None
+    assert selected.path == (1,)
 
 
 def test_collection_has_separate_ascending_and_descending_sort_buttons(tmp_path):
@@ -275,9 +365,7 @@ def test_data_flow_node_shows_custom_name_and_component_type(tmp_path):
     graph.ensure_rendered()
 
     labels = {
-        item.node.label
-        for item in graph.view.scene().items()
-        if hasattr(item, "node")
+        item.node.label for item in graph.view.scene().items() if hasattr(item, "node")
     }
     assert "density observable" in labels
     assert any(
@@ -342,7 +430,9 @@ def test_active_graph_rebuilds_when_evaluation_changes(tmp_path, chemfit_documen
     window._load_generation = 1  # noqa: SLF001
     window._document_loaded(1, chemfit_document)  # noqa: SLF001
     assert window.graph.view.document is chemfit_document
-    assert window.graph.view.rendered_node_count == len(chemfit_document.children(())) + 2
+    assert (
+        window.graph.view.rendered_node_count == len(chemfit_document.children(())) + 2
+    )
 
     window._load_generation = 2  # noqa: SLF001
     window._document_loaded(2, partial_document)  # noqa: SLF001
@@ -569,9 +659,7 @@ def test_evaluation_sidebar_persists_across_top_level_workspaces(qapp):
 
 def test_extraction_preview_tracks_visible_collection_order(tmp_path, monkeypatch):
     for index, name in enumerate(("step_1.json", "step_2.json", "step_10.json")):
-        (tmp_path / name).write_text(
-            json.dumps({"loss": index + 1}), encoding="utf-8"
-        )
+        (tmp_path / name).write_text(json.dumps({"loss": index + 1}), encoding="utf-8")
     source = JsonFileSource()
     window = MainWindow(source=source)
     window.file_model.set_records(source.discover([tmp_path]))
@@ -581,15 +669,11 @@ def test_extraction_preview_tracks_visible_collection_order(tmp_path, monkeypatc
         "submit",
         lambda function, on_success, _on_error: on_success(function()),
     )
-    window.extraction.add_selector(
-        FieldSelector((), "fields", ("loss",), "loss")
-    )
+    window.extraction.add_selector(FieldSelector((), "fields", ("loss",), "loss"))
 
     def preview_names():
         model = window.extraction.preview_model
-        return [
-            model.data(model.index(row, 1)) for row in range(model.rowCount())
-        ]
+        return [model.data(model.index(row, 1)) for row in range(model.rowCount())]
 
     assert preview_names() == ["step_1.json", "step_2.json", "step_10.json"]
 

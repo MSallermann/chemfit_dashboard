@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QModelIndex, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtGui import QKeyEvent, QKeySequence, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFrame,
     QGridLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QTableView,
     QTabWidget,
@@ -31,9 +34,10 @@ class JsonView(QTreeView):
     numeric_selected = Signal(object)
     value_selected = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, section: str = "value", parent: QWidget | None = None):
         """Initialize a generic expandable value view."""
         super().__init__(parent)
+        self._section = section
         self._json_model = JsonValueModel(parent=self)
         self.setModel(self._json_model)
         self.setAlternatingRowColors(True)
@@ -43,6 +47,8 @@ class JsonView(QTreeView):
         self.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.selectionModel().currentChanged.connect(self._current_changed)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
     def set_value(self, value: Any) -> None:
         self._json_model.set_value(value)
@@ -66,6 +72,50 @@ class JsonView(QTreeView):
             self.numeric_selected.emit((path, value))
         else:
             self.numeric_selected.emit(None)
+
+    def copy_current_value(self, *, as_json: bool = False) -> None:
+        index = self.currentIndex()
+        if not index.isValid():
+            return
+        value = self._json_model.value(index)
+        text = (
+            json.dumps(value, ensure_ascii=False, indent=2)
+            if as_json
+            else _clipboard_value(value)
+        )
+        QApplication.clipboard().setText(text)
+
+    def copy_current_path(self) -> None:
+        index = self.currentIndex()
+        if not index.isValid():
+            return
+        path = self._json_model.value_path(index)
+        suffix = _format_value_path(path)
+        QApplication.clipboard().setText(f"{self._section}/{suffix}")
+
+    def _show_context_menu(self, position) -> None:  # noqa: ANN001
+        index = self.indexAt(position)
+        if not index.isValid():
+            return
+        self.setCurrentIndex(index.siblingAtColumn(1))
+        menu = QMenu(self)
+        copy_value = menu.addAction("Copy value")
+        copy_json = menu.addAction("Copy value as JSON")
+        copy_path = menu.addAction("Copy field path")
+        selected = menu.exec(self.viewport().mapToGlobal(position))
+        if selected is copy_value:
+            self.copy_current_value()
+        elif selected is copy_json:
+            self.copy_current_value(as_json=True)
+        elif selected is copy_path:
+            self.copy_current_path()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_current_value()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class StructureView(QWidget):
@@ -96,7 +146,7 @@ class StructureView(QWidget):
         self.table.setModel(self.table_model)
         layout.addWidget(self.table, 2)
 
-        self.raw = JsonView()
+        self.raw = JsonView("structure")
         layout.addWidget(self.raw, 1)
 
     def set_structure(self, structure: Mapping[str, Any] | None) -> None:
@@ -233,10 +283,10 @@ class Inspector(QWidget):
         layout.addWidget(actions)
 
         self.tabs = QTabWidget()
-        self.summary = JsonView()
-        self.metadata = JsonView()
+        self.summary = JsonView("fields")
+        self.metadata = JsonView("metadata")
         self.structure = StructureView()
-        self.raw = JsonView()
+        self.raw = JsonView("raw")
         self.tabs.addTab(self.summary, "Overview")
         self.tabs.addTab(self.metadata, "Metadata")
         self.tabs.addTab(self.structure, "Structure")
@@ -360,8 +410,7 @@ class Inspector(QWidget):
             f"Add this number as another series in the current plot.{selected}"
         )
         self.order_button.setToolTip(
-            "Sort contexts ascending by this number; missing values go last."
-            f"{selected}"
+            f"Sort contexts ascending by this number; missing values go last.{selected}"
         )
         self.plot_selection.setText(
             f"Selected: {selector.value_label}"
@@ -460,3 +509,15 @@ def _format_value_path(path: tuple[str | int, ...]) -> str:
         else:
             result += f".{segment}" if result else segment
     return result or "value"
+
+
+def _clipboard_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)

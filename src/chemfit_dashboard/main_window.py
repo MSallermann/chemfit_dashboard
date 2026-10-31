@@ -4,11 +4,23 @@ import logging
 import re
 import threading
 from collections import OrderedDict
+from contextlib import suppress
 from itertools import islice
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QItemSelection, QSettings, QSortFilterProxyModel, Qt, QTimer
-from PySide6.QtGui import QAction, QFont, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,11 +35,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
     QStyle,
     QTabWidget,
+    QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -39,6 +53,7 @@ from chemfit_dashboard.appearance import (
     COMPONENT_LABEL_METADATA_KEY_SETTING,
     DEFAULT_COLOR_SCHEME,
     FONT_SCALE_SETTING,
+    ColorScheme,
     application_settings,
     color_scheme,
     set_active_color_scheme,
@@ -103,9 +118,19 @@ from chemfit_dashboard.workers import TaskRunner
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+RECENT_LOCATIONS_SETTING = "session/recent_locations"
+SESSION_LOCATIONS_SETTING = "session/locations"
+SESSION_RECORD_SETTING = "session/selected_record"
+SESSION_NODE_PATH_SETTING = "session/node_path"
+SESSION_GEOMETRY_SETTING = "session/geometry"
+SESSION_MAIN_SPLITTER_SETTING = "session/main_splitter"
+SESSION_CONTEXT_SPLITTER_SETTING = "session/context_splitter"
+SESSION_WORKSPACE_TAB_SETTING = "session/workspace_tab"
+SESSION_HIERARCHY_TAB_SETTING = "session/hierarchy_tab"
+MAX_RECENT_LOCATIONS = 10
 
 
 class MainWindow(QMainWindow):
@@ -114,6 +139,7 @@ class MainWindow(QMainWindow):
         source: ContextSource | None = None,
         initial_paths: Sequence[str | Path] | None = None,
         settings: QSettings | None = None,
+        restore_session: bool = False,
     ):
         """Initialize the dashboard around a replaceable context source."""
         super().__init__()
@@ -135,6 +161,9 @@ class MainWindow(QMainWindow):
         self._pending_search_hit: SearchHit | None = None
         self._pending_failure: FailureOccurrence | None = None
         self._pending_plot_selection: tuple[str, NumberSelector] | None = None
+        self._navigation_history: list[tuple[str, NodePath]] = []
+        self._navigation_index = -1
+        self._navigation_replaying = False
         self._sticky_node_path: NodePath = ()
         self._sticky_node_trail: NodeTrail = ()
         self._suppress_context_memory = False
@@ -148,6 +177,9 @@ class MainWindow(QMainWindow):
         self._current_document: ContextDocument | None = None
         self._tab_before_search: QWidget | None = None
         self._settings = settings or application_settings()
+        self._session_enabled = restore_session
+        self._session_locations: list[str] = []
+        self._restored_record_path: str | None = None
         self._font_scale = 1.0
         self._color_scheme_key = DEFAULT_COLOR_SCHEME
         self._base_font: QFont | None = None
@@ -171,9 +203,21 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 620)
         self._build_ui()
         self._build_menu()
+        if self._session_enabled:
+            self._restore_session_state()
 
-        if initial_paths:
-            self.add_locations(initial_paths)
+        startup_paths = list(initial_paths or ())
+        if startup_paths and self._session_enabled:
+            # Explicit command-line locations replace the saved collection while
+            # retaining the restored window layout and appearance.
+            self._session_locations = []
+            self._restored_record_path = None
+            self._sticky_node_path = ()
+            self._sticky_node_trail = ()
+        elif self._session_enabled:
+            startup_paths = list(self._session_locations)
+        if startup_paths:
+            self.add_locations(startup_paths)
 
     def _restore_appearance_settings(self) -> None:
         saved_font_scale = self._settings.value(FONT_SCALE_SETTING, 1.0)
@@ -217,6 +261,19 @@ class MainWindow(QMainWindow):
         title.setObjectName("brand")
         title_box.addWidget(title)
         header_layout.addLayout(title_box)
+        self.back_button = QToolButton()
+        self.back_button.setObjectName("historyBackButton")
+        self.back_button.setAccessibleName("Back")
+        self.back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.back_button.setEnabled(False)
+        self.forward_button = QToolButton()
+        self.forward_button.setObjectName("historyForwardButton")
+        self.forward_button.setAccessibleName("Forward")
+        self.forward_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.forward_button.setEnabled(False)
+        header_layout.addSpacing(10)
+        header_layout.addWidget(self.back_button)
+        header_layout.addWidget(self.forward_button)
         header_layout.addStretch()
         scheme_label = QLabel("COLOR")
         scheme_label.setObjectName("sectionLabel")
@@ -324,6 +381,10 @@ class MainWindow(QMainWindow):
         self.file_list.setUniformRowHeights(True)
         self.file_list.setAnimated(False)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(
+            self._show_evaluation_context_menu
+        )
         self.file_list.selectionModel().selectionChanged.connect(
             self._evaluation_selected
         )
@@ -449,9 +510,7 @@ class MainWindow(QMainWindow):
         search_dimensions.addWidget(self.search_keys, 0, 0)
         self.search_values = QCheckBox("Include values")
         self.search_values.setChecked(True)
-        self.search_values.setToolTip(
-            "Match serialized field values"
-        )
+        self.search_values.setToolTip("Match serialized field values")
         self.search_values.toggled.connect(self._search_options_toggled)
         search_dimensions.addWidget(self.search_values, 0, 1)
         self.search_metadata = QCheckBox("Include metadata")
@@ -480,6 +539,8 @@ class MainWindow(QMainWindow):
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.setAnimated(False)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_tree_context_menu)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.tree.header().setMinimumSectionSize(72)
@@ -511,9 +572,7 @@ class MainWindow(QMainWindow):
         search_workspace_layout.addWidget(self.search_panel, 1)
         self.hierarchy_tabs = QTabWidget()
         self.hierarchy_tabs.addTab(self.tree, "Tree")
-        self._data_flow_tab_index = self.hierarchy_tabs.addTab(
-            self.graph, "Data Flow"
-        )
+        self._data_flow_tab_index = self.hierarchy_tabs.addTab(self.graph, "Data Flow")
         self._plot_tab_index = self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
         self.hierarchy_tabs.addTab(self.search_workspace, "Search")
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
@@ -530,6 +589,9 @@ class MainWindow(QMainWindow):
         open_directory.setShortcut("Ctrl+Shift+O")
         open_directory.triggered.connect(self.open_directory)
         file_menu.addAction(open_directory)
+        self.recent_menu = QMenu("Open &recent", self)
+        file_menu.addMenu(self.recent_menu)
+        self._rebuild_recent_menu()
         file_menu.addSeparator()
         self.close_collection_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton),
@@ -549,6 +611,108 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
+        edit_menu = self.menuBar().addMenu("&Edit")
+        self.find_action = QAction("&Find in contexts…", self)
+        self.find_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.find_action.triggered.connect(self._focus_field_search)
+        edit_menu.addAction(self.find_action)
+        self.clear_search_action = QAction("Clear search", self)
+        self.clear_search_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.clear_search_action.triggered.connect(self._clear_field_search)
+        edit_menu.addAction(self.clear_search_action)
+
+        navigate_menu = self.menuBar().addMenu("&Navigate")
+        self.back_action = QAction("&Back", self)
+        self.back_action.setShortcut(QKeySequence.StandardKey.Back)
+        self.back_action.setToolTip("Back to the previous context")
+        self.back_action.setEnabled(False)
+        self.back_action.triggered.connect(lambda: self._navigate_history(-1))
+        navigate_menu.addAction(self.back_action)
+        self.back_button.setDefaultAction(self.back_action)
+        self.forward_action = QAction("&Forward", self)
+        self.forward_action.setShortcut(QKeySequence.StandardKey.Forward)
+        self.forward_action.setToolTip("Forward to the next context")
+        self.forward_action.setEnabled(False)
+        self.forward_action.triggered.connect(lambda: self._navigate_history(1))
+        navigate_menu.addAction(self.forward_action)
+        self.forward_button.setDefaultAction(self.forward_action)
+        self._set_navigation_icons(color_scheme(self._color_scheme_key))
+
+    def _set_navigation_icons(self, scheme: ColorScheme) -> None:
+        self.back_action.setIcon(_chevron_icon(-1, scheme.text_strong))
+        self.forward_action.setIcon(_chevron_icon(1, scheme.text_strong))
+
+    def _setting_strings(self, key: str) -> list[str]:
+        value = self._settings.value(key, [])
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value if str(item)]
+        return [str(value)] if value else []
+
+    def _setting_ints(self, key: str) -> list[int]:
+        values = self._setting_strings(key)
+        try:
+            return [int(value) for value in values]
+        except ValueError:
+            return []
+
+    def _setting_int(self, key: str, default: int = 0) -> int:
+        value = self._settings.value(key, default)
+        if isinstance(value, (int, str)):
+            try:
+                return int(value)
+            except ValueError:
+                pass
+        return default
+
+    def _restore_session_state(self) -> None:
+        geometry = self._settings.value(SESSION_GEOMETRY_SETTING)
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        main_sizes = self._setting_ints(SESSION_MAIN_SPLITTER_SETTING)
+        if len(main_sizes) == 2:
+            self.main_workspace.setSizes(main_sizes)
+        context_sizes = self._setting_ints(SESSION_CONTEXT_SPLITTER_SETTING)
+        if len(context_sizes) == 2:
+            self.context_workspace.setSizes(context_sizes)
+        workspace_tab = self._setting_int(SESSION_WORKSPACE_TAB_SETTING)
+        hierarchy_tab = self._setting_int(SESSION_HIERARCHY_TAB_SETTING)
+        if 0 <= workspace_tab < self.workspace_tabs.count():
+            self.workspace_tabs.setCurrentIndex(workspace_tab)
+        if 0 <= hierarchy_tab < self.hierarchy_tabs.count():
+            self.hierarchy_tabs.setCurrentIndex(hierarchy_tab)
+        self._session_locations = self._setting_strings(SESSION_LOCATIONS_SETTING)
+        selected_record = self._settings.value(SESSION_RECORD_SETTING, "")
+        self._restored_record_path = str(selected_record) or None
+        node_path = self._setting_ints(SESSION_NODE_PATH_SETTING)
+        self._sticky_node_path = tuple(node_path)
+
+    def _save_session_state(self) -> None:
+        if not self._session_enabled:
+            return
+        self._settings.setValue(SESSION_GEOMETRY_SETTING, self.saveGeometry())
+        self._settings.setValue(
+            SESSION_MAIN_SPLITTER_SETTING, self.main_workspace.sizes()
+        )
+        self._settings.setValue(
+            SESSION_CONTEXT_SPLITTER_SETTING, self.context_workspace.sizes()
+        )
+        self._settings.setValue(
+            SESSION_WORKSPACE_TAB_SETTING, self.workspace_tabs.currentIndex()
+        )
+        self._settings.setValue(
+            SESSION_HIERARCHY_TAB_SETTING, self.hierarchy_tabs.currentIndex()
+        )
+        self._settings.setValue(SESSION_LOCATIONS_SETTING, self._session_locations)
+        document = self._current_document
+        if document is not None:
+            self._settings.setValue(
+                SESSION_RECORD_SETTING, str(document.record.path.resolve())
+            )
+            self._settings.setValue(
+                SESSION_NODE_PATH_SETTING, list(self._sticky_node_path)
+            )
+        self._settings.sync()
+
     def _new_operation(self, name: str) -> CancellationToken:
         previous = self._operation_tokens.get(name)
         if previous is not None:
@@ -563,6 +727,7 @@ class MainWindow(QMainWindow):
             token.cancel()
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
+        self._save_session_state()
         self._restore_data_flow_panel()
         self._restore_plot_panel()
         for token in self._operation_tokens.values():
@@ -598,6 +763,7 @@ class MainWindow(QMainWindow):
         self._apply_application_stylesheet()
         self._settings.setValue(COLOR_SCHEME_SETTING, scheme.key)
         self._settings.sync()
+        self._set_navigation_icons(scheme)
         self.graph.set_color_scheme(scheme)
         self.collection_plot.set_color_scheme(scheme)
         self.file_list.viewport().update()
@@ -699,7 +865,70 @@ class MainWindow(QMainWindow):
         if path:
             self.add_locations([path])
 
-    def close_collection(self) -> None:
+    def _rebuild_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        locations = self._setting_strings(RECENT_LOCATIONS_SETTING)
+        if not locations:
+            empty = self.recent_menu.addAction("No recent locations")
+            empty.setEnabled(False)
+            return
+        for location in locations:
+            action = self.recent_menu.addAction(Path(location).name or location)
+            action.setToolTip(location)
+            action.triggered.connect(
+                lambda _checked=False, target=location: self._open_recent(target)
+            )
+        self.recent_menu.addSeparator()
+        clear_action = self.recent_menu.addAction("Clear recent locations")
+        clear_action.triggered.connect(self._clear_recent_locations)
+
+    def _open_recent(self, location: str) -> None:
+        if self.file_model.records:
+            self.close_collection()
+        self.add_locations([location])
+
+    def _clear_recent_locations(self) -> None:
+        self._settings.remove(RECENT_LOCATIONS_SETTING)
+        self._settings.sync()
+        self._rebuild_recent_menu()
+
+    def _show_evaluation_context_menu(self, position) -> None:  # noqa: ANN001
+        proxy_index = self.file_list.indexAt(position)
+        if not proxy_index.isValid():
+            return
+        record = self.file_model.record(self.file_proxy.mapToSource(proxy_index))
+        if record is None:
+            return
+        menu = QMenu(self.file_list)
+        copy_name = menu.addAction("Copy filename")
+        copy_path = menu.addAction("Copy full path")
+        selected = menu.exec(self.file_list.viewport().mapToGlobal(position))
+        if selected is copy_name:
+            QApplication.clipboard().setText(record.name)
+        elif selected is copy_path:
+            QApplication.clipboard().setText(str(record.path))
+
+    def _show_tree_context_menu(self, position) -> None:  # noqa: ANN001
+        index = self.tree.indexAt(position)
+        info = self.tree_model.node_info(index)
+        document = self._current_document
+        if info is None or document is None:
+            return
+        menu = QMenu(self.tree)
+        copy_name = menu.addAction("Copy component name")
+        copy_path = menu.addAction("Copy component path")
+        copy_structural_path = menu.addAction("Copy structural path")
+        selected = menu.exec(self.tree.viewport().mapToGlobal(position))
+        if selected is copy_name:
+            QApplication.clipboard().setText(document.component_label(info.path))
+        elif selected is copy_path:
+            trail = component_trail_for_path(document, info.path)
+            path = " / ".join(segment.name for segment in trail) or "Evaluation root"
+            QApplication.clipboard().setText(path)
+        elif selected is copy_structural_path:
+            QApplication.clipboard().setText(info.path_text)
+
+    def close_collection(self) -> None:  # noqa: PLR0915
         """Close all loaded contexts while leaving the application running."""
         if not self.file_model.records:
             return
@@ -720,6 +949,10 @@ class MainWindow(QMainWindow):
         self._pending_search_hit = None
         self._pending_failure = None
         self._pending_plot_selection = None
+        self._navigation_history = []
+        self._navigation_index = -1
+        self._navigation_replaying = False
+        self._update_navigation_actions()
         self._current_document = None
         self._sticky_node_path = ()
         self._sticky_node_trail = ()
@@ -752,10 +985,33 @@ class MainWindow(QMainWindow):
         self.descending_order_button.setEnabled(False)
         self.reset_order_button.setEnabled(False)
         self.close_collection_action.setEnabled(False)
+        if self._session_enabled:
+            self._session_locations = []
+            self._settings.remove(SESSION_LOCATIONS_SETTING)
+            self._settings.remove(SESSION_RECORD_SETTING)
+            self._settings.remove(SESSION_NODE_PATH_SETTING)
+            self._settings.sync()
         self.statusBar().showMessage("Closed context collection", 3000)
 
     def add_locations(self, locations: Sequence[str | Path]) -> None:
-        locations = list(locations)
+        locations = [
+            str(Path(location).expanduser().resolve()) for location in locations
+        ]
+        if self._session_enabled:
+            for location in locations:
+                if location not in self._session_locations:
+                    self._session_locations.append(location)
+            self._settings.setValue(SESSION_LOCATIONS_SETTING, self._session_locations)
+            recent = self._setting_strings(RECENT_LOCATIONS_SETTING)
+            for location in reversed(locations):
+                if location in recent:
+                    recent.remove(location)
+                recent.insert(0, location)
+            self._settings.setValue(
+                RECENT_LOCATIONS_SETTING, recent[:MAX_RECENT_LOCATIONS]
+            )
+            self._settings.sync()
+            self._rebuild_recent_menu()
         collection_generation = self._collection_generation
         self.statusBar().showMessage("Scanning for context files…")
         self.tasks.submit(
@@ -787,6 +1043,20 @@ class MainWindow(QMainWindow):
             root_index = self.file_proxy.index(0, 0)
             self.file_list.expand(root_index)
             source_index = self.file_model.first_record_index()
+            if self._restored_record_path is not None:
+                restored = next(
+                    (
+                        record
+                        for record in self.file_model.records
+                        if str(record.path.resolve()) == self._restored_record_path
+                    ),
+                    None,
+                )
+                if restored is not None:
+                    restored_index = self.file_model.index_for_record_id(restored.id)
+                    if restored_index.isValid():
+                        source_index = restored_index
+                self._restored_record_path = None
             file_index = self.file_proxy.mapFromSource(source_index)
             parent = file_index.parent()
             while parent.isValid():
@@ -822,7 +1092,9 @@ class MainWindow(QMainWindow):
             lambda details: self._load_failed(generation, record, details),
         )
 
-    def _document_loaded(self, generation: int, document: ContextDocument) -> None:
+    def _document_loaded(  # noqa: PLR0912, PLR0915
+        self, generation: int, document: ContextDocument
+    ) -> None:
         if generation != self._load_generation:
             return
         document.set_component_label_metadata_key(self._component_label_metadata_key)
@@ -849,6 +1121,13 @@ class MainWindow(QMainWindow):
             self.graph.ensure_rendered()
         self.node_count.setText(f"{document.node_count} nodes")
         self.statusBar().showMessage(f"Loaded {document.record.name}", 3000)
+        if self._sticky_node_path and not self._sticky_node_trail:
+            try:
+                self._sticky_node_trail = component_trail_for_path(
+                    document, self._sticky_node_path
+                )
+            except ContextSourceError:
+                self._sticky_node_path = ()
         resolution = resolve_component_selection(
             document, self._sticky_node_path, self._sticky_node_trail
         )
@@ -874,6 +1153,23 @@ class MainWindow(QMainWindow):
                 f"below {available_label} (selection retained)",
                 5000,
             )
+        has_pending_navigation = (
+            (
+                self._pending_search_hit is not None
+                and self._pending_search_hit.record_id == document.record.id
+            )
+            or (
+                self._pending_failure is not None
+                and self._pending_failure.record_id == document.record.id
+            )
+            or (
+                self._pending_plot_selection is not None
+                and self._pending_plot_selection[0] == document.record.id
+            )
+        )
+        if not has_pending_navigation:
+            self._record_navigation(resolution.path)
+        self._navigation_replaying = False
         pending_hit = self._pending_search_hit
         if pending_hit is not None and pending_hit.record_id == document.record.id:
             self._pending_search_hit = None
@@ -893,6 +1189,7 @@ class MainWindow(QMainWindow):
     def _load_failed(self, generation: int, record: RecordRef, details: str) -> None:
         if generation != self._load_generation:
             return
+        self._navigation_replaying = False
         if (
             self._pending_search_hit is not None
             and self._pending_search_hit.record_id == record.id
@@ -946,9 +1243,7 @@ class MainWindow(QMainWindow):
         placeholder.setObjectName("dataFlowDetachedPlaceholder")
         placeholder_layout = QVBoxLayout(placeholder)
         placeholder_layout.addStretch()
-        message = QLabel(
-            "Data Flow is currently open in a detached window."
-        )
+        message = QLabel("Data Flow is currently open in a detached window.")
         message.setObjectName("dataFlowDetachedMessage")
         message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         message.setWordWrap(True)
@@ -1034,9 +1329,7 @@ class MainWindow(QMainWindow):
         placeholder_layout.addWidget(message)
         return_button = QPushButton("Return Plot to dashboard")
         return_button.setObjectName("returnPlotButton")
-        return_button.clicked.connect(
-            lambda _checked=False: self._restore_plot_panel()
-        )
+        return_button.clicked.connect(lambda _checked=False: self._restore_plot_panel())
         placeholder_layout.addWidget(
             return_button, alignment=Qt.AlignmentFlag.AlignHCenter
         )
@@ -1103,6 +1396,54 @@ class MainWindow(QMainWindow):
             return
         self._sticky_node_path = path
         self._sticky_node_trail = trail
+        self._record_navigation(path)
+
+    def _record_navigation(self, path: NodePath) -> None:
+        if self._navigation_replaying or self._current_document is None:
+            return
+        location = (self._current_document.record.id, path)
+        if (
+            0 <= self._navigation_index < len(self._navigation_history)
+            and self._navigation_history[self._navigation_index] == location
+        ):
+            return
+        del self._navigation_history[self._navigation_index + 1 :]
+        self._navigation_history.append(location)
+        if len(self._navigation_history) > 200:
+            self._navigation_history.pop(0)
+        self._navigation_index = len(self._navigation_history) - 1
+        self._update_navigation_actions()
+
+    def _update_navigation_actions(self) -> None:
+        if not hasattr(self, "back_action"):
+            return
+        self.back_action.setEnabled(self._navigation_index > 0)
+        self.forward_action.setEnabled(
+            0 <= self._navigation_index < len(self._navigation_history) - 1
+        )
+
+    def _navigate_history(self, offset: int) -> None:
+        target_index = self._navigation_index + offset
+        if not 0 <= target_index < len(self._navigation_history):
+            return
+        previous_index = self._navigation_index
+        record_id, path = self._navigation_history[target_index]
+        self._navigation_index = target_index
+        self._update_navigation_actions()
+        self._navigation_replaying = True
+        self._sticky_node_path = path
+        self._sticky_node_trail = ()
+        document = self._current_document
+        if document is not None and document.record.id == record_id:
+            if self._select_context_path(path, remember=False):
+                with suppress(ContextSourceError):
+                    self._sticky_node_trail = component_trail_for_path(document, path)
+            self._navigation_replaying = False
+            return
+        if not self._select_record_by_id(record_id):
+            self._navigation_index = previous_index
+            self._navigation_replaying = False
+            self._update_navigation_actions()
 
     def _select_context_path(self, path: NodePath, *, remember: bool) -> bool:
         if self._current_document is None:
@@ -1273,6 +1614,25 @@ class MainWindow(QMainWindow):
                 and self._tab_before_search is not None
             ):
                 self.hierarchy_tabs.setCurrentWidget(self._tab_before_search)
+            self._tab_before_search = None
+
+    def _focus_field_search(self) -> None:
+        current = self.hierarchy_tabs.currentWidget()
+        if current is not self.search_workspace:
+            self._tab_before_search = current
+            self.hierarchy_tabs.setCurrentWidget(self.search_workspace)
+        self.field_search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.field_search.selectAll()
+
+    def _clear_field_search(self) -> None:
+        if self.field_search.text():
+            self.field_search.clear()
+            return
+        if (
+            self.hierarchy_tabs.currentWidget() is self.search_workspace
+            and self._tab_before_search is not None
+        ):
+            self.hierarchy_tabs.setCurrentWidget(self._tab_before_search)
             self._tab_before_search = None
 
     def _run_field_search(self) -> None:
@@ -1883,3 +2243,24 @@ class MainWindow(QMainWindow):
         message.setText(title)
         message.setDetailedText(details)
         message.exec()
+
+
+def _chevron_icon(direction: int, color: str) -> QIcon:
+    """Create a small theme-aware navigation chevron."""
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    outer_x, tip_x = (13.0, 7.0) if direction < 0 else (7.0, 13.0)
+    path = QPainterPath()
+    path.moveTo(outer_x, 4.5)
+    path.lineTo(tip_x, 10.0)
+    path.lineTo(outer_x, 15.5)
+    painter.drawPath(path)
+    painter.end()
+    return QIcon(pixmap)

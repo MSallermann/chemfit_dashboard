@@ -16,7 +16,7 @@ from PySide6.QtCharts import (
     QScatterSeries,
     QValueAxis,
 )
-from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
@@ -388,7 +388,10 @@ class CollectionPlotPanel(QWidget):
                 contiguous.append(point)
             _append_line(chart, lines, contiguous, color)
             markers.hovered.connect(
-                lambda point, state, marker_series=markers, label=series_data.selector.label: self._point_hovered(
+                lambda point,
+                state,
+                marker_series=markers,
+                label=series_data.selector.label: self._point_hovered(
                     marker_series, point, state, label
                 )
             )
@@ -636,18 +639,24 @@ class CollectionPlotPanel(QWidget):
     def export_image(self, path: str | Path) -> None:
         """Render the current chart view to PNG or SVG based on its suffix."""
         destination = Path(path)
+        source_rect = self.chart_view.viewport().rect()
         if destination.suffix.casefold() == ".svg":
             generator = QSvgGenerator()
             generator.setFileName(str(destination))
-            generator.setSize(self.chart_view.size())
-            generator.setViewBox(self.chart_view.rect())
+            generator.setSize(source_rect.size())
+            generator.setViewBox(source_rect)
             generator.setResolution(RASTER_EXPORT_DPI)
             painter = QPainter(generator)
-            self.chart_view.render(painter)
+            self.chart_view.render(
+                painter,
+                QRectF(source_rect),
+                source_rect,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+            )
             painter.end()
             return
         scale = RASTER_EXPORT_DPI / SCREEN_DPI
-        source_size = self.chart_view.size()
+        source_size = source_rect.size()
         image = QImage(
             max(1, round(source_size.width() * scale)),
             max(1, round(source_size.height() * scale)),
@@ -658,8 +667,12 @@ class CollectionPlotPanel(QWidget):
         image.setDotsPerMeterY(dots_per_meter)
         image.fill(QColor(self._scheme.chart))
         painter = QPainter(image)
-        painter.scale(scale, scale)
-        self.chart_view.render(painter)
+        self.chart_view.render(
+            painter,
+            QRectF(image.rect()),
+            source_rect,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+        )
         painter.end()
         image.save(str(destination))
 

@@ -245,8 +245,7 @@ def test_multi_series_plot_normalizes_exports_and_selects_context(
     plotted_marker = next(
         series
         for series in panel.chart_view.chart().series()
-        if isinstance(series, QScatterSeries)
-        and series is not panel._selection_series  # noqa: SLF001
+        if isinstance(series, QScatterSeries) and series is not panel._selection_series  # noqa: SLF001
     )
     plotted_marker.clicked.emit(QPointF(0, 0))
     assert selected == ["first"]
@@ -315,10 +314,20 @@ def test_png_plot_export_is_rendered_at_300_dpi(tmp_path):
     panel.export_image(png_path)
 
     exported_image = QImage(str(png_path))
-    assert exported_image.width() == round(panel.chart_view.width() * (300 / 96))
-    assert exported_image.height() == round(panel.chart_view.height() * (300 / 96))
+    viewport = panel.chart_view.viewport()
+    assert exported_image.width() == round(viewport.width() * (300 / 96))
+    assert exported_image.height() == round(viewport.height() * (300 / 96))
     assert abs(exported_image.dotsPerMeterX() - round(300 / 0.0254)) <= 1
     assert abs(exported_image.dotsPerMeterY() - round(300 / 0.0254)) <= 1
+
+    # The lower-right portion must contain rendered chart details rather than
+    # being an unused single-color area outside an unscaled upper-left render.
+    colors = {
+        exported_image.pixelColor(x, y).rgba()
+        for x in range(exported_image.width() * 2 // 3, exported_image.width(), 4)
+        for y in range(exported_image.height() * 2 // 3, exported_image.height(), 4)
+    }
+    assert len(colors) > 1
 
 
 def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
@@ -349,9 +358,7 @@ def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
     )
 
     for point in data.points:
-        chart_position = chart.mapToPosition(
-            QPointF(point.index, point.value), markers
-        )
+        chart_position = chart.mapToPosition(QPointF(point.index, point.value), markers)
         viewport_position = panel.chart_view.mapFromScene(chart_position)
         QTest.mouseClick(
             panel.chart_view.viewport(),

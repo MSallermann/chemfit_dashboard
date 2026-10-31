@@ -24,7 +24,9 @@ def run(paths: Sequence[str | Path] | None = None) -> int:
     application.setApplicationName("ChemFit Context Inspector")
     application.setOrganizationName("ChemFit")
     window = MainWindow(
-        initial_paths=list(paths or []), settings=application_settings()
+        initial_paths=list(paths or []),
+        settings=application_settings(),
+        restore_session=True,
     )
     window.show()
     interrupted = False
