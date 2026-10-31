@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -207,6 +208,7 @@ class ContextSearchPanel(QWidget):
     """Globally ranked search results with contextual hierarchy labels."""
 
     hit_selected = Signal(object)
+    copy_completed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         """Initialize an empty field-search result view."""
@@ -238,9 +240,26 @@ class ContextSearchPanel(QWidget):
         self.results.header().resizeSection(1, 150)
         self.results.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.results.header().resizeSection(2, 72)
-        self.results.currentItemChanged.connect(self._current_item_changed)
+        self.results.itemDoubleClicked.connect(self._item_activated)
         self.results.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results.customContextMenuRequested.connect(self._show_context_menu)
+        self._copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self.results)
+        self._copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._copy_shortcut.activated.connect(self._copy_current_result)
+        self._activate_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Return), self.results
+        )
+        self._activate_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._activate_shortcut.activated.connect(self._activate_current_result)
+        self._activate_keypad_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Enter), self.results
+        )
+        self._activate_keypad_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._activate_keypad_shortcut.activated.connect(self._activate_current_result)
         layout.addWidget(self.results, 1)
 
     def set_index(self, index: ContextSearchIndex | None) -> None:
@@ -421,14 +440,23 @@ class ContextSearchPanel(QWidget):
         item.setText(column, "")
         return label
 
-    def _current_item_changed(
-        self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None
-    ) -> None:
-        if current is None:
-            return
-        hit = current.data(0, HIT_ROLE)
+    def _item_activated(self, item: QTreeWidgetItem, _column: int) -> None:
+        hit = item.data(0, HIT_ROLE)
         if isinstance(hit, SearchHit):
             self.hit_selected.emit(hit)
+
+    def _activate_current_result(self) -> None:
+        item = self.results.currentItem()
+        if item is not None:
+            self._item_activated(item, self.results.currentColumn())
+
+    def _copy_current_result(self) -> None:
+        item = self.results.currentItem()
+        if item is None:
+            return
+        hit = item.data(0, HIT_ROLE)
+        if isinstance(hit, SearchHit):
+            self._copy_hit_json(hit)
 
     def _show_context_menu(self, position) -> None:  # noqa: ANN001
         item = self.results.itemAt(position)
@@ -451,17 +479,17 @@ class ContextSearchPanel(QWidget):
         elif selected is copy_field_path:
             self._copy_hit_field_path(hit)
         elif selected is copy_context:
-            QApplication.clipboard().setText(hit.breadcrumb)
+            self._copy_text(hit.breadcrumb, "Copied context breadcrumb")
         elif selected is copy_filename:
-            QApplication.clipboard().setText(hit.record_name)
+            self._copy_text(hit.record_name, "Copied evaluation filename")
         elif selected is copy_json:
             self._copy_hit_json(hit)
 
     def _copy_hit_value(self, hit: SearchHit) -> None:
-        QApplication.clipboard().setText(hit.preview)
+        self._copy_text(hit.preview, "Copied search value preview")
 
     def _copy_hit_field_path(self, hit: SearchHit) -> None:
-        QApplication.clipboard().setText(_hit_field_path(hit))
+        self._copy_text(_hit_field_path(hit), "Copied search field path")
 
     def _copy_hit_json(self, hit: SearchHit) -> None:
         payload = {
@@ -475,9 +503,14 @@ class ContextSearchPanel(QWidget):
             "preview": hit.preview,
             "score": hit.score,
         }
-        QApplication.clipboard().setText(
-            json.dumps(payload, indent=2, ensure_ascii=False)
+        self._copy_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            "Copied search result as JSON",
         )
+
+    def _copy_text(self, text: str, message: str) -> None:
+        QApplication.clipboard().setText(text)
+        self.copy_completed.emit(message)
 
 
 def _index_document(

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 class JsonView(QTreeView):
     numeric_selected = Signal(object)
     value_selected = Signal(object)
+    copy_completed = Signal(str)
 
     def __init__(self, section: str = "value", parent: QWidget | None = None):
         """Initialize a generic expandable value view."""
@@ -84,6 +85,9 @@ class JsonView(QTreeView):
             else _clipboard_value(value)
         )
         QApplication.clipboard().setText(text)
+        self.copy_completed.emit(
+            "Copied inspector value as JSON" if as_json else "Copied inspector value"
+        )
 
     def copy_current_path(self) -> None:
         index = self.currentIndex()
@@ -92,6 +96,7 @@ class JsonView(QTreeView):
         path = self._json_model.value_path(index)
         suffix = _format_value_path(path)
         QApplication.clipboard().setText(f"{self._section}/{suffix}")
+        self.copy_completed.emit("Copied inspector field path")
 
     def _show_context_menu(self, position) -> None:  # noqa: ANN001
         index = self.indexAt(position)
@@ -206,6 +211,7 @@ class Inspector(QWidget):
     order_requested = Signal(object)
     extraction_requested = Signal(object)
     component_extraction_requested = Signal(object)
+    status_message = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
         """Initialize the tabbed context inspector."""
@@ -308,6 +314,8 @@ class Inspector(QWidget):
         self.raw.numeric_selected.connect(
             lambda selection: self._numeric_selected("raw", selection)
         )
+        for view in (self.summary, self.metadata, self.structure.raw, self.raw):
+            view.copy_completed.connect(self.status_message.emit)
         self.summary.value_selected.connect(
             lambda selection: self._value_selected("fields", selection)
         )

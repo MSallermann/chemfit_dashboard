@@ -120,7 +120,7 @@ def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
     assert "Data Extraction" in inspector.extract_button.toolTip()
 
 
-def test_plot_reports_coordinates_and_can_hide_series():
+def test_plot_reports_coordinates_and_can_hide_series(qapp):
     labels = ("step_1.json", "step_2.json")
     record_ids = ("first", "second")
     first = CollectionSeries(
@@ -137,6 +137,18 @@ def test_plot_reports_coordinates_and_can_hide_series():
     )
     panel = CollectionPlotPanel()
     panel.set_series_collection((first, second))
+    copied = []
+    panel.status_message.connect(copied.append)
+    panel.series_list.setCurrentRow(1)
+    panel._series_copy_shortcut.activated.emit()  # noqa: SLF001
+    assert qapp.clipboard().text() == "Evaluation root / fields/runtime"
+    assert copied[-1] == "Copied plot series field path"
+    panel._copy_series_data(1)  # noqa: SLF001
+    assert qapp.clipboard().text().splitlines() == [
+        "Index,Filename,Record ID,runtime",
+        "0,step_1.json,first,10.0",
+        "1,step_2.json,second,30.0",
+    ]
 
     panel._cursor_moved(QPointF(0.2, 3.25))  # noqa: SLF001
     assert "step_1.json" in panel.cursor_coordinates.text()

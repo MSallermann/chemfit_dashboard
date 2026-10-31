@@ -5,9 +5,10 @@ from contextlib import suppress
 
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
-from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtCore import QMimeData, QModelIndex, QPoint, Qt, QUrl
 from PySide6.QtWidgets import QHeaderView, QLabel, QPushButton
 
+from chemfit_dashboard import main_window as main_window_module
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
     COMPONENT_LABEL_METADATA_KEY_SETTING,
@@ -100,6 +101,63 @@ def test_file_menu_closes_loaded_collection_without_quitting(tmp_path, monkeypat
         source.discover([context_path]), collection_generation
     )
     assert window.file_model.records == ()
+
+
+def test_dashboard_accepts_dropped_json_files_and_directories(tmp_path):
+    contexts = tmp_path / "contexts"
+    contexts.mkdir()
+    context = tmp_path / "step_1.json"
+    context.write_text("{}", encoding="utf-8")
+    ignored = tmp_path / "notes.txt"
+    ignored.write_text("not a context", encoding="utf-8")
+    mime_data = QMimeData()
+    mime_data.setUrls(
+        [
+            QUrl.fromLocalFile(str(contexts)),
+            QUrl.fromLocalFile(str(context)),
+            QUrl.fromLocalFile(str(ignored)),
+        ]
+    )
+    window = MainWindow()
+
+    assert window.acceptDrops()
+    assert window._drop_locations(mime_data) == [  # noqa: SLF001
+        str(contexts.resolve()),
+        str(context.resolve()),
+    ]
+
+
+def test_copy_feedback_appears_beside_cursor(monkeypatch, qapp):
+    cursor_position = [QPoint(100, 200)]
+
+    class CursorStub:
+        @staticmethod
+        def pos() -> QPoint:
+            return cursor_position[0]
+
+    monkeypatch.setattr(main_window_module, "QCursor", CursorStub)
+    window = MainWindow()
+    expected_position = window.mapFromGlobal(QPoint(100, 200)) + QPoint(14, 18)
+
+    window._clipboard_copied("Copied field path")  # noqa: SLF001
+    assert window._clipboard_toast_show_timer.isActive()  # noqa: SLF001
+    qapp.processEvents()
+
+    toast = window._clipboard_toast  # noqa: SLF001
+    assert toast.text() == "Copied field path"
+    assert toast.pos() == expected_position
+    assert not toast.isHidden()
+    assert window._clipboard_toast_follow_timer.isActive()  # noqa: SLF001
+    assert window._clipboard_toast_timer.isActive()  # noqa: SLF001
+    assert window._clipboard_toast_timer.interval() == 500  # noqa: SLF001
+
+    cursor_position[0] = QPoint(180, 260)
+    window._position_clipboard_toast()  # noqa: SLF001
+    assert toast.pos() == window.mapFromGlobal(QPoint(180, 260)) + QPoint(14, 18)
+
+    window._hide_clipboard_toast()  # noqa: SLF001
+    assert toast.isHidden()
+    assert not window._clipboard_toast_follow_timer.isActive()  # noqa: SLF001
 
 
 def test_session_restores_collection_layout_and_recent_location(

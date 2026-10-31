@@ -10,7 +10,7 @@ from chemfit_dashboard.collection_analysis import (
 from chemfit_dashboard.source import JsonFileSource
 
 
-def test_collection_summary_groups_primary_failures_and_numeric_fields(tmp_path):
+def test_collection_summary_groups_primary_failures_and_numeric_fields(tmp_path, qapp):
     (tmp_path / "step_1.json").write_text(
         json.dumps({"step": 1, "loss": 2.0, "output": 0.5}),
         encoding="utf-8",
@@ -57,6 +57,22 @@ def test_collection_summary_groups_primary_failures_and_numeric_fields(tmp_path)
     assert failure.occurrences[0].node_path == (0,)
     assert summary.skipped_components[0].component == "downstream"
     assert summary.missing_components[0].component == "never_run"
+
+    panel = CollectionAnalysisPanel()
+    copied = []
+    panel.status_message.connect(copied.append)
+    panel.set_summary(summary)
+    panel.numeric_table.selectRow(0)
+    panel._numeric_copy_shortcut.activated.emit()  # noqa: SLF001
+    assert "Field,Count,Minimum,Maximum,Mean" in qapp.clipboard().text()
+    assert copied[-1] == "Copied collection summary rows as CSV"
+
+    failure_item = panel.failure_tree.topLevelItem(0)
+    panel.failure_tree.setCurrentItem(failure_item)
+    panel._failure_copy_shortcut.activated.emit()  # noqa: SLF001
+    failure_details = json.loads(qapp.clipboard().text())
+    assert failure_details["component"] == "broken_model"
+    assert failure_details["node_path"] == [0]
 
 
 def test_failure_navigator_cycles_through_occurrences(tmp_path):

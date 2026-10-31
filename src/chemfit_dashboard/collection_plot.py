@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import io
+import json
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +19,15 @@ from PySide6.QtCharts import (
     QValueAxis,
 )
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QShortcut,
+)
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -32,6 +42,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -188,6 +199,7 @@ class CollectionPlotPanel(QWidget):
     remove_series_requested = Signal(object)
     clear_series_requested = Signal()
     expand_requested = Signal()
+    status_message = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
         """Initialize an empty interactive collection chart."""
@@ -205,7 +217,20 @@ class CollectionPlotPanel(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.series_list = QListWidget()
-        self.series_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.series_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.series_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.series_list.customContextMenuRequested.connect(
+            self._show_series_context_menu
+        )
+        self._series_copy_shortcut = QShortcut(
+            QKeySequence.StandardKey.Copy, self.series_list
+        )
+        self._series_copy_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._series_copy_shortcut.activated.connect(self._copy_current_series_path)
         self.series_list.setMaximumHeight(110)
         self.series_list.hide()
         layout.addWidget(self.series_list)
@@ -540,6 +565,9 @@ class CollectionPlotPanel(QWidget):
         visible.setObjectName("seriesVisibility")
         visible.setChecked(series.selector not in self._hidden_selectors)
         visible.setToolTip("Show or hide this series without removing it")
+        visible.clicked.connect(
+            lambda _checked=False, target=index: self.series_list.setCurrentRow(target)
+        )
         visible.toggled.connect(
             lambda checked, selector=series.selector: self._set_series_visible(
                 selector, checked
@@ -557,6 +585,77 @@ class CollectionPlotPanel(QWidget):
         )
         layout.addWidget(remove)
         return row
+
+    def _show_series_context_menu(self, position) -> None:  # noqa: ANN001
+        item = self.series_list.itemAt(position)
+        if item is None:
+            return
+        row = self.series_list.row(item)
+        if not 0 <= row < len(self._data):
+            return
+        self.series_list.setCurrentRow(row)
+        menu = QMenu(self.series_list)
+        copy_path = menu.addAction("Copy series field path")
+        copy_config = menu.addAction("Copy series configuration as JSON")
+        copy_data = menu.addAction("Copy series data as CSV")
+        selected = menu.exec(self.series_list.viewport().mapToGlobal(position))
+        if selected is copy_path:
+            self._copy_series_path(row)
+        elif selected is copy_config:
+            self._copy_series_config(row)
+        elif selected is copy_data:
+            self._copy_series_data(row)
+
+    def _copy_current_series_path(self) -> None:
+        self._copy_series_path(self.series_list.currentRow())
+
+    def _copy_series_path(self, row: int) -> None:
+        if not 0 <= row < len(self._data):
+            return
+        self._copy_text(
+            _selector_path_label(self._data[row].selector),
+            "Copied plot series field path",
+        )
+
+    def _copy_series_config(self, row: int) -> None:
+        if not 0 <= row < len(self._data):
+            return
+        selector = self._data[row].selector
+        payload = {
+            "node_path": list(selector.node_path),
+            "node_trail": [asdict(segment) for segment in selector.node_trail]
+            if selector.node_trail is not None
+            else None,
+            "section": selector.section,
+            "value_path": list(selector.value_path),
+            "label": selector.label,
+            "value_label": selector.value_label,
+        }
+        self._copy_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            "Copied plot series configuration as JSON",
+        )
+
+    def _copy_series_data(self, row: int) -> None:
+        if not 0 <= row < len(self._data):
+            return
+        series = self._data[row]
+        values = {point.index: point.value for point in series.points}
+        stream = io.StringIO(newline="")
+        writer = csv.writer(stream, lineterminator="\n")
+        writer.writerow(("Index", "Filename", "Record ID", series.selector.label))
+        for index, label in enumerate(series.labels):
+            record_id = (
+                series.record_ids[index] if index < len(series.record_ids) else ""
+            )
+            writer.writerow((index, label, record_id, values.get(index, "")))
+        self._copy_text(
+            stream.getvalue().rstrip("\n"), "Copied plot series data as CSV"
+        )
+
+    def _copy_text(self, text: str, message: str) -> None:
+        QApplication.clipboard().setText(text)
+        self.status_message.emit(message)
 
     def _set_series_visible(self, selector: NumberSelector, visible: bool) -> None:
         if visible:
@@ -583,7 +682,7 @@ class CollectionPlotPanel(QWidget):
             else ""
         )
         self.cursor_coordinates.setText(
-            f"{context}X: {point.x():.2e} · Y: {point.y():.2e}"
+            f"{context}X: {point.x():.6g} · Y: {point.y():.6g}"
         )
 
     def _set_empty_chart(self, title: str) -> None:
@@ -854,7 +953,7 @@ class CollectionPlotPanel(QWidget):
         )
         self.cursor_coordinates.setText(
             f"Context {index:,} · {label} · {series_label} · "
-            f"X: {point.x():.2e} · Y: {point.y():.2e}"
+            f"X: {point.x():.6g} · Y: {point.y():.6g}"
         )
 
 
@@ -878,6 +977,18 @@ class CoordinateChartView(QChartView):
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
         self.coordinate_changed.emit(None)
         super().leaveEvent(event)
+
+
+def _selector_path_label(selector: NumberSelector) -> str:
+    component = (
+        "Evaluation root"
+        if not selector.node_trail
+        else " / ".join(segment.name for segment in selector.node_trail)
+    )
+    value_path = ""
+    for segment in selector.value_path:
+        value_path += f"[{segment}]" if isinstance(segment, int) else f"/{segment}"
+    return f"{component} / {selector.section}{value_path}"
 
 
 def _selected_value(document: ContextDocument, selector: NumberSelector) -> Any:

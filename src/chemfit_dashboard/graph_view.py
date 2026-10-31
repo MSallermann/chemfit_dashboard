@@ -174,7 +174,9 @@ class DataFlowView(QGraphicsView):
         self._render_status_message = None
         self._clear_scene()
         if document is None:
-            self._show_message("Select an evaluation to inspect its declared data flow.")
+            self._show_message(
+                "Select an evaluation to inspect its declared data flow."
+            )
         else:
             self._show_message("Open this tab to render the declared data flow.")
         self.level_changed.emit(self._current_path)
@@ -360,9 +362,7 @@ class DataFlowView(QGraphicsView):
         self._layout_cancellation = None
         self._finish_render(graph, layout)
 
-    def _layout_failed(
-        self, generation: int, cancellation: CancellationToken
-    ) -> None:
+    def _layout_failed(self, generation: int, cancellation: CancellationToken) -> None:
         if generation != self._layout_generation or cancellation.cancelled:
             return
         self._layout_cancellation = None
@@ -447,9 +447,7 @@ class DataFlowView(QGraphicsView):
             return
         self._complete_render(graph, render_generation)
 
-    def _complete_render(
-        self, graph: DataFlowGraph, render_generation: int
-    ) -> None:
+    def _complete_render(self, graph: DataFlowGraph, render_generation: int) -> None:
         if render_generation != self._render_generation:
             return
         self._apply_selection(reveal=False)
@@ -497,7 +495,11 @@ class DataFlowView(QGraphicsView):
         )
         item.setBrush(QBrush(fill))
         normal_pen = QPen(
-            QColor(self._scheme.accent if boundary or node.nested else self._scheme.node_border),
+            QColor(
+                self._scheme.accent
+                if boundary or node.nested
+                else self._scheme.node_border
+            ),
             2.4 if node.nested else (2.0 if boundary else 1.2),
         )
         item.normal_pen = normal_pen
@@ -629,9 +631,7 @@ class DataFlowPanel(QWidget):
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
         self.expand_button = QPushButton("Expand")
-        self.expand_button.setToolTip(
-            "Open Data Flow in a large separate window"
-        )
+        self.expand_button.setToolTip("Open Data Flow in a large separate window")
         controls.addWidget(self.fit_button)
         controls.addWidget(self.zoom_out_button)
         controls.addWidget(self.zoom_in_button)
@@ -665,7 +665,9 @@ class DataFlowPanel(QWidget):
         self._document = document
         self.view.set_document(document)
         self.status.setText(
-            "Data Flow builds on demand" if document is not None else "No evaluation selected"
+            "Data Flow builds on demand"
+            if document is not None
+            else "No evaluation selected"
         )
 
     def ensure_rendered(self) -> None:
@@ -674,8 +676,7 @@ class DataFlowPanel(QWidget):
     def _render_finished(self, count: int) -> None:
         message = self.view.render_status_message
         self.status.setText(
-            message
-            or f"{count:,} declared flow node{'s' if count != 1 else ''}"
+            message or f"{count:,} declared flow node{'s' if count != 1 else ''}"
         )
 
     def select_path(self, path: NodePath) -> None:
@@ -728,7 +729,9 @@ class DataFlowPanel(QWidget):
             button = QPushButton(self._breadcrumb_label(level))
             button.setFlat(True)
             button.setEnabled(level != path)
-            button.clicked.connect(lambda _checked=False, target=level: self._navigate_breadcrumb(target))
+            button.clicked.connect(
+                lambda _checked=False, target=level: self._navigate_breadcrumb(target)
+            )
             self.breadcrumbs.addWidget(button)
         self.breadcrumbs.addStretch()
         self.back_button.setEnabled(bool(path))
@@ -762,9 +765,7 @@ def _status_color(node: DataFlowNode, scheme: ColorScheme) -> str:
     }.get(node.status, scheme.status_missing)
 
 
-def _declared_component_count_hint(
-    document: ContextDocument, path: NodePath
-) -> int:
+def _declared_component_count_hint(document: ContextDocument, path: NodePath) -> int:
     """Return an O(1) lower-bound hint for common serialized structures."""
     try:
         structure = document.details(path).structure

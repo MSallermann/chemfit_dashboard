@@ -61,7 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _output_format(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> OutputFormat:
+def _output_format(
+    parser: argparse.ArgumentParser, arguments: argparse.Namespace
+) -> OutputFormat:
     if arguments.format is not None:
         return arguments.format
     suffix = arguments.output.suffix.casefold().lstrip(".")

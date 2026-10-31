@@ -61,7 +61,9 @@ def data_flow_layout(  # noqa: PLR0912, PLR0915
             indegree[target] += 1
 
     ranks = {node: (0 if node == input_node else 1) for node in node_list}
-    queue = deque(sorted((node for node in node_list if indegree[node] == 0), key=_sort_key))
+    queue = deque(
+        sorted((node for node in node_list if indegree[node] == 0), key=_sort_key)
+    )
     processed: set[LayoutId] = set()
     while queue:
         if cancelled is not None and cancelled():
@@ -87,9 +89,12 @@ def data_flow_layout(  # noqa: PLR0912, PLR0915
     if input_node in ranks:
         ranks[input_node] = 0
     if output_node in ranks:
-        ranks[output_node] = max(
-            (rank for node, rank in ranks.items() if node != output_node), default=0
-        ) + 1
+        ranks[output_node] = (
+            max(
+                (rank for node, rank in ranks.items() if node != output_node), default=0
+            )
+            + 1
+        )
 
     levels: defaultdict[int, list[LayoutId]] = defaultdict(list)
     for node in node_list:

@@ -4,8 +4,14 @@ import csv
 import json
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QHeaderView, QLineEdit, QToolButton
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QHeaderView,
+    QLineEdit,
+    QToolButton,
+)
 
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
@@ -20,7 +26,11 @@ from chemfit_dashboard.extraction import (
     save_config,
     selector_for_document,
 )
-from chemfit_dashboard.extraction_ui import DataExtractionPanel
+from chemfit_dashboard.extraction_ui import (
+    CONFIG_DIRECTORY_SETTING,
+    EXPORT_DIRECTORY_SETTING,
+    DataExtractionPanel,
+)
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import CancellationToken, OperationCancelled
@@ -244,12 +254,18 @@ def test_extraction_configuration_and_preview_can_be_copied(qapp):
     assert panel.preview.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
     selector = FieldSelector((), "fields", ("energy",), "energy")
     panel.add_selector(selector)
+    assert not panel.dirty_indicator.isHidden()
     panel.copy_config_button.click()
 
     copied_config = json.loads(qapp.clipboard().text())
     assert copied_config == panel.config.to_dict()
+    panel.clear()
+    qapp.clipboard().setText(json.dumps(copied_config))
+    panel.paste_config_button.click()
+    assert panel.config.to_dict() == copied_config
 
-    panel._copy_selector_json(0)  # noqa: SLF001
+    panel.selections.setCurrentCell(0, 0)
+    panel._selector_copy_shortcut.activated.emit()  # noqa: SLF001
     copied_selector = json.loads(qapp.clipboard().text())
     assert copied_selector["column"] == "energy"
     assert copied_selector["path"] == ["energy"]
@@ -266,7 +282,8 @@ def test_extraction_configuration_and_preview_can_be_copied(qapp):
         1,
     )
     value_index = panel.preview_model.index(0, 3)
-    panel._copy_preview_cell(value_index)  # noqa: SLF001
+    panel.preview.setCurrentIndex(value_index)
+    panel._preview_copy_shortcut.activated.emit()  # noqa: SLF001
     assert qapp.clipboard().text() == "3.5"
 
     panel._copy_preview_column(3)  # noqa: SLF001
@@ -286,6 +303,40 @@ def test_extraction_configuration_and_preview_can_be_copied(qapp):
         "Index,Filename,Record ID,energy",
         "0,step_1.json,record-1,3.5",
     ]
+
+
+def test_extraction_remembers_dialog_directories_and_saved_state(tmp_path, monkeypatch):
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    panel = DataExtractionPanel(settings=settings)
+    panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
+    config_path = tmp_path / "configs" / "extract.json"
+    config_path.parent.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(config_path), "JSON (*.json)"),
+    )
+
+    panel._save()  # noqa: SLF001
+
+    assert panel.dirty_indicator.isHidden()
+    assert settings.value(CONFIG_DIRECTORY_SETTING) == str(config_path.parent)
+
+    export_path = tmp_path / "exports" / "values.csv"
+    export_path.parent.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(export_path), "CSV (*.csv)"),
+    )
+    requested = []
+    panel.export_requested.connect(lambda *args: requested.append(args))
+
+    panel._export("csv")  # noqa: SLF001
+
+    assert requested
+    assert requested[0][0] == str(export_path)
+    assert settings.value(EXPORT_DIRECTORY_SETTING) == str(export_path.parent)
 
 
 def test_extraction_options_immediately_rebuild_preview_shape():

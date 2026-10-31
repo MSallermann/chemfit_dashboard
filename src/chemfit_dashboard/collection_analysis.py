@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import csv
+import io
+import json
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -119,14 +125,10 @@ def analyze_collection(  # noqa: PLR0912
 
         failed_paths = {node.path for node in failed_nodes}
         failed_ancestors = {
-            path[:depth]
-            for path in failed_paths
-            for depth in range(len(path))
+            path[:depth] for path in failed_paths for depth in range(len(path))
         }
         primary_candidates = [
-            node
-            for node in failed_nodes
-            if node.path not in failed_ancestors
+            node for node in failed_nodes if node.path not in failed_ancestors
         ]
         primary_failures = sorted(
             primary_candidates, key=lambda item: (-len(item.path), item.path)
@@ -204,6 +206,7 @@ class CollectionAnalysisPanel(QWidget):
 
     failure_selected = Signal(object)
     refresh_requested = Signal()
+    status_message = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
         """Initialize the summary tables and failure navigation controls."""
@@ -248,6 +251,17 @@ class CollectionAnalysisPanel(QWidget):
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
         self.numeric_table.setMaximumHeight(190)
+        self.numeric_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.numeric_table.customContextMenuRequested.connect(
+            self._show_numeric_context_menu
+        )
+        self._numeric_copy_shortcut = QShortcut(
+            QKeySequence.StandardKey.Copy, self.numeric_table
+        )
+        self._numeric_copy_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._numeric_copy_shortcut.activated.connect(self._copy_numeric_selection)
         layout.addWidget(self.numeric_table)
 
         failure_heading = QHBoxLayout()
@@ -277,6 +291,17 @@ class CollectionAnalysisPanel(QWidget):
             2, QHeaderView.ResizeMode.ResizeToContents
         )
         self.failure_tree.itemClicked.connect(self._failure_activated)
+        self.failure_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.failure_tree.customContextMenuRequested.connect(
+            self._show_failure_context_menu
+        )
+        self._failure_copy_shortcut = QShortcut(
+            QKeySequence.StandardKey.Copy, self.failure_tree
+        )
+        self._failure_copy_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._failure_copy_shortcut.activated.connect(self._copy_current_failure)
         layout.addWidget(self.failure_tree, 1)
         self._occurrences: tuple[FailureOccurrence, ...] = ()
         self._current_occurrence = -1
@@ -420,6 +445,83 @@ class CollectionAnalysisPanel(QWidget):
             self._current_occurrence = -1
         self.failure_selected.emit(occurrence)
 
+    def _show_numeric_context_menu(self, position) -> None:  # noqa: ANN001
+        item = self.numeric_table.itemAt(position)
+        if item is None:
+            return
+        self.numeric_table.setCurrentItem(item)
+        menu = QMenu(self.numeric_table)
+        copy_cell = menu.addAction("Copy cell")
+        copy_rows = menu.addAction("Copy selected rows as CSV")
+        selected = menu.exec(self.numeric_table.viewport().mapToGlobal(position))
+        if selected is copy_cell:
+            self._copy_text(item.text(), "Copied collection summary cell")
+        elif selected is copy_rows:
+            self._copy_numeric_selection()
+
+    def _copy_numeric_selection(self) -> None:
+        selection_model = self.numeric_table.selectionModel()
+        rows = (
+            sorted({index.row() for index in selection_model.selectedIndexes()})
+            if selection_model is not None
+            else []
+        )
+        if not rows and self.numeric_table.currentRow() >= 0:
+            rows = [self.numeric_table.currentRow()]
+        if not rows:
+            return
+        model = self.numeric_table.model()
+        if model is None:
+            return
+        headers = tuple(
+            str(model.headerData(column, Qt.Orientation.Horizontal))
+            for column in range(self.numeric_table.columnCount())
+        )
+        values = [headers]
+        values.extend(
+            tuple(
+                str(model.data(model.index(row, column)))
+                for column in range(self.numeric_table.columnCount())
+            )
+            for row in rows
+        )
+        self._copy_text(_csv_text(values), "Copied collection summary rows as CSV")
+
+    def _show_failure_context_menu(self, position) -> None:  # noqa: ANN001
+        item = self.failure_tree.itemAt(position)
+        if item is None:
+            return
+        self.failure_tree.setCurrentItem(item)
+        occurrence = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(occurrence, FailureOccurrence):
+            return
+        menu = QMenu(self.failure_tree)
+        copy_message = menu.addAction("Copy error message")
+        copy_json = menu.addAction("Copy failure details as JSON")
+        selected = menu.exec(self.failure_tree.viewport().mapToGlobal(position))
+        if selected is copy_message:
+            self._copy_text(occurrence.message, "Copied failure message")
+        elif selected is copy_json:
+            self._copy_failure(occurrence)
+
+    def _copy_current_failure(self) -> None:
+        item = self.failure_tree.currentItem()
+        if item is None:
+            return
+        occurrence = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(occurrence, FailureOccurrence):
+            self._copy_failure(occurrence)
+
+    def _copy_failure(self, occurrence: FailureOccurrence) -> None:
+        self._copy_text(
+            json.dumps(asdict(occurrence), indent=2, ensure_ascii=False),
+            "Copied failure details as JSON",
+        )
+
+    def _copy_text(self, text: str, message: str) -> None:
+        QApplication.clipboard().setText(text)
+        self.status_message.emit(message)
+
     def _move_failure(self, direction: int) -> None:
         if not self._occurrences:
             return
@@ -471,3 +573,10 @@ def _component_counts(counter: Mapping[str, int]) -> tuple[ComponentCount, ...]:
             counter.items(), key=lambda item: (-item[1], item[0].casefold())
         )
     )
+
+
+def _csv_text(rows: list[tuple[str, ...]]) -> str:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerows(rows)
+    return stream.getvalue().rstrip("\n")

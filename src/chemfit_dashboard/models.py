@@ -167,9 +167,7 @@ class EvaluationListModel(QAbstractItemModel):
     def index_for_record_id(self, record_id: str) -> QModelIndex:
         item = self._items_by_record_id.get(record_id)
         return (
-            self.createIndex(item.row(), 0, item)
-            if item is not None
-            else QModelIndex()
+            self.createIndex(item.row(), 0, item) if item is not None else QModelIndex()
         )
 
     def _ordered_records(self, records: Iterable[RecordRef]) -> list[RecordRef]:

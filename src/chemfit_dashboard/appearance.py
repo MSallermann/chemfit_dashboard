@@ -284,6 +284,15 @@ QMenuBar::item:selected, QMenu::item:selected {{ background: {scheme.selection};
 #plotSelection {{ color: {scheme.text_strong}; font-size: 14px; font-weight: 650; }}
 #plotCoordinates {{ color: {scheme.text_strong}; font-family: monospace; padding: 3px 6px; }}
 #actionGroupLabel {{ color: {scheme.accent}; font-size: 10px; font-weight: 750; letter-spacing: 1px; }}
+#dirtyIndicator {{
+    color: {scheme.warning}; border: 1px solid {scheme.warning}; border-radius: 4px;
+    padding: 2px 6px; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+}}
+#clipboardToast {{
+    background: {scheme.panel}; color: {scheme.text_strong};
+    border: 1px solid {scheme.accent}; border-radius: 5px;
+    padding: 5px 8px; font-weight: 650;
+}}
 #mutedLabel {{ color: {scheme.muted}; }}
 #sidePanel {{ background: {scheme.panel}; border-right: 1px solid {scheme.border}; }}
 #treePanel {{ background: {scheme.panel_alt}; border-right: 1px solid {scheme.border}; }}

@@ -138,6 +138,24 @@ def test_search_results_expose_useful_clipboard_formats(qapp):
     )
     panel = ContextSearchPanel()
     assert panel.results.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+    activated = []
+    panel.hit_selected.connect(activated.append)
+    panel.show_results(
+        [hit],
+        "output",
+        include_keys=True,
+        include_values=True,
+        mode="fuzzy",
+    )
+    item = panel.results.topLevelItem(0)
+    panel.results.setCurrentItem(item)
+    assert activated == []
+    panel.results.itemDoubleClicked.emit(item, 0)
+    assert activated == [hit]
+    panel._activate_shortcut.activated.emit()  # noqa: SLF001
+    assert activated == [hit, hit]
+    panel._copy_shortcut.activated.emit()  # noqa: SLF001
+    assert json.loads(qapp.clipboard().text())["record_id"] == "record-1"
 
     panel._copy_hit_value(hit)  # noqa: SLF001
     assert qapp.clipboard().text() == "3.5"

@@ -9,10 +9,18 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QItemSelection, QSettings, QSortFilterProxyModel, Qt, QTimer
+from PySide6.QtCore import (
+    QItemSelection,
+    QPoint,
+    QSettings,
+    QSortFilterProxyModel,
+    Qt,
+    QTimer,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QCursor,
     QFont,
     QIcon,
     QKeySequence,
@@ -144,6 +152,7 @@ class MainWindow(QMainWindow):
     ):
         """Initialize the dashboard around a replaceable context source."""
         super().__init__()
+        self.setAcceptDrops(True)
         self.source = source or JsonFileSource()
         self.tasks = TaskRunner(self)
         self._collection_generation = 0
@@ -204,6 +213,26 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 620)
         self._build_ui()
         self._build_menu()
+        self._clipboard_toast = QLabel(self)
+        self._clipboard_toast.setObjectName("clipboardToast")
+        self._clipboard_toast.setTextFormat(Qt.TextFormat.PlainText)
+        self._clipboard_toast.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self._clipboard_toast.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._clipboard_toast.hide()
+        self._pending_clipboard_message = ""
+        self._clipboard_toast_show_timer = QTimer(self)
+        self._clipboard_toast_show_timer.setSingleShot(True)
+        self._clipboard_toast_show_timer.timeout.connect(self._show_clipboard_toast)
+        self._clipboard_toast_follow_timer = QTimer(self)
+        self._clipboard_toast_follow_timer.setInterval(16)
+        self._clipboard_toast_follow_timer.timeout.connect(
+            self._position_clipboard_toast
+        )
+        self._clipboard_toast_timer = QTimer(self)
+        self._clipboard_toast_timer.setSingleShot(True)
+        self._clipboard_toast_timer.timeout.connect(self._hide_clipboard_toast)
         if self._session_enabled:
             self._restore_session_state()
 
@@ -308,6 +337,7 @@ class MainWindow(QMainWindow):
         self.context_workspace.setChildrenCollapsible(False)
         self.context_workspace.addWidget(self._build_tree_panel())
         self.inspector = Inspector()
+        self.inspector.status_message.connect(self._clipboard_copied)
         self.inspector.plot_requested.connect(self._plot_requested)
         self.inspector.plot_add_requested.connect(self._plot_add_requested)
         self.inspector.order_requested.connect(self._order_requested)
@@ -320,6 +350,7 @@ class MainWindow(QMainWindow):
 
         self.collection_analysis = CollectionAnalysisPanel()
         self.collection_analysis.setObjectName("collectionOverviewWorkspace")
+        self.collection_analysis.status_message.connect(self._clipboard_copied)
         self.collection_analysis.failure_selected.connect(
             self._failure_occurrence_selected
         )
@@ -332,8 +363,9 @@ class MainWindow(QMainWindow):
         self._search_tab_index = self.workspace_tabs.addTab(
             self.search_workspace, "Search"
         )
-        self.extraction = DataExtractionPanel()
+        self.extraction = DataExtractionPanel(settings=self._settings)
         self.extraction.setObjectName("dataExtractionWorkspace")
+        self.extraction.status_message.connect(self._clipboard_copied)
         self.extraction.selectors_changed.connect(self._refresh_extraction_preview)
         self.extraction.selectors_changed.connect(self._update_extraction_tab_badge)
         self.extraction.export_requested.connect(self._export_extraction)
@@ -564,12 +596,14 @@ class MainWindow(QMainWindow):
         self.graph.node_selected.connect(self._graph_context_selected)
         self.graph.expand_requested.connect(self._toggle_data_flow_expansion)
         self.collection_plot = CollectionPlotPanel()
+        self.collection_plot.status_message.connect(self._clipboard_copied)
         self.collection_plot.context_selected.connect(self._plot_context_selected)
         self.collection_plot.point_selected.connect(self._plot_point_selected)
         self.collection_plot.remove_series_requested.connect(self._remove_plot_series)
         self.collection_plot.clear_series_requested.connect(self._clear_plot_series)
         self.collection_plot.expand_requested.connect(self._toggle_plot_expansion)
         self.search_panel = ContextSearchPanel()
+        self.search_panel.copy_completed.connect(self._clipboard_copied)
         self.search_panel.hit_selected.connect(self._search_hit_selected)
         self.search_workspace = QWidget()
         self.search_workspace.setObjectName("searchWorkspace")
@@ -893,6 +927,69 @@ class MainWindow(QMainWindow):
         if path:
             self.add_locations([path])
 
+    def dragEnterEvent(self, event) -> None:  # noqa: N802, ANN001
+        if self._drop_locations(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802, ANN001
+        locations = self._drop_locations(event.mimeData())
+        if not locations:
+            event.ignore()
+            return
+        if self.file_model.records:
+            self.close_collection()
+        self.add_locations(locations)
+        event.acceptProposedAction()
+
+    @staticmethod
+    def _drop_locations(mime_data) -> list[str]:  # noqa: ANN001
+        if not mime_data.hasUrls():
+            return []
+        locations: list[str] = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile()).expanduser()
+            if path.is_dir() or (path.is_file() and path.suffix.casefold() == ".json"):
+                resolved = str(path.resolve())
+                if resolved not in locations:
+                    locations.append(resolved)
+        return locations
+
+    def _clipboard_copied(self, message: str) -> None:
+        # Popup menus finish tearing down after their selected action returns.
+        # Queue the toast so it is raised after that teardown instead of beneath it.
+        self._pending_clipboard_message = message
+        self._clipboard_toast_show_timer.start(0)
+
+    def _show_clipboard_toast(self) -> None:
+        message = self._pending_clipboard_message
+        if not message:
+            return
+        self._pending_clipboard_message = ""
+        self._clipboard_toast.setText(message)
+        self._clipboard_toast.adjustSize()
+        self._position_clipboard_toast()
+        self._clipboard_toast.show()
+        self._clipboard_toast.raise_()
+        self._clipboard_toast_follow_timer.start()
+        self._clipboard_toast_timer.start(500)
+
+    def _position_clipboard_toast(self) -> None:
+        position = self.mapFromGlobal(QCursor.pos()) + QPoint(14, 18)
+        margin = 8
+        maximum_x = max(margin, self.width() - self._clipboard_toast.width() - margin)
+        maximum_y = max(margin, self.height() - self._clipboard_toast.height() - margin)
+        position.setX(min(max(position.x(), margin), maximum_x))
+        position.setY(min(max(position.y(), margin), maximum_y))
+        self._clipboard_toast.move(position)
+
+    def _hide_clipboard_toast(self) -> None:
+        self._clipboard_toast_follow_timer.stop()
+        self._clipboard_toast.hide()
+
     def _rebuild_recent_menu(self) -> None:
         self.recent_menu.clear()
         locations = self._setting_strings(RECENT_LOCATIONS_SETTING)
@@ -933,8 +1030,10 @@ class MainWindow(QMainWindow):
         selected = menu.exec(self.file_list.viewport().mapToGlobal(position))
         if selected is copy_name:
             QApplication.clipboard().setText(record.name)
+            self._clipboard_copied("Copied evaluation filename")
         elif selected is copy_path:
             QApplication.clipboard().setText(str(record.path))
+            self._clipboard_copied("Copied evaluation path")
 
     def _show_tree_context_menu(self, position) -> None:  # noqa: ANN001
         index = self.tree.indexAt(position)
@@ -949,12 +1048,15 @@ class MainWindow(QMainWindow):
         selected = menu.exec(self.tree.viewport().mapToGlobal(position))
         if selected is copy_name:
             QApplication.clipboard().setText(document.component_label(info.path))
+            self._clipboard_copied("Copied component name")
         elif selected is copy_path:
             trail = component_trail_for_path(document, info.path)
             path = " / ".join(segment.name for segment in trail) or "Evaluation root"
             QApplication.clipboard().setText(path)
+            self._clipboard_copied("Copied component path")
         elif selected is copy_structural_path:
             QApplication.clipboard().setText(info.path_text)
+            self._clipboard_copied("Copied structural path")
 
     def close_collection(self) -> None:  # noqa: PLR0915
         """Close all loaded contexts while leaving the application running."""
