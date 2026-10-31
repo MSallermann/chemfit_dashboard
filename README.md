@@ -6,22 +6,22 @@
 
 A desktop application for exploring, visualizing, and extracting evaluation data from [ChemFit](https://github.com/MSallermann/chemfit).
 
-ChemFit records inputs, outputs, metadata, and intermediate results throughout an evaluation. The dashboard makes it easy to explore this information without digging through JSON files by hand.
+ChemFit records inputs, outputs, metadata, intermediate results, and errors in structured evaluation contexts. ChemFit Dashboard makes this information accessible without having to inspect JSON files manually.
 
-Built with Python and PySide6, it works directly with serialized evaluation contexts from ChemFit 4.0.0. Everything runs locally, and the original files are never modified.
+Built with Python and PySide6, the dashboard works directly with serialized evaluation contexts from ChemFit 4.0.0. It runs locally, does not modify the original data, and can be used independently of ChemFit and the simulation software that produced the results.
 
 ![ChemFit Dashboard screenshot](res/screenshot.png)
 
 ## Features
 
-- **Explore evaluations:** Browse individual contexts or entire collections, including nested components, inputs, outputs, metadata, and errors.
-- **Follow declared data flow:** See how data moves from a structural component's input, through its immediate children, to its output.
-- **Search contexts:** Find components, fields, and values using text searches or regular expressions, within an evaluation or across a collection.
-- **Plot numerical data:** Follow numerical values across evaluations, compare multiple quantities, and export plots as PNG, SVG, or CSV.
-- **Investigate failures:** Identify failed evaluations and navigate directly to the components responsible.
-- **Extract data:** Collect arbitrary fields from multiple evaluations and export them as CSV or JSONL for further analysis.
+- **Explore evaluations:** Browse individual evaluations or entire collections, including nested components, inputs, outputs, metadata, and errors.
+- **Visualize data flow:** Follow declared computational data flow through structural components, with interactive navigation into nested graphs.
+- **Search:** Find components, fields, and values within an evaluation or across an entire collection, using fuzzy matching, exact text, or regular expressions.
+- **Plot results:** Plot numerical quantities across evaluations, compare multiple series, and export plots and data.
+- **Investigate failures:** Identify failed evaluations and navigate to the components responsible.
+- **Extract data:** Collect arbitrary values from evaluation contexts and export them as CSV or JSONL for further analysis.
 
-The dashboard also includes several color themes, adjustable font sizes, and keyboard navigation. Large collections are processed in the background to keep the interface responsive.
+The application also supports several color themes, adjustable font sizes, keyboard navigation, and background processing of large collections.
 
 ## Installation
 
@@ -43,100 +43,168 @@ python -m pip install -e .
 
 The separate `pydictnest` installation is only necessary until version 0.3.0 is available on PyPI.
 
-ChemFit itself is not required to view previously saved evaluation contexts.
+ChemFit itself is not required to inspect previously saved evaluation contexts.
 
 ## Getting started
 
-Start the dashboard with:
+Launch the dashboard with:
 
 ```bash
 chemfit-dashboard
 ```
 
-You can open JSON files and directories from within the application, or specify them directly on the command line:
+Open an evaluation file or a directory containing serialized contexts through the application, or supply the path directly:
 
 ```bash
 chemfit-dashboard path/to/context.json
 chemfit-dashboard path/to/results/
 ```
 
-To explore the included examples, open a single evaluation:
+Multiple files and directories can be provided together. Directories are searched recursively.
+
+The repository also includes example evaluation data:
 
 ```bash
+# Open a single evaluation
 chemfit-dashboard examples/step_0_ctx_0.json
-```
 
-Or load a collection containing several evaluations:
-
-```bash
+# Open a collection
 chemfit-dashboard examples/context_collection/
 ```
 
-You can also pass multiple files and directories at once. Directories are scanned recursively.
+## Exploring evaluation data
 
-### Exploring evaluations
+### Evaluation hierarchy and inspector
 
-Select an evaluation from the file browser to inspect its component hierarchy. Clicking a component shows its inputs, outputs, metadata, and other recorded information.
+The **Evaluations** sidebar lists the loaded contexts. Select an evaluation to inspect its component hierarchy.
 
-The **Data Flow** view shows how data moves between the immediate children of a structural component. Double-click a nested component to explore its internal flow, and use the breadcrumbs to navigate back. Selecting a component stays synchronized with the tree and inspector. To protect GUI responsiveness and native memory, a single level containing more than 5,000 components is summarized instead of rendered.
+Selecting a component displays its recorded inputs, outputs, metadata, and other information in the inspector. Nested dictionaries and arrays can be expanded to explore individual values.
 
-Use the search field to find particular components or values. You can search the current evaluation or the entire loaded collection.
+Components can be identified using a configurable metadata field, making it easier to navigate evaluations with descriptive component names.
 
-When working with multiple evaluations, the **Collection Overview** summarizes their execution status, numerical results, and failures.
+When working with a collection, evaluations can also be ordered by the value of a selected numerical field.
 
-### Plotting results
+### Data Flow
 
-To plot a numerical value across evaluations, select it in the inspector and choose **Plot selected number across collection**.
+The **Data Flow** tab visualizes the declared flow of information through a structural component.
 
-The dashboard follows the same component through the collection, even when some evaluations contain skipped or missing branches.
+It shows how the component's input feeds its immediate children, how those children depend on one another, and which results contribute to the output.
 
-You can add additional values to the plot, normalize them, use logarithmic scaling, and export the result.
+Nested structural components can be opened by double-clicking them. Breadcrumb navigation makes it possible to move between different levels of the hierarchy.
 
-Clicking a plotted point opens the corresponding evaluation.
+Selecting a component in Data Flow also selects it in the hierarchy and inspector.
+
+The graph can be zoomed, fitted to the view, or opened in a larger separate window.
+
+To keep rendering responsive, individual graph levels containing more than 5,000 components are not rendered. The component hierarchy and recorded evaluation data remain accessible.
+
+### Search
+
+Search for component names, field names, metadata, or recorded values.
+
+Search supports three modes:
+
+- **Fuzzy:** Find approximate matches, including incomplete names.
+- **Exact:** Find matching text.
+- **Regex:** Search using regular expressions.
+
+Search can be restricted to the current evaluation or applied to the entire loaded collection. Results can be selected to navigate directly to the corresponding context or value.
+
+### Collection overview
+
+The **Collection Overview** provides a summary of the loaded evaluations, including:
+
+- Successful, failed, and partially completed evaluations.
+- Numerical fields and their summary statistics.
+- Frequently skipped or missing components.
+- Recorded failures and exceptions.
+
+Failure entries can be used to navigate to the relevant evaluation and component.
+
+## Plotting numerical results
+
+Numerical values can be plotted across an entire collection.
+
+To create a plot, select a number in the inspector and click **Plot**. The dashboard extracts the corresponding value from each evaluation and displays it against the evaluation index.
+
+Use **+ Series** to add additional quantities to the same plot.
+
+The plotting interface supports:
+
+- Multiple series with distinct colors.
+- Showing, hiding, and removing individual series.
+- Independent normalization of series to the 0–1 range.
+- Logarithmic Y-axis scaling.
+- Interactive zooming and coordinate inspection.
+- Selection of plotted points to open the corresponding evaluation.
+- A detachable, full-size plot window.
+
+Plots can be exported as PNG or SVG images.
+
+**Export CSV** saves the plotted data as a table, with one column per series and customizable column names. Missing values are preserved as missing entries.
+
+The dashboard follows the logical identity of a selected component across evaluations, including collections with skipped or missing components.
 
 ## Data extraction
 
-The dashboard can also collect arbitrary values from evaluation contexts and export them for analysis in Python, spreadsheets, or other tools.
+Data extraction allows arbitrary information to be collected from multiple evaluations for further analysis.
 
-Unlike plotting, data extraction is not limited to numerical values. You can extract strings, lists, dictionaries, metadata, or complete component information.
+Unlike plotting, it is not restricted to numbers. You can extract strings, dictionaries, arrays, metadata, individual fields, or complete components.
 
-### Extracting data
+### Selecting data
 
-1. Open an evaluation and select a value in the inspector.
-2. Choose **Add selected field to extraction**. You can also use **Add component to extraction** to include a component's fields, metadata, and structure.
-3. Repeat for any other values you want to collect.
-4. Open the **Data Extraction** tab to preview the results.
-5. Export the collected data as CSV or JSONL.
+Suppose you have a collection of optimization evaluations and want to analyze the optimized parameters and resulting objective values.
 
-By default, each evaluation becomes one row, and each selected field becomes a column.
+1. Select an evaluation and locate a parameter in the inspector.
+2. Click **+ Field** to add it to the extraction.
+3. Select the objective value and add that as another field.
+4. Open the **Data Extraction** tab.
+5. Rename or reorder the columns if desired.
+6. Export the resulting table as CSV or JSONL.
 
-In the extraction tab, you can rename, reorder, or remove columns. **Flatten all** recursively turns nested dictionary leaves into separate columns, while **Expand** turns a selected array into multiple rows.
+By default, each evaluation contributes one row and each selected value contributes one column.
 
-The preview shows up to 200 evaluations, but exports include the complete collection.
+The extraction follows the selected fields across the entire collection, rather than requiring you to select the same values separately in every evaluation.
+
+### Working with structured values
+
+The extraction interface also supports nested data:
+
+- **+ Component** adds an entire component, including its fields and metadata.
+- **Flatten all** converts nested dictionary values into separate columns.
+- **Expand** converts the elements of a selected array into separate rows.
+
+For example, extracting a dictionary containing `energy` and `forces` can produce separate columns for these values when flattening is enabled.
+
+The preview displays up to 200 evaluations. Exports process the entire collection.
 
 ### Export formats
 
-**CSV** is useful for spreadsheets, Pandas, and other tabular analysis tools. Dictionaries and lists are stored as JSON strings unless you choose to flatten them.
+**CSV** produces a tabular representation suitable for Pandas, spreadsheets, and other analysis tools. Nested dictionaries and arrays are stored as JSON strings unless flattening or expansion is requested.
 
-**JSONL** preserves nested values as JSON objects and arrays, making it better suited for structured data.
+**JSONL** preserves nested JSON objects and arrays. Each line represents an extracted row and includes the selected values and their extraction statuses.
 
-The dashboard also records whether a value was available, missing, skipped, or associated with an error, so these cases can be distinguished during analysis.
+Both formats distinguish available values from missing fields, skipped or unexecuted components, unreadable evaluations, and recorded exceptions.
 
-### Reusing field selections
+Exports are processed incrementally to avoid retaining the complete extracted dataset in memory.
 
-If you frequently extract the same fields, you can save your selections using **Save configuration**.
+### Saving extraction configurations
 
-A configuration is simply a list of the fields you've selected, their column names, and any extraction options. It does not contain the extracted data.
+If you regularly analyze the same quantities, you can save your field selections using **Save configuration**.
 
-You can later choose **Load configuration** to restore those selections, including when working with another collection.
+For example, after selecting a parameter and an objective value, saving the configuration records which fields to extract, their column names, and any flattening or expansion options.
 
-The dashboard uses ChemFit's component structure to recognize corresponding components across evaluations, so you don't have to select the same fields in every file.
+The next time you open another collection, use **Load configuration** to restore those selections.
+
+A configuration is a small JSON file describing **what to extract**, not a copy of the extracted results.
+
+Component selections retain structural identity information, allowing the same configuration to be reused across evaluations with corresponding component structures.
 
 ## Using the extraction API from Python
 
-Data extraction is also available directly from Python, without launching the graphical interface.
+The extraction functionality can also be used directly from Python without opening the dashboard.
 
-For example, the following script extracts the Lennard-Jones parameter `epsilon` and the objective value from the included example collection.
+For example, the following script extracts the root objective value from each evaluation in the included example collection:
 
 ```python
 from chemfit_dashboard import (
@@ -151,51 +219,40 @@ from chemfit_dashboard.source import JsonFileSource
 source = JsonFileSource()
 records = source.discover(["examples/context_collection/"])
 
-# Select the values we want
-columns = (
-    FieldSelector(
-        node_path=(),
-        section="fields",
-        value_path=("input", "epsilon"),
-        column="epsilon",
-    ),
-    FieldSelector(
-        node_path=(),
-        section="fields",
-        value_path=("output",),
-        column="loss",
-    ),
+# Select the root context's output value
+loss = FieldSelector(
+    node_path=(),
+    section="fields",
+    value_path=("output",),
+    column="loss",
 )
 
-# Inspect the extracted values
-for row in extract_fields(source, records, columns):
-    epsilon = row.values[0].value
-    loss = row.values[1].value
-    print(row.filename, epsilon, loss)
+# Inspect the values
+for row in extract_fields(source, records, (loss,)):
+    result = row.values[0]
+    print(row.filename, result.value, result.status.value)
 
-# Export the collection to CSV
+# Export all evaluations
 export_csv(
-    "results.csv",
+    "losses.csv",
     source,
     records,
-    ExtractionConfig(columns),
+    ExtractionConfig((loss,)),
 )
 ```
 
-Here, each `FieldSelector` describes a value to extract:
+The `FieldSelector` identifies the value to extract:
 
 - `node_path=()` selects the root evaluation context.
-- `section="fields"` selects the regular context fields.
-- `value_path` identifies the value within those fields.
-- `column` specifies the output column name.
+- `section="fields"` selects its regular fields.
+- `value_path=("output",)` selects the recorded output.
+- `column="loss"` names the exported column.
 
-For instance, `("input", "epsilon")` selects the `epsilon` entry from the root context's input dictionary.
+To extract additional quantities, create more `FieldSelector` instances and pass them together as a tuple.
 
-The resulting `results.csv` contains the extracted values for every evaluation, along with evaluation identifiers and status information.
+For nested components, `selector_for_document()` from `chemfit_dashboard.extraction` can attach the component's structural identity to a selector so that it can be reused across evaluations.
 
-Each value returned by `extract_fields()` also has a `.status` attribute, which can be used to check whether the value was available or why it could not be extracted.
-
-For nested components, the `selector_for_document()` function in `chemfit_dashboard.extraction` can attach the component's identity to a selector, allowing it to be reused across evaluations with the same logical structure.
+The `extract_fields()` function returns an iterator, allowing results to be processed without loading the entire extracted collection into memory.
 
 The extraction API does not require Pandas or NumPy.
 
@@ -213,38 +270,46 @@ Run the tests:
 pytest -q
 ```
 
-The repository also uses Ruff and Pyright for linting and type checking:
+Lint and type-check the source:
 
 ```bash
 ruff check src tests benchmark
 pyright
 ```
 
-### Benchmarks
+### Performance benchmarks
 
-The benchmark suite evaluates collection processing, searching, extraction,
-wide exports, and Data Flow layout/rendering. Run the standard profile with:
+The repository includes benchmarks for collection discovery, context parsing, indexing, search, extraction, export, plotting, and Data Flow layout and rendering.
+
+Run the standard benchmark with:
 
 ```bash
 PYTHONPATH=src python benchmark/benchmark.py --profile standard
 ```
 
-An intentionally large stress profile is also included:
+A larger stress profile tests scaling to 50,000 evaluation files, millions of recorded component contexts, wide exports, and a 25,000-node graph layout:
 
 ```bash
 PYTHONPATH=src python benchmark/benchmark.py --profile stress
 ```
 
-The stress profile generates 50,000 evaluation files, indexes roughly two
-million runtime component nodes, builds and lays out a 25,000-node declared
-graph, verifies that the GUI rendering limit rejects it, searches several
-dimensions, and exports 82 selected fields. It can use
-substantial CPU time, memory, and temporary disk space. Every scale dimension
-can be overridden independently; see `--help`.
+The stress profile can require substantial memory, CPU time, and temporary disk space. Its largest graph is used for layout testing; the graphical rendering limit is checked separately.
 
-See [BENCHMARKS.md](BENCHMARKS.md) for recorded benchmark results.
+For a smaller stress test:
+
+```bash
+PYTHONPATH=src python benchmark/benchmark.py --profile stress \
+  --evaluations 5000 --graph-nodes 5000 \
+  --components-per-evaluation 20 --root-fields 40
+```
+
+See [BENCHMARKS.md](BENCHMARKS.md) for methodology, recorded results, and known performance limitations.
 
 ## Related projects
 
-- [ChemFit](https://github.com/MSallermann/chemfit) — A Python framework for automated, high-dimensional model parameter optimization.
+- [ChemFit](https://github.com/MSallermann/chemfit) — A Python framework for automated high-dimensional model parameter optimization.
 - [pydictnest](https://github.com/MSallermann/pydictnest) — Utilities for working with nested Python data structures.
+
+## Issues and feedback
+
+Bug reports, feature requests, and suggestions are welcome through the [GitHub issue tracker](https://github.com/MSallermann/chemfit_dashboard/issues).
