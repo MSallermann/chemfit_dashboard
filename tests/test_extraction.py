@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHeaderView,
     QLineEdit,
+    QPushButton,
     QSpinBox,
     QToolButton,
 )
@@ -562,21 +563,19 @@ def test_extraction_fields_and_preview_columns_support_bulk_removal():
             )
         )
     )
-    panel.set_preview(
-        (
-            ExtractionRow(
-                0,
-                "record",
-                "step.json",
-                (
-                    ExtractionValue(
-                        [[1, 2, 3], [4, 5, 6]], ExtractionStatus.AVAILABLE
-                    ),
+    preview_rows = (
+        ExtractionRow(
+            0,
+            "record",
+            "step.json",
+            (
+                ExtractionValue(
+                    [[1, 2, 3], [4, 5, 6]], ExtractionStatus.AVAILABLE
                 ),
             ),
         ),
-        1,
     )
+    panel.set_preview(preview_rows, 1)
     preview_selection = panel.preview.selectionModel()
     assert preview_selection is not None
     for column in (3, 4, 5):
@@ -590,6 +589,14 @@ def test_extraction_fields_and_preview_columns_support_bulk_removal():
 
     assert panel._preview_delete_shortcut.key().toString() == "Backspace"  # noqa: SLF001
     assert panel.selectors[0].excluded_paths == ((0, 0), (0, 1), (0, 2))
+    panel.set_preview(preview_rows, 1)
+    assert panel.preview.currentIndex().column() == 3
+    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == (
+        "positions.1/0"
+    )
+    assert {
+        index.column() for index in panel.preview.selectionModel().selectedIndexes()
+    } == {3}
 
 
 def test_field_specific_extraction_controls_are_inline():
@@ -597,6 +604,10 @@ def test_field_specific_extraction_controls_are_inline():
     panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
     panel.add_selector(FieldSelector((), "fields", ("force",), "force"))
 
+    assert not any(
+        button.text() == "Remove selected"
+        for button in panel.findChildren(QPushButton)
+    )
     assert not _inline_action(panel, 0, "moveUpAction").isEnabled()
     assert _inline_action(panel, 0, "moveDownAction").isEnabled()
     assert _inline_action(panel, 1, "moveUpAction").isEnabled()

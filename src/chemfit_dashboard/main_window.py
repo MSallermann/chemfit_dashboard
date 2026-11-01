@@ -1308,31 +1308,59 @@ class MainWindow(QMainWindow):
         self._show_status(f"Collection-search worker processes: {count}", 3000)
 
     def _show_keyboard_shortcuts(self) -> None:
-        QMessageBox.information(
-            self,
-            "Keyboard shortcuts",
-            "Ctrl+O  Open one context file\n"
-            "Ctrl+Shift+O  Open one directory\n"
-            "Ctrl+F  Search contexts\n"
-            "Ctrl+1  Context Explorer\n"
-            "Ctrl+2  Data Flow\n"
-            "Ctrl+3  Plot\n"
-            "Ctrl+4  Collection Overview\n"
-            "Ctrl+5  Search\n"
-            "Ctrl+6  Data Extraction\n"
-            "Esc  Clear search and return to the previous workspace\n"
-            "Ctrl+C  Copy the selection in trees, tables, plots, and previews\n"
-            "Ctrl+Shift+C  Copy the selected evaluation's full path\n"
-            "Ctrl+Return  Open the selected evaluation's folder\n"
-            "Delete  Remove selected extraction fields\n"
-            "Backspace  Remove selected extraction preview columns\n"
-            "S  Sort or reverse the selected extraction preview column\n"
-            "R  Rename the selected extraction preview column\n"
-            "Alt+Left / Alt+Right  Navigate context history\n"
-            "Ctrl+W  Close the current collection\n"
-            "Ctrl+Q  Quit\n"
-            "F1  Show this help",
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Keyboard shortcuts")
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setStyleSheet("QLabel#qt_msgbox_label { min-width: 760px; }")
+        dialog.setTextFormat(Qt.TextFormat.RichText)
+        dialog.setText(
+            "<h3>Keyboard shortcuts</h3>"
+            "<p>Shortcuts marked with a specific view apply when that view "
+            "has focus.</p>"
+            '<table cellpadding="4" cellspacing="0">'
+            "<tr><th align='left'>Where</th><th align='left'>Shortcut</th>"
+            "<th align='left'>Action</th></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+1 … Ctrl+6</code></td>"
+            "<td>Open Context Explorer, Data Flow, Plot, Collection Overview, "
+            "Search, or Data Extraction</td></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+F</code></td>"
+            "<td>Search collection fields</td></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+O</code></td>"
+            "<td>Open one context file</td></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+Shift+O</code></td>"
+            "<td>Open one directory</td></tr>"
+            "<tr><td>Focused view</td><td><code>Ctrl+C</code></td>"
+            "<td>Copy the current selection</td></tr>"
+            "<tr><td>Evaluations</td><td><code>Ctrl+Shift+C</code></td>"
+            "<td>Copy the selected evaluation path</td></tr>"
+            "<tr><td>Evaluations</td><td><code>Ctrl+Return</code></td>"
+            "<td>Open the selected evaluation's folder</td></tr>"
+            "<tr><td>Extraction fields</td><td><code>Delete</code></td>"
+            "<td>Remove selected fields</td></tr>"
+            "<tr><td>Extraction preview</td><td><code>Backspace</code></td>"
+            "<td>Remove selected columns</td></tr>"
+            "<tr><td>Extraction preview</td><td><code>S</code></td>"
+            "<td>Sort or reverse the selected column</td></tr>"
+            "<tr><td>Extraction preview</td><td><code>R</code></td>"
+            "<td>Rename the selected column</td></tr>"
+            "<tr><td>Search</td><td><code>Esc</code></td>"
+            "<td>Clear search and return to the previous view</td></tr>"
+            "<tr><td>Context history</td><td><code>Alt+Left / Alt+Right</code></td>"
+            "<td>Move backward or forward</td></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+W</code></td>"
+            "<td>Close the current collection</td></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+Q</code></td>"
+            "<td>Quit</td></tr>"
+            "<tr><td>Anywhere</td><td><code>F1</code></td>"
+            "<td>Show this overview</td></tr>"
+            "</table>"
         )
+        dialog.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.exec()
 
     def _component_label_key_changed(self) -> None:
         key = self.component_label_key.currentText().strip()

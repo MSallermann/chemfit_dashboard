@@ -375,7 +375,6 @@ class DataExtractionPanel(QWidget):
         )
         self.selections.setMaximumHeight(190)
         self.selections.itemChanged.connect(self._column_edited)
-        self.selections.itemSelectionChanged.connect(self._update_controls)
         self.selections.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.selections.customContextMenuRequested.connect(
             self._show_selection_context_menu
@@ -397,12 +396,6 @@ class DataExtractionPanel(QWidget):
         layout.addWidget(self.selections)
 
         controls = QHBoxLayout()
-        self.remove_selected_button = QPushButton("Remove selected")
-        self.remove_selected_button.setToolTip(
-            "Remove every selected extraction field (Delete)"
-        )
-        self.remove_selected_button.clicked.connect(self._remove_selected_rows)
-        controls.addWidget(self.remove_selected_button)
         self.clear_button = QPushButton("Clear all")
         self.clear_button.clicked.connect(self.clear)
         controls.addStretch()
@@ -431,6 +424,7 @@ class DataExtractionPanel(QWidget):
         self.preview_header.customContextMenuRequested.connect(
             self._show_preview_header_context_menu
         )
+        self._pending_preview_selection_column: int | None = None
         self._preview_sort_column: int | None = None
         self._preview_sort_descending = False
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -515,6 +509,7 @@ class DataExtractionPanel(QWidget):
 
     def add_selector(self, selector: FieldSelector) -> None:
         """Append a selector with a unique export-column name."""
+        self._pending_preview_selection_column = None
         existing = {item.column.casefold() for item in self._selectors}
         base = selector.column.strip() or "value"
         column = base
@@ -528,6 +523,7 @@ class DataExtractionPanel(QWidget):
 
     def set_config(self, config: ExtractionConfig, *, mark_clean: bool = False) -> None:
         """Replace editor state from a validated saved configuration."""
+        self._pending_preview_selection_column = None
         self._selectors = list(config.selectors)
         self._include_identifiers = config.include_identifiers
         self._include_status_columns = config.include_status_columns
@@ -538,6 +534,7 @@ class DataExtractionPanel(QWidget):
 
     def clear(self) -> None:
         """Remove all configured selectors and preview rows."""
+        self._pending_preview_selection_column = None
         self._selectors.clear()
         self._rebuild_selection_table(-1)
         self.preview_model.set_data((), ())
@@ -550,6 +547,13 @@ class DataExtractionPanel(QWidget):
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
         """Install preview rows while retaining the collection's full count."""
         self.preview_model.set_data(self.selectors, rows)
+        pending_column = self._pending_preview_selection_column
+        self._pending_preview_selection_column = None
+        if pending_column is not None and self.preview_model.columnCount() > 3:
+            self._select_preview_column(
+                min(pending_column, self.preview_model.columnCount() - 1),
+                use_keyboard_modifiers=False,
+            )
         shown = self.preview_model.rowCount()
         suffix = " (limited)" if total > len(rows) or shown >= PREVIEW_LIMIT else ""
         self.status.setText(
@@ -785,9 +789,6 @@ class DataExtractionPanel(QWidget):
             self._emit_changed()
 
     def _update_controls(self) -> None:
-        selection = self.selections.selectionModel()
-        has_selected_rows = bool(selection and selection.selectedRows())
-        self.remove_selected_button.setEnabled(has_selected_rows)
         self.clear_button.setEnabled(bool(self._selectors))
         self.save_button.setEnabled(bool(self._selectors))
         self.copy_config_button.setEnabled(bool(self._selectors))
@@ -966,6 +967,9 @@ class DataExtractionPanel(QWidget):
     ) -> None:
         if not columns:
             return
+        self._pending_preview_selection_column = (
+            self._next_preview_column_after_removal(columns)
+        )
         remove_selectors = {
             column.selector_index for column in columns if column.nested_path is None
         }
@@ -1007,13 +1011,51 @@ class DataExtractionPanel(QWidget):
         )
         self._emit_changed()
 
-    def _select_preview_column(self, column: int) -> None:
+    def _next_preview_column_after_removal(
+        self, columns: tuple[_PreviewColumn, ...]
+    ) -> int | None:
+        visible = tuple(
+            preview_column
+            for logical_column in range(3, self.preview_model.columnCount())
+            if (
+                preview_column := self.preview_model.extraction_column(logical_column)
+            )
+            is not None
+        )
+        removed = set(columns)
+        removed_positions = [
+            index for index, column in enumerate(visible) if column in removed
+        ]
+        survivors = [
+            (index, column)
+            for index, column in enumerate(visible)
+            if column not in removed
+        ]
+        if not removed_positions or not survivors:
+            return None
+        next_survivor = next(
+            (
+                survivor_index
+                for survivor_index, (original_index, _column) in enumerate(survivors)
+                if original_index > max(removed_positions)
+            ),
+            len(survivors) - 1,
+        )
+        return 3 + next_survivor
+
+    def _select_preview_column(
+        self, column: int, *, use_keyboard_modifiers: bool = True
+    ) -> None:
         if not 0 <= column < self.preview_model.columnCount():
             return
         selection = self.preview.selectionModel()
         if selection is None or self.preview_model.rowCount() == 0:
             return
-        modifiers = QApplication.keyboardModifiers()
+        modifiers = (
+            QApplication.keyboardModifiers()
+            if use_keyboard_modifiers
+            else Qt.KeyboardModifier.NoModifier
+        )
         flags = QItemSelectionModel.SelectionFlag.Columns
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             flags |= QItemSelectionModel.SelectionFlag.Toggle

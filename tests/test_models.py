@@ -7,7 +7,7 @@ from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
 from PySide6.QtCore import QMimeData, QModelIndex, QPoint, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QHeaderView, QLabel, QPushButton
+from PySide6.QtWidgets import QHeaderView, QLabel, QMessageBox, QPushButton
 
 from chemfit_dashboard import main_window as main_window_module
 from chemfit_dashboard.appearance import (
@@ -153,6 +153,24 @@ def test_number_shortcuts_navigate_major_dashboard_views():
         assert window.workspace_tabs.currentWidget() is workspace
         if hierarchy is not None:
             assert window.hierarchy_tabs.currentWidget() is hierarchy
+
+
+def test_keyboard_shortcut_help_is_grouped_by_focus_context(monkeypatch):
+    window = MainWindow()
+    displayed = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "exec",
+        lambda dialog: displayed.append(dialog.text()) or 0,
+    )
+
+    window._show_keyboard_shortcuts()  # noqa: SLF001
+
+    assert displayed
+    assert "<table" in displayed[0]
+    assert "Extraction fields" in displayed[0]
+    assert "Extraction preview" in displayed[0]
+    assert "Shortcuts marked with a specific view" in displayed[0]
 
 
 def test_dashboard_accepts_dropped_json_files_and_directories(tmp_path):
