@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QTreeWidget,
     QTreeWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 from rapidfuzz.fuzz import ratio
@@ -39,6 +38,7 @@ from chemfit_dashboard.search_core import (
     clear_search_caches,
     rank_search_hits,
 )
+from chemfit_dashboard.ui_components import muted_label, panel_layout
 
 __all__ = [
     "MAX_RESULTS",
@@ -71,12 +71,10 @@ class ContextSearchPanel(QWidget):
         """Initialize an empty field-search result view."""
         super().__init__(parent)
         self._index: ContextSearchIndex | None = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        self.status = QLabel("Type above to fuzzy-search context fields and values.")
-        self.status.setObjectName("mutedLabel")
-        self.status.setWordWrap(True)
+        layout = panel_layout(self)
+        self.status = muted_label(
+            "Type above to fuzzy-search context fields and values.", word_wrap=True
+        )
         layout.addWidget(self.status)
         self.results = QTreeWidget()
         self.results.setHeaderLabels(["Field / owning context", "Value", "Match"])

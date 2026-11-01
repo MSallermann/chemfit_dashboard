@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCharts import (
-    QAbstractAxis,
     QBarCategoryAxis,
     QBarSeries,
     QBarSet,
@@ -65,13 +64,17 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
 from chemfit_dashboard.appearance import ColorScheme, active_color_scheme
+from chemfit_dashboard.chart_style import (
+    create_chart,
+    finish_cartesian_chart,
+    series_color,
+)
 from chemfit_dashboard.semantic import (
     ComponentResolution,
     NodeTrail,
@@ -81,6 +84,14 @@ from chemfit_dashboard.semantic import (
     resolve_component_selection,
 )
 from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
+from chemfit_dashboard.ui_components import (
+    ActionRow,
+    expand_button,
+    interactive_zoom_factor,
+    muted_label,
+    panel_layout,
+    set_expand_button_state,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -145,6 +156,14 @@ class CollectionSeries:
     def missing_count(self) -> int:
         """Return evaluations for which the selector had no numeric value."""
         return len(self.labels) - len(self.points)
+
+
+@dataclass(frozen=True, slots=True)
+class _PresentedSeries:
+    """A series paired with its stable position in the complete plot."""
+
+    index: int
+    data: CollectionSeries
 
 
 def ordered_records(records: Iterable[RecordRef]) -> list[RecordRef]:
@@ -235,17 +254,14 @@ class CollectionPlotPanel(QWidget):
     def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
         """Initialize an empty interactive collection chart."""
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout = panel_layout(self)
         self.selection_label = QLabel("Currently plotting: no value selected")
         self.selection_label.setObjectName("plotSelection")
         self.selection_label.setWordWrap(True)
         layout.addWidget(self.selection_label)
-        self.status = QLabel("Select a numeric field in the inspector to plot it.")
-        self.status.setObjectName("mutedLabel")
-        self.status.setWordWrap(True)
+        self.status = muted_label(
+            "Select a numeric field in the inspector to plot it.", word_wrap=True
+        )
         layout.addWidget(self.status)
         self.series_list = QListWidget()
         self.series_list.setSelectionMode(
@@ -326,8 +342,7 @@ class CollectionPlotPanel(QWidget):
         self.reset_zoom_button.setToolTip("Restore the full data range")
         self.reset_zoom_button.clicked.connect(self._reset_zoom)
         view_controls.addWidget(self.reset_zoom_button)
-        self.expand_button = QPushButton("Expand")
-        self.expand_button.setToolTip("Open Plot in a large separate window")
+        self.expand_button = expand_button("Plot")
         self.expand_button.clicked.connect(self.expand_requested.emit)
         view_controls.addWidget(self.expand_button)
         layout.addLayout(view_controls)
@@ -413,57 +428,35 @@ class CollectionPlotPanel(QWidget):
         if not data_collection:
             return
         data = data_collection[0]
-        visible_collection = tuple(
-            series
-            for series in data_collection
-            if series.selector not in self._hidden_selectors
-        )
+        visible_series = self._visible_series()
         mode = self.plot_mode.currentData()
-        self.chart_view.setVisible(mode != "statistics")
-        self.statistics_table.setVisible(mode == "statistics")
-        self.histogram_bins.setVisible(mode == "histogram")
-        self.histogram_opacity.setVisible(mode == "histogram")
-        self.normalize.setEnabled(mode in {"line", "histogram"})
-        self.normalize.setToolTip(
-            "Scale each series' bin counts to sum to 1"
-            if mode == "histogram"
-            else "Scale every series independently to the 0-1 value range"
-        )
-        self.log_y.setEnabled(mode == "line" and not self.normalize.isChecked())
-        self.reset_zoom_button.setEnabled(mode != "statistics")
-        if mode == "statistics":
-            self._render_statistics(visible_collection)
-            return
-        if mode == "histogram":
-            self._render_histogram(visible_collection)
-            return
-        self._labels = data.labels
+        self._apply_mode_controls(mode)
         self.selection_label.setText(
             f"Currently plotting: {data.selector.label}"
             if len(data_collection) == 1
             else f"Currently plotting: {len(data_collection)} values"
         )
-        if not visible_collection:
-            self._rendered_points = {}
-            self._rendered_point_labels = {}
-            self._rendered_point_selectors = {}
-            self._selection_series = None
-            self.chart_view.setChart(_base_chart("All series hidden", self._scheme))
-            self.status.setText(
-                "All series are hidden; check one in the series list to show it."
-            )
-            self.cursor_coordinates.setText("Cursor: —")
+        if not visible_series:
+            self._show_all_series_hidden(mode)
             return
+        if mode == "statistics":
+            self._render_statistics(visible_series)
+            return
+        if mode == "histogram":
+            self._render_histogram(visible_series)
+            return
+        self._labels = data.labels
+        visible_collection = tuple(item.data for item in visible_series)
         axis_data = visible_collection[0]
-        chart = _base_chart("Values across context collection", self._scheme)
+        chart = create_chart("Values across context collection", self._scheme)
         all_points: list[SeriesPoint] = []
         nonpositive = 0
         self._rendered_points = defaultdict(list)
         self._rendered_point_labels = defaultdict(list)
         self._rendered_point_selectors = defaultdict(list)
-        for data_index, series_data in enumerate(data_collection):
-            if series_data.selector in self._hidden_selectors:
-                continue
+        for presented in visible_series:
+            data_index = presented.index
+            series_data = presented.data
             transformed = self._transformed_points(series_data)
             visible = tuple(
                 point
@@ -473,8 +466,7 @@ class CollectionPlotPanel(QWidget):
             nonpositive += len(transformed) - len(visible)
             all_points.extend(visible)
             rendered = _sample_points(visible, MAX_RENDERED_POINTS_PER_SERIES)
-            series_colors = self._scheme.series
-            color = QColor(series_colors[data_index % len(series_colors)])
+            color = series_color(self._scheme, data_index)
             markers = QScatterSeries()
             markers.setName(series_data.selector.label)
             markers.setMarkerSize(9.0)
@@ -565,21 +557,13 @@ class CollectionPlotPanel(QWidget):
                 padding = (maximum - minimum) * 0.08 or max(abs(minimum) * 0.08, 0.5)
                 y_axis.setRange(minimum - padding, maximum + padding)
                 y_axis.applyNiceNumbers()
-        for axis in (x_axis, y_axis):
-            _style_axis(axis, self._scheme)
-            chart.addAxis(
-                axis,
-                (
-                    Qt.AlignmentFlag.AlignBottom
-                    if axis is x_axis
-                    else Qt.AlignmentFlag.AlignLeft
-                ),
-            )
-        for chart_series in chart.series():
-            chart_series.attachAxis(x_axis)
-            chart_series.attachAxis(y_axis)
-        chart.legend().setVisible(len(visible_collection) > 1)
-        chart.legend().setLabelColor(QColor(self._scheme.text))
+        finish_cartesian_chart(
+            chart,
+            x_axis,
+            y_axis,
+            self._scheme,
+            legend_entries=len(visible_series),
+        )
         self.chart_view.setChart(chart)
         self._selection_series = None
         self._update_selection_marker()
@@ -623,12 +607,7 @@ class CollectionPlotPanel(QWidget):
 
     def set_expanded(self, expanded: bool) -> None:
         """Reflect whether the plot is hosted in the expanded window."""
-        self.expand_button.setText("Collapse" if expanded else "Expand")
-        self.expand_button.setToolTip(
-            "Return Plot to the dashboard"
-            if expanded
-            else "Open Plot in a large separate window"
-        )
+        set_expand_button_state(self.expand_button, "Plot", expanded=expanded)
 
     def refresh_fonts(self) -> None:
         """Apply the current application font to non-widget chart text."""
@@ -654,11 +633,51 @@ class CollectionPlotPanel(QWidget):
     def _plot_mode_changed(self, _index: int) -> None:
         self._render_series()
 
+    def _visible_series(self) -> tuple[_PresentedSeries, ...]:
+        """Return visible data with its immutable full-collection palette index."""
+        return tuple(
+            _PresentedSeries(index, series)
+            for index, series in enumerate(self._data)
+            if series.selector not in self._hidden_selectors
+        )
+
+    def _apply_mode_controls(self, mode: str) -> None:
+        """Apply the complete control-availability policy for one plot mode."""
+        is_histogram = mode == "histogram"
+        is_statistics = mode == "statistics"
+        self.chart_view.setVisible(not is_statistics)
+        self.statistics_table.setVisible(is_statistics)
+        self.histogram_bins.setVisible(is_histogram)
+        self.histogram_opacity.setVisible(is_histogram)
+        self.normalize.setEnabled(not is_statistics)
+        self.normalize.setToolTip(
+            "Scale each series' bin counts to sum to 1"
+            if is_histogram
+            else "Scale every series independently to the 0-1 value range"
+        )
+        self.log_y.setEnabled(mode == "line" and not self.normalize.isChecked())
+        self.reset_zoom_button.setEnabled(not is_statistics)
+        if mode != "line":
+            self._labels = ()
+            self._selection_series = None
+            self.cursor_coordinates.setText("Cursor: —")
+
+    def _show_all_series_hidden(self, mode: str) -> None:
+        """Present one shared all-hidden state in every plot mode."""
+        if mode == "statistics":
+            self.statistics_table.setRowCount(0)
+        else:
+            self._set_empty_chart("All series hidden")
+        self.status.setText(
+            "All series are hidden; check one in the series list to show it."
+        )
+
     def _render_statistics(
-        self, visible_collection: tuple[CollectionSeries, ...]
+        self, visible_series: tuple[_PresentedSeries, ...]
     ) -> None:
-        self.statistics_table.setRowCount(len(visible_collection))
-        for row, series in enumerate(visible_collection):
+        self.statistics_table.setRowCount(len(visible_series))
+        for row, presented in enumerate(visible_series):
+            series = presented.data
             values = [point.value for point in series.points]
             cells: tuple[str, ...] = (
                 series.selector.label,
@@ -672,17 +691,13 @@ class CollectionPlotPanel(QWidget):
             for column, value in enumerate(cells):
                 self.statistics_table.setItem(row, column, QTableWidgetItem(value))
         self.statistics_table.resizeColumnsToContents()
-        self.status.setText(
-            f"Statistics for {len(visible_collection):,} visible series"
-            if visible_collection
-            else "All series are hidden."
-        )
+        self.status.setText(f"Statistics for {len(visible_series):,} visible series")
 
     def _render_histogram(
-        self, visible_collection: tuple[CollectionSeries, ...]
+        self, visible_series: tuple[_PresentedSeries, ...]
     ) -> None:
         normalized = self.normalize.isChecked()
-        chart = _base_chart(
+        chart = create_chart(
             "Probability distribution" if normalized else "Binned value distribution",
             self._scheme,
         )
@@ -693,21 +708,13 @@ class CollectionPlotPanel(QWidget):
             self.chart_view.setChart(chart)
             self.status.setText("No numeric values are available for a histogram.")
             return
-        if not visible_collection:
-            self.chart_view.setChart(chart)
-            self.status.setText(
-                "All series are hidden; check one in the series list to show it."
-            )
-            return
         minimum, maximum = min(domain_values), max(domain_values)
         bins = self.histogram_bins.value()
         width = (maximum - minimum) / bins if maximum != minimum else 1.0
         bar_series = QBarSeries()
         maximum_bin_value = 0.0
-        palette_indexes = {
-            series.selector: index for index, series in enumerate(self._data)
-        }
-        for series in visible_collection:
+        for presented in visible_series:
+            series = presented.data
             counts = [0] * bins
             for point in series.points:
                 index = min(bins - 1, max(0, int((point.value - minimum) / width)))
@@ -720,14 +727,11 @@ class CollectionPlotPanel(QWidget):
             )
             maximum_bin_value = max(maximum_bin_value, max(bar_values, default=0))
             bar_set.append(bar_values)
-            palette_index = palette_indexes[series.selector]
-            color = QColor(
-                self._scheme.series[palette_index % len(self._scheme.series)]
-            )
-            border_color = QColor(color)
             fill_alpha = round(255 * self.histogram_opacity.value() / 100)
-            color.setAlpha(fill_alpha)
-            border_color.setAlpha(max(fill_alpha, 225))
+            color = series_color(self._scheme, presented.index, alpha=fill_alpha)
+            border_color = series_color(
+                self._scheme, presented.index, alpha=max(fill_alpha, 225)
+            )
             bar_set.setColor(color)
             bar_set.setBorderColor(border_color)
             bar_series.append(bar_set)
@@ -744,17 +748,17 @@ class CollectionPlotPanel(QWidget):
             max(0.01 if normalized else 1.0, maximum_bin_value),
         )
         y_axis.applyNiceNumbers()
-        for axis in (x_axis, y_axis):
-            _style_axis(axis, self._scheme)
-        chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
-        chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
-        bar_series.attachAxis(x_axis)
-        bar_series.attachAxis(y_axis)
-        chart.legend().setVisible(len(visible_collection) > 1)
+        finish_cartesian_chart(
+            chart,
+            x_axis,
+            y_axis,
+            self._scheme,
+            legend_entries=len(visible_series),
+        )
         self.chart_view.setChart(chart)
         bin_label = "bin" if bins == 1 else "bins"
         self.status.setText(
-            f"{sum(len(series.points) for series in visible_collection):,} values "
+            f"{sum(len(item.data.points) for item in visible_series):,} values "
             f"in {bins} equal-width {bin_label} · "
             f"range {minimum:.8g} to {maximum:.8g}"
             + (" · each series sums to probability 1" if normalized else "")
@@ -763,17 +767,14 @@ class CollectionPlotPanel(QWidget):
     def _reset_zoom(self) -> None:
         self.chart_view.chart().zoomReset()
 
-    def _series_row(self, index: int, series: CollectionSeries) -> QWidget:
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(5, 2, 3, 2)
-        layout.setSpacing(7)
+    def _series_row(self, index: int, series: CollectionSeries) -> ActionRow:
+        row = ActionRow(margins=(5, 2, 3, 2), spacing=7)
         swatch = QLabel()
         swatch.setObjectName("seriesColorSwatch")
         swatch.setFixedSize(20, 20)
         swatch.setProperty("seriesIndex", index)
         self._set_swatch_color(swatch, index)
-        layout.addWidget(swatch)
+        row.add_widget(swatch)
         visible = QCheckBox(series.selector.label)
         visible.setObjectName("seriesVisibility")
         visible.setChecked(series.selector not in self._hidden_selectors)
@@ -786,17 +787,18 @@ class CollectionPlotPanel(QWidget):
                 selector, checked
             )
         )
-        layout.addWidget(visible, 1)
-        remove = QToolButton()
-        remove.setObjectName("removeSeriesAction")
-        remove.setText("\N{MULTIPLICATION SIGN}")
-        remove.setToolTip(f"Remove {series.selector.label} from the plot")
+        row.add_widget(visible, 1)
+        remove = row.add_action(
+            "removeSeriesAction",
+            "\u00d7",
+            f"Remove {series.selector.label} from the plot",
+            compact=True,
+        )
         remove.clicked.connect(
             lambda _checked=False, selector=series.selector: (
                 self.remove_series_requested.emit(selector)
             )
         )
-        layout.addWidget(remove)
         return row
 
     def _show_series_context_menu(self, position) -> None:  # noqa: ANN001
@@ -878,7 +880,7 @@ class CollectionPlotPanel(QWidget):
         self._render_series()
 
     def _set_swatch_color(self, swatch: QLabel, index: int) -> None:
-        color = self._scheme.series[index % len(self._scheme.series)]
+        color = series_color(self._scheme, index).name()
         swatch.setStyleSheet(
             f"background: {color}; border: 1px solid {self._scheme.text_strong}; "
             "border-radius: 5px;"
@@ -905,7 +907,7 @@ class CollectionPlotPanel(QWidget):
         self._rendered_point_selectors = {}
         self._selection_series = None
         self.cursor_coordinates.setText("Cursor: —")
-        self.chart_view.setChart(_base_chart(title, self._scheme))
+        self.chart_view.setChart(create_chart(title, self._scheme))
 
     def select_record(self, record_id: str | None) -> None:
         """Highlight the selected evaluation without rebuilding the chart."""
@@ -1022,12 +1024,11 @@ class CollectionPlotPanel(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("CSV column names")
         layout = QVBoxLayout(dialog)
-        explanation = QLabel(
+        explanation = muted_label(
             "Rename the columns written to the wide CSV file. Names must be "
-            "non-empty and unique."
+            "non-empty and unique.",
+            word_wrap=True,
         )
-        explanation.setWordWrap(True)
-        explanation.setObjectName("mutedLabel")
         layout.addWidget(explanation)
         form = QFormLayout()
         defaults = self.csv_column_names()
@@ -1242,7 +1243,7 @@ class CoordinateChartView(QChartView):
         steps = event.angleDelta().y() / 120
         if not steps:
             return
-        factor = 1.18**steps
+        factor = interactive_zoom_factor(steps)
         self.chart().zoom(factor)
         event.accept()
 
@@ -1370,23 +1371,6 @@ def _validated_csv_column_names(
         message = "Column names must be unique."
         raise ValueError(message)
     return cleaned
-
-
-def _base_chart(title: str, scheme: ColorScheme) -> QChart:
-    chart = QChart()
-    chart.setTitle(title)
-    chart.setBackgroundBrush(QColor(scheme.chart))
-    chart.setPlotAreaBackgroundBrush(QColor(scheme.chart))
-    chart.setPlotAreaBackgroundVisible(True)
-    chart.setTitleBrush(QColor(scheme.text))
-    return chart
-
-
-def _style_axis(axis: QAbstractAxis, scheme: ColorScheme) -> None:
-    """Apply the same subdued axis treatment in every chart mode."""
-    axis.setLabelsBrush(QColor(scheme.text))
-    axis.setTitleBrush(QColor(scheme.text))
-    axis.setGridLineColor(QColor(scheme.border))
 
 
 def _append_line(

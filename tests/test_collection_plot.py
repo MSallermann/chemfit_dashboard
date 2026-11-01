@@ -24,9 +24,11 @@ from chemfit_dashboard.collection_plot import (
 )
 from chemfit_dashboard.context_search import SearchHit
 from chemfit_dashboard.extraction import ExtractionConfig, FieldSelector
+from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.source import JsonFileSource
+from chemfit_dashboard.ui_components import ActionRow
 
 
 def test_builds_series_from_nested_intermediate_context_outputs():
@@ -206,6 +208,11 @@ def test_histogram_series_colors_stay_stable_when_visibility_changes():
     )
     panel = CollectionPlotPanel()
     panel.set_series_collection((first, second))
+    line_colors = {
+        series.name(): series.color().rgb()
+        for series in panel.chart_view.chart().series()
+        if isinstance(series, QScatterSeries)
+    }
     panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("histogram"))
     bars = next(
         series
@@ -215,6 +222,9 @@ def test_histogram_series_colors_stay_stable_when_visibility_changes():
     original_colors = {
         bar_set.label(): bar_set.color().rgba() for bar_set in bars.barSets()
     }
+    assert {
+        bar_set.label(): bar_set.color().rgb() for bar_set in bars.barSets()
+    } == line_colors
     horizontal_axis = panel.chart_view.chart().axes(Qt.Orientation.Horizontal)[0]
     assert isinstance(horizontal_axis, QBarCategoryAxis)
     original_categories = horizontal_axis.categories()
@@ -237,6 +247,36 @@ def test_histogram_series_colors_stay_stable_when_visibility_changes():
     horizontal_axis = panel.chart_view.chart().axes(Qt.Orientation.Horizontal)[0]
     assert isinstance(horizontal_axis, QBarCategoryAxis)
     assert horizontal_axis.categories() == original_categories
+
+
+def test_interactive_item_rows_share_one_action_row_contract():
+    labels = ("step_1.json",)
+    plot = CollectionPlotPanel()
+    plot.set_series(
+        CollectionSeries(
+            NumberSelector((), "fields", ("loss",), "loss", "loss"),
+            labels,
+            (SeriesPoint(0, labels[0], 2.0),),
+        )
+    )
+    extraction = DataExtractionPanel()
+    extraction.add_selector(FieldSelector((), "fields", ("loss",), "loss"))
+
+    plot_row = plot.series_list.itemWidget(plot.series_list.item(0))
+    extraction_row = extraction.selections.cellWidget(0, 2)
+
+    assert isinstance(plot_row, ActionRow)
+    assert isinstance(extraction_row, ActionRow)
+    plot_remove = plot_row.findChild(QToolButton, "removeSeriesAction")
+    extraction_remove = extraction_row.findChild(QToolButton, "removeAction")
+    assert plot_remove is not None
+    assert extraction_remove is not None
+    assert plot_remove.text() == extraction_remove.text() == "\u00d7"
+    assert plot_remove.width() == extraction_remove.width() == 28
+    assert plot_remove.autoRaise()
+    assert extraction_remove.autoRaise()
+    assert plot_remove.accessibleName() == plot_remove.toolTip()
+    assert extraction_remove.accessibleName() == extraction_remove.toolTip()
 
 
 def test_plot_supports_histograms_statistics_and_bounded_large_rendering():

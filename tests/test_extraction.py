@@ -487,7 +487,7 @@ def test_field_specific_extraction_controls_are_inline():
     assert _inline_action(panel, 0, "renameAction").text() == "Rename"
     assert _inline_action(panel, 0, "moveUpAction").text() == "↑"
     assert _inline_action(panel, 0, "moveDownAction").text() == "↓"
-    assert _inline_action(panel, 0, "removeAction").text() == "X"
+    assert _inline_action(panel, 0, "removeAction").text() == "\u00d7"
     flatten = _inline_action(panel, 0, "flattenAction")
     expand = _inline_action(panel, 0, "expandAction")
     assert flatten.text() == "Flatten all"

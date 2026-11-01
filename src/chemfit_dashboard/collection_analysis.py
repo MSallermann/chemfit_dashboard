@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.source import ContextDocument, NodePath
+from chemfit_dashboard.ui_components import muted_label
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -248,9 +249,7 @@ class CollectionAnalysisPanel(QWidget):
         heading.addWidget(self.refresh_button)
         layout.addLayout(heading)
 
-        self.issue_label = QLabel()
-        self.issue_label.setObjectName("mutedLabel")
-        self.issue_label.setWordWrap(True)
+        self.issue_label = muted_label(word_wrap=True)
         layout.addWidget(self.issue_label)
 
         numeric_label = QLabel("NUMERIC ROOT FIELDS")

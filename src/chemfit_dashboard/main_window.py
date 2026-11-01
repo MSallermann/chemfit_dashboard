@@ -14,6 +14,7 @@ import math
 import re
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -148,10 +149,11 @@ from chemfit_dashboard.traversal import (
     CancellationToken,
     iter_collection,
 )
+from chemfit_dashboard.ui_components import muted_label
 from chemfit_dashboard.workers import TaskRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +174,14 @@ AUTO_ANALYSIS_RECORD_LIMIT = 5_000
 BACKGROUND_THREADS_SETTING = "performance/background_threads"
 SEARCH_PROCESSES_SETTING = "performance/search_processes"
 MAX_CONFIGURABLE_WORKERS = 64
+
+
+@dataclass(frozen=True, slots=True)
+class _DeterminateOperation:
+    """Cancellation and progress channels for one background operation."""
+
+    cancellation: CancellationToken
+    progress: Callable[[int, object], None]
 
 
 def _report_progress(
@@ -562,13 +572,10 @@ class MainWindow(QMainWindow):
         self.focus_selected_button.clicked.connect(self._focus_selected_record)
         layout.addWidget(self.focus_selected_button)
 
-        self.file_count = QLabel("No files loaded")
-        self.file_count.setObjectName("mutedLabel")
+        self.file_count = muted_label("No files loaded")
         layout.addWidget(self.file_count)
-        self.order_status = QLabel("Order: filename")
-        self.order_status.setObjectName("mutedLabel")
+        self.order_status = muted_label("Order: filename", word_wrap=True)
         self.order_status.setToolTip("Natural alphanumeric filename order")
-        self.order_status.setWordWrap(True)
         layout.addWidget(self.order_status)
         order_controls = QHBoxLayout()
         order_controls.setSpacing(6)
@@ -616,8 +623,7 @@ class MainWindow(QMainWindow):
         label.setObjectName("sectionLabel")
         top.addWidget(label)
         top.addStretch()
-        label_field_label = QLabel("Labels")
-        label_field_label.setObjectName("mutedLabel")
+        label_field_label = muted_label("Labels")
         label_field_label.setToolTip("Component label metadata key")
         top.addWidget(label_field_label)
         self.component_label_key = QComboBox()
@@ -637,8 +643,7 @@ class MainWindow(QMainWindow):
             lambda _index: self._component_label_key_changed()
         )
         top.addWidget(self.component_label_key)
-        self.node_count = QLabel("—")
-        self.node_count.setObjectName("mutedLabel")
+        self.node_count = muted_label("—")
         top.addWidget(self.node_count)
         layout.addLayout(top)
 
@@ -1056,6 +1061,29 @@ class MainWindow(QMainWindow):
             )
 
         return report
+
+    def _begin_determinate_operation(
+        self, name: str, label: str, total: int
+    ) -> _DeterminateOperation:
+        """Start work through the single determinate-operation setup path."""
+        return _DeterminateOperation(
+            self._begin_operation(name, label),
+            self._progress_callback(name, total),
+        )
+
+    def _collection_documents(
+        self,
+        records: Sequence[RecordRef],
+        operation: _DeterminateOperation,
+    ) -> Iterator[tuple[RecordRef, ContextDocument | None]]:
+        """Traverse collection documents with the shared operation contract."""
+        for item in iter_collection(
+            self.source,
+            records,
+            cancellation=operation.cancellation,
+            progress=operation.progress,
+        ):
+            yield item.record, item.document
 
     def _toggle_activity_panel(self, expanded: bool) -> None:
         self.activity.set_expanded(expanded)
@@ -2099,21 +2127,13 @@ class MainWindow(QMainWindow):
         if not force and len(records) > AUTO_ANALYSIS_RECORD_LIMIT:
             self.collection_analysis.show_deferred(len(records))
             return
-        cancellation = self._begin_operation("analysis", "analyzing collection")
-        progress = self._progress_callback("analysis", len(records))
+        operation = self._begin_determinate_operation(
+            "analysis", "analyzing collection", len(records)
+        )
         self.collection_analysis.show_loading(len(records))
 
         def load_summary() -> CollectionSummary:
-            pairs = (
-                (item.record, item.document)
-                for item in iter_collection(
-                    self.source,
-                    records,
-                    cancellation=cancellation,
-                    progress=progress,
-                )
-            )
-            return analyze_collection(pairs)
+            return analyze_collection(self._collection_documents(records, operation))
 
         self.tasks.submit(
             load_summary,
@@ -2264,7 +2284,7 @@ class MainWindow(QMainWindow):
             self.workspace_tabs.setCurrentWidget(self._tab_before_search)
             self._tab_before_search = None
 
-    def _run_field_search(self) -> None:  # noqa: PLR0915
+    def _run_field_search(self) -> None:
         query = self.field_search.text().strip()
         if not query:
             return
@@ -2298,9 +2318,11 @@ class MainWindow(QMainWindow):
 
         self._search_generation += 1
         generation = self._search_generation
-        cancellation = self._begin_operation("search", "searching collection")
         count = len(records)
-        self.operation_progress.emit("search", 0, count)
+        operation = self._begin_determinate_operation(
+            "search", "searching collection", count
+        )
+        cancellation = operation.cancellation
         self.search_panel.show_loading(
             f"Searching {count:,} evaluation{'s' if count != 1 else ''} "
             "in the background…"
@@ -2320,14 +2342,11 @@ class MainWindow(QMainWindow):
                     ),
                     component_label_key=self._component_label_metadata_key,
                     cancellation=cancellation,
-                    progress=lambda value, total: self.operation_progress.emit(
-                        "search", value, total
-                    ),
+                    progress=lambda value, _total: operation.progress(value, None),
                 )
                 return result.hits, result.failed_records, result.cancelled
             hits = TopKSearchHits(MAX_RESULTS)
             failed_records = 0
-            last_progress_at = time.monotonic()
             for completed, record in enumerate(records, start=1):
                 if cancellation.cancelled:
                     return [], failed_records, True
@@ -2361,13 +2380,7 @@ class MainWindow(QMainWindow):
                     failed_records += 1
                 finally:
                     if not cancellation.cancelled:
-                        last_progress_at = _report_progress(
-                            self.operation_progress.emit,
-                            "search",
-                            completed,
-                            count,
-                            last_progress_at,
-                        )
+                        operation.progress(completed, None)
             return hits.results(), failed_records, False
 
         self.tasks.submit(
@@ -2531,20 +2544,14 @@ class MainWindow(QMainWindow):
         if not records:
             self.collection_plot.show_error("No context collection is loaded.")
             return
-        cancellation = self._begin_operation("plot", "loading plot values")
-        progress = self._progress_callback("plot", len(records))
+        operation = self._begin_determinate_operation(
+            "plot", "loading plot values", len(records)
+        )
 
         def load_series() -> tuple[CollectionSeries, ...]:
-            pairs = (
-                (item.record, item.document)
-                for item in iter_collection(
-                    self.source,
-                    records,
-                    cancellation=cancellation,
-                    progress=progress,
-                )
+            return build_collection_series_multi(
+                selected, self._collection_documents(records, operation)
             )
-            return build_collection_series_multi(selected, pairs)
 
         self.tasks.submit(
             load_series,
@@ -2612,24 +2619,18 @@ class MainWindow(QMainWindow):
         self.extraction.clear_collection_sort()
         self._order_generation += 1
         generation = self._order_generation
-        cancellation = self._begin_operation("order", "loading sort values")
-        progress = self._progress_callback("order", len(records))
+        operation = self._begin_determinate_operation(
+            "order", "loading sort values", len(records)
+        )
         self.order_status.setText("Order: loading selected values…")
         self.statusBar().showMessage(
             f"Ordering {len(records):,} contexts by {selector.label}…"
         )
 
         def load_order_values() -> tuple[list[RecordRef], CollectionSeries]:
-            pairs = (
-                (item.record, item.document)
-                for item in iter_collection(
-                    self.source,
-                    records,
-                    cancellation=cancellation,
-                    progress=progress,
-                )
+            return records, build_collection_series(
+                selector, self._collection_documents(records, operation)
             )
-            return records, build_collection_series(selector, pairs)
 
         self.tasks.submit(
             load_order_values,
@@ -2711,10 +2712,11 @@ class MainWindow(QMainWindow):
             return
         self._order_generation += 1
         generation = self._order_generation
-        cancellation = self._begin_operation(
-            "order", f"sorting by extraction column {selector.column}"
+        operation = self._begin_determinate_operation(
+            "order",
+            f"sorting by extraction column {selector.column}",
+            len(records),
         )
-        progress = self._progress_callback("order", len(records))
 
         def load_values():
             present: list[tuple[tuple, int, str]] = []
@@ -2723,8 +2725,8 @@ class MainWindow(QMainWindow):
                 self.source,
                 records,
                 (selector,),
-                cancellation=cancellation,
-                progress=progress,
+                cancellation=operation.cancellation,
+                progress=operation.progress,
             ):
                 extracted = row.values[0]
                 value = extracted.value
@@ -2919,11 +2921,10 @@ class MainWindow(QMainWindow):
         if not records:
             self.extraction.show_error("No context collection is loaded.")
             return
-        cancellation = self._begin_operation(
-            "extraction_preview", "building extraction preview"
-        )
-        progress = self._progress_callback(
-            "extraction_preview", min(len(records), PREVIEW_LIMIT)
+        operation = self._begin_determinate_operation(
+            "extraction_preview",
+            "building extraction preview",
+            min(len(records), PREVIEW_LIMIT),
         )
         self.extraction.show_loading(len(records))
 
@@ -2934,8 +2935,8 @@ class MainWindow(QMainWindow):
                         self.source,
                         records,
                         selected,
-                        cancellation=cancellation,
-                        progress=progress,
+                        cancellation=operation.cancellation,
+                        progress=operation.progress,
                     ),
                     PREVIEW_LIMIT,
                 )
@@ -2969,17 +2970,16 @@ class MainWindow(QMainWindow):
         self, path: str, format_name: str, config: ExtractionConfig
     ) -> None:
         records = list(self.file_model.records)
-        cancellation = self._begin_operation(
-            "extraction_export", "exporting extracted data"
-        )
         export_passes = (
             2
             if format_name == "csv"
             and any(selector.flatten for selector in config.selectors)
             else 1
         )
-        progress = self._progress_callback(
-            "extraction_export", len(records) * export_passes
+        operation = self._begin_determinate_operation(
+            "extraction_export",
+            "exporting extracted data",
+            len(records) * export_passes,
         )
         self.extraction.status.setText(
             f"Exporting {len(records):,} evaluations to {format_name.upper()}…"
@@ -2992,16 +2992,16 @@ class MainWindow(QMainWindow):
                     self.source,
                     records,
                     config,
-                    cancellation=cancellation,
-                    progress=progress,
+                    cancellation=operation.cancellation,
+                    progress=operation.progress,
                 )
             return export_jsonl(
                 path,
                 self.source,
                 records,
                 config,
-                cancellation=cancellation,
-                progress=progress,
+                cancellation=operation.cancellation,
+                progress=operation.progress,
             )
 
         def export_finished(count: int) -> None:

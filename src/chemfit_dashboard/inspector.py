@@ -33,6 +33,7 @@ from chemfit_dashboard.collection_plot import NumberSelector
 from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.models import JsonValueModel
 from chemfit_dashboard.source import NodeDetails
+from chemfit_dashboard.ui_components import muted_label
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -145,9 +146,7 @@ class StructureView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        self.note = QLabel()
-        self.note.setWordWrap(True)
-        self.note.setObjectName("mutedLabel")
+        self.note = muted_label(word_wrap=True)
         layout.addWidget(self.note)
 
         self.table = QTableView()
@@ -259,9 +258,9 @@ class Inspector(QWidget):
         self.title.setObjectName("inspectorTitle")
         layout.addWidget(self.title)
 
-        self.subtitle = QLabel("Choose an evaluation and context to inspect its data.")
-        self.subtitle.setObjectName("mutedLabel")
-        self.subtitle.setWordWrap(True)
+        self.subtitle = muted_label(
+            "Choose an evaluation and context to inspect its data.", word_wrap=True
+        )
         layout.addWidget(self.subtitle)
 
         divider = QFrame()
@@ -278,8 +277,7 @@ class Inspector(QWidget):
         number_label = QLabel("NUMBER")
         number_label.setObjectName("actionGroupLabel")
         action_layout.addWidget(number_label, 0, 0)
-        self.plot_selection = QLabel("No number selected")
-        self.plot_selection.setObjectName("mutedLabel")
+        self.plot_selection = muted_label("No number selected")
         action_layout.addWidget(self.plot_selection, 0, 1, 1, 4)
         self.plot_button = QPushButton("Plot")
         self.plot_button.setProperty("primaryAction", "true")
@@ -302,8 +300,7 @@ class Inspector(QWidget):
         extraction_label = QLabel("EXTRACTION")
         extraction_label.setObjectName("actionGroupLabel")
         action_layout.addWidget(extraction_label, 2, 0)
-        self.field_selection = QLabel("No field selected")
-        self.field_selection.setObjectName("mutedLabel")
+        self.field_selection = muted_label("No field selected")
         action_layout.addWidget(self.field_selection, 2, 1, 1, 4)
         self.extract_button = QPushButton("+ Field")
         self.extract_button.setProperty("extractAction", "true")

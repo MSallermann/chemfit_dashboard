@@ -42,7 +42,6 @@ from PySide6.QtWidgets import (
     QTableView,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -58,35 +57,12 @@ from chemfit_dashboard.extraction import (
     load_config,
     save_config,
 )
+from chemfit_dashboard.ui_components import ActionRow, muted_label
 
 PREVIEW_LIMIT = 200
 _PREVIEW_MISSING = object()
 CONFIG_DIRECTORY_SETTING = "paths/extraction_config"
 EXPORT_DIRECTORY_SETTING = "paths/extraction_export"
-
-
-def _action_button(
-    name: str,
-    text: str,
-    tooltip: str,
-    *,
-    checkable: bool = False,
-    compact: bool = False,
-) -> QToolButton:
-    button = QToolButton()
-    button.setObjectName(name)
-    button.setText(text)
-    button.setToolTip(tooltip)
-    button.setAccessibleName(tooltip)
-    button.setCheckable(checkable)
-    button.setAutoRaise(True)
-    if compact:
-        button.setFixedWidth(28)
-    else:
-        # Cell layouts may otherwise shrink tool buttons below their size hint,
-        # clipping labels even though the table can scroll horizontally.
-        button.setMinimumWidth(button.fontMetrics().horizontalAdvance(text) + 22)
-    return button
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,14 +290,12 @@ class DataExtractionPanel(QWidget):
         self.dirty_indicator.hide()
         heading.addWidget(self.dirty_indicator)
         heading.addStretch()
-        self.status = QLabel("Add any inspector value or component to begin.")
-        self.status.setObjectName("mutedLabel")
+        self.status = muted_label("Add any inspector value or component to begin.")
         heading.addWidget(self.status)
         layout.addLayout(heading)
-        order_hint = QLabel(
+        order_hint = muted_label(
             "Rows follow the collection order shown in the Evaluations sidebar."
         )
-        order_hint.setObjectName("mutedLabel")
         layout.addWidget(order_hint)
 
         self.selections = QTableWidget(0, 3)
@@ -507,45 +481,39 @@ class DataExtractionPanel(QWidget):
             self.selections.setCurrentCell(selected_row, 0)
         self._update_controls()
 
-    def _field_actions(self, row: int, selector: FieldSelector) -> QWidget:
-        actions = QWidget()
-        layout = QHBoxLayout(actions)
-        layout.setContentsMargins(2, 1, 2, 1)
-        layout.setSpacing(3)
+    def _field_actions(self, row: int, selector: FieldSelector) -> ActionRow:
+        actions = ActionRow()
 
-        move_up = _action_button(
+        move_up = actions.add_action(
             "moveUpAction",
             "↑",
             f"Move {selector.column} up",
             compact=True,
+            enabled=row > 0,
         )
-        move_up.setEnabled(row > 0)
         move_up.clicked.connect(
             lambda _checked=False, target=row: self._move_row(target, -1)
         )
-        layout.addWidget(move_up)
 
-        move_down = _action_button(
+        move_down = actions.add_action(
             "moveDownAction",
             "↓",
             f"Move {selector.column} down",
             compact=True,
+            enabled=row < len(self._selectors) - 1,
         )
-        move_down.setEnabled(row < len(self._selectors) - 1)
         move_down.clicked.connect(
             lambda _checked=False, target=row: self._move_row(target, 1)
         )
-        layout.addWidget(move_down)
 
-        rename = _action_button(
+        rename = actions.add_action(
             "renameAction", "Rename", f"Rename extraction column {selector.column}"
         )
         rename.clicked.connect(
             lambda _checked=False, target=row: self._edit_column_name(target)
         )
-        layout.addWidget(rename)
 
-        flatten = _action_button(
+        flatten = actions.add_action(
             "flattenAction",
             "Flatten all",
             f"Recursively flatten nested dictionaries in {selector.column}",
@@ -555,9 +523,8 @@ class DataExtractionPanel(QWidget):
         flatten.toggled.connect(
             lambda checked, target=row: self._set_option(target, "flatten", checked)
         )
-        layout.addWidget(flatten)
 
-        expand = _action_button(
+        expand = actions.add_action(
             "expandAction",
             "Expand all",
             f"Expand array values in {selector.column} into rows",
@@ -569,18 +536,16 @@ class DataExtractionPanel(QWidget):
                 target, "expand_array", checked
             )
         )
-        layout.addWidget(expand)
 
-        remove = _action_button(
+        remove = actions.add_action(
             "removeAction",
-            "X",
+            "\u00d7",
             f"Remove {selector.column} from extraction",
             compact=True,
         )
         remove.clicked.connect(
             lambda _checked=False, target=row: self._remove_row(target)
         )
-        layout.addWidget(remove)
         return actions
 
     def _emit_changed(self) -> None:

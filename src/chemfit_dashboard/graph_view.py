@@ -30,10 +30,8 @@ from PySide6.QtWidgets import (
     QGraphicsSceneMouseEvent,
     QGraphicsView,
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QStyleOptionGraphicsItem,
-    QVBoxLayout,
     QWidget,
 )
 from shiboken6 import isValid
@@ -43,6 +41,13 @@ from chemfit_dashboard.data_flow import DataFlowGraph, DataFlowNode, build_data_
 from chemfit_dashboard.graph_layout import GraphLayout, data_flow_layout
 from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
 from chemfit_dashboard.traversal import CancellationToken
+from chemfit_dashboard.ui_components import (
+    expand_button,
+    interactive_zoom_factor,
+    muted_label,
+    panel_layout,
+    set_expand_button_state,
+)
 from chemfit_dashboard.workers import TaskRunner
 
 if TYPE_CHECKING:
@@ -273,10 +278,12 @@ class DataFlowView(QGraphicsView):
         return ()
 
     def zoom_in(self) -> None:
-        self.scale(1.2, 1.2)
+        factor = interactive_zoom_factor(1)
+        self.scale(factor, factor)
 
     def zoom_out(self) -> None:
-        self.scale(1 / 1.2, 1 / 1.2)
+        factor = interactive_zoom_factor(-1)
+        self.scale(factor, factor)
 
     def fit_graph(self) -> None:
         bounds = self._node_bounds()
@@ -292,7 +299,7 @@ class DataFlowView(QGraphicsView):
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         steps = event.angleDelta().y() / 120
-        factor = 1.08**steps
+        factor = interactive_zoom_factor(steps)
         self.scale(factor, factor)
         event.accept()
 
@@ -640,9 +647,7 @@ class DataFlowPanel(QWidget):
         """Initialize flow controls, navigation, and the graphics view."""
         super().__init__(parent)
         self._document: ContextDocument | None = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout = panel_layout(self)
         controls = QHBoxLayout()
         self.back_button = QPushButton("Back")
         self.back_button.setEnabled(False)
@@ -653,24 +658,21 @@ class DataFlowPanel(QWidget):
         self.fit_button = QPushButton("Fit View")
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
-        self.expand_button = QPushButton("Expand")
-        self.expand_button.setToolTip("Open Data Flow in a large separate window")
+        self.expand_button = expand_button("Data Flow")
         controls.addWidget(self.fit_button)
         controls.addWidget(self.zoom_out_button)
         controls.addWidget(self.zoom_in_button)
         controls.addWidget(self.expand_button)
         layout.addLayout(controls)
-        self.status = QLabel("Data Flow builds on demand")
-        self.status.setObjectName("mutedLabel")
+        self.status = muted_label("Data Flow builds on demand")
         layout.addWidget(self.status)
         self.view = DataFlowView()
         layout.addWidget(self.view, 1)
-        hint = QLabel(
+        hint = muted_label(
             "Rounded nodes are atomic. Accent nodes with clipped corners are "
-            "structural; double-click one to open it."
+            "structural; double-click one to open it.",
+            word_wrap=True,
         )
-        hint.setObjectName("mutedLabel")
-        hint.setWordWrap(True)
         layout.addWidget(hint)
 
         self.view.node_selected.connect(self.node_selected.emit)
@@ -714,12 +716,7 @@ class DataFlowPanel(QWidget):
 
     def set_expanded(self, expanded: bool) -> None:
         """Reflect whether the panel is hosted in the expanded window."""
-        self.expand_button.setText("Collapse" if expanded else "Expand")
-        self.expand_button.setToolTip(
-            "Return Data Flow to the dashboard"
-            if expanded
-            else "Open Data Flow in a large separate window"
-        )
+        set_expand_button_state(self.expand_button, "Data Flow", expanded=expanded)
 
     def _enter(self, path: NodePath) -> None:
         self.view.navigate_to(path)
@@ -746,8 +743,7 @@ class DataFlowPanel(QWidget):
         paths = [path[:depth] for depth in range(len(path) + 1)]
         for index, level in enumerate(paths):
             if index:
-                separator = QLabel(">")
-                separator.setObjectName("mutedLabel")
+                separator = muted_label(">")
                 self.breadcrumbs.addWidget(separator)
             button = QPushButton(self._breadcrumb_label(level))
             button.setObjectName("breadcrumbButton")

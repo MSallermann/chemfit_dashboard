@@ -18,8 +18,6 @@ COLOR_SCHEME_SETTING = "appearance/color_scheme"
 FONT_SCALE_SETTING = "appearance/font_scale"
 STYLE_PROFILE_SETTING = "appearance/style_profile"
 DENSITY_SETTING = "appearance/density"
-STYLE_PROFILE_SETTING = "appearance/style_profile"
-DENSITY_SETTING = "appearance/density"
 COMPONENT_LABEL_METADATA_KEY_SETTING = "display/component_label_metadata_key"
 COMBO_CHEVRON_PATH = (
     Path(__file__).with_name("icons").joinpath("chevron_down.svg").as_posix()
