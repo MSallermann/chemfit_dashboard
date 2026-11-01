@@ -145,6 +145,10 @@ in `MainWindow`. A callback must match the current generation before changing
 the UI; cancellation alone is insufficient because already-running work can
 finish after a newer request.
 
+The shared Qt thread count and the separate whole-collection search process count
+are persisted independently and exposed under **Settings > Workers**. Resizing the
+search pool replaces its persistent executor and invalidates any active search.
+
 `ActivityStatus` owns named `CancellationToken` objects. Reusing an operation
 name cancels its predecessor. Workers using `iter_collection` stop between
 records; search and graph layout use their own periodic checks. Closing a

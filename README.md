@@ -118,16 +118,19 @@ Search supports three modes:
 
 Search can be restricted to the current evaluation or applied to the entire loaded collection. Results can be selected to navigate directly to the corresponding context or value.
 
-Whole-collection search uses a persistent pool of two spawned worker processes.
+Whole-collection search uses a persistent pool of spawned worker processes,
+defaulting to two. Its size is adjustable under **Settings > Workers**, separately
+from the shared Qt thread pool used by loading, analysis, plotting, extraction,
+and graph layout.
 Workers load and search bounded batches with the same in-memory fuzzy, exact, and
 regular-expression implementation used for one evaluation, keeping CPU-intensive
 JSON parsing and ranking away from the GUI thread. Worker-local document and search
 index caches are deliberately bounded; no database or persistent index is created.
-Only two bounded chunks are submitted at once. Changing the query cancels chunks
+Only one bounded chunk per configured process is submitted at once. Changing the query cancels chunks
 that have not started and discards results from superseded generations; a chunk
 already running finishes because Python futures cannot interrupt process work. The
-pool is reused across searches and shut down when the dashboard closes. Two workers
-also mean two Python interpreters and two bounded worker-local cache sets, which is
+pool is reused across searches and shut down when the dashboard closes. Each worker
+adds a Python interpreter and a bounded worker-local cache set, which is
 the main memory cost of keeping collection search away from the GUI's GIL.
 
 ### Collection overview

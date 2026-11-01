@@ -5,7 +5,7 @@ from contextlib import suppress
 
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
-from PySide6.QtCore import QMimeData, QModelIndex, QPoint, Qt, QUrl
+from PySide6.QtCore import QMimeData, QModelIndex, QPoint, Qt, QThreadPool, QUrl
 from PySide6.QtWidgets import QHeaderView, QLabel, QPushButton
 
 from chemfit_dashboard import main_window as main_window_module
@@ -22,7 +22,11 @@ from chemfit_dashboard.appearance import (
 from chemfit_dashboard.context_search import ContextSearchIndex
 from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.graph_view import ContextGraphPanel
-from chemfit_dashboard.main_window import MainWindow
+from chemfit_dashboard.main_window import (
+    BACKGROUND_THREADS_SETTING,
+    SEARCH_PROCESSES_SETTING,
+    MainWindow,
+)
 from chemfit_dashboard.models import (
     ContextTreeModel,
     EvaluationListModel,
@@ -1044,6 +1048,36 @@ def test_visual_style_and_spacing_are_persisted_in_settings_menu(tmp_path):
     restored = MainWindow(settings=application_settings(settings_directory))
     assert restored._style_profile == "lightweight"  # noqa: SLF001
     assert restored._density == "compact"  # noqa: SLF001
+
+
+def test_worker_pool_sizes_are_adjustable_and_persisted(tmp_path):
+    settings_directory = tmp_path / "worker-settings"
+    settings = application_settings(settings_directory)
+    global_pool = QThreadPool.globalInstance()
+    original_thread_count = global_pool.maxThreadCount()
+    window = MainWindow(settings=settings)
+    restored = None
+    try:
+        previous_search_pool = window.collection_search
+        window.background_thread_workers.setValue(3)
+        window.search_process_workers.setValue(4)
+
+        assert global_pool.maxThreadCount() == 3
+        assert window.collection_search is not previous_search_pool
+        assert window.collection_search.max_workers == 4
+        assert int(settings.value(BACKGROUND_THREADS_SETTING)) == 3
+        assert int(settings.value(SEARCH_PROCESSES_SETTING)) == 4
+
+        restored = MainWindow(settings=application_settings(settings_directory))
+
+        assert restored.background_thread_workers.value() == 3
+        assert restored.search_process_workers.value() == 4
+        assert restored.collection_search.max_workers == 4
+    finally:
+        window.close()
+        if restored is not None:
+            restored.close()
+        global_pool.setMaxThreadCount(original_thread_count)
 
 
 def test_json_value_model_expands_nested_values_lazily():

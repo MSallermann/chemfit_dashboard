@@ -199,6 +199,41 @@ def test_configuration_round_trip_and_cancellation(tmp_path):
         )
 
 
+def test_extraction_and_exports_report_completed_records(tmp_path):
+    _write_semantic_collection(tmp_path)
+    source = JsonFileSource()
+    records = source.discover([tmp_path])
+    selector = FieldSelector((), "fields", (), "root", flatten=True)
+    extraction_progress = []
+
+    list(
+        extract_fields(
+            source,
+            records,
+            (selector,),
+            progress=lambda completed, record: extraction_progress.append(
+                (completed, record.name)
+            ),
+        )
+    )
+
+    assert extraction_progress == [
+        (1, records[0].name),
+        (2, records[1].name),
+    ]
+
+    export_progress = []
+    export_csv(
+        tmp_path / "progress.csv",
+        source,
+        records,
+        ExtractionConfig((selector,)),
+        progress=lambda completed, _record: export_progress.append(completed),
+    )
+
+    assert export_progress == [1, 2, 3, 4]
+
+
 def test_inspector_and_workspace_manage_arbitrary_field_selection(chemfit_document):
     inspector = Inspector()
     inspector.set_details(chemfit_document.details(()))

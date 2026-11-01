@@ -31,7 +31,7 @@ get_nested = pydictnest.get_nested
 _pydictnest_get_path = getattr(pydictnest, "get_path", None)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from chemfit_dashboard.source import ContextSource, RecordRef
 
@@ -158,6 +158,7 @@ def extract_fields(
     selectors: Sequence[FieldSelector],
     *,
     cancellation: CancellationToken | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
 ) -> Iterator[ExtractionRow]:
     """Incrementally extract arbitrary values from a collection."""
     selected = tuple(selectors)
@@ -172,12 +173,15 @@ def extract_fields(
             values = tuple(
                 extract_value(item.document, selector) for selector in selected
             )
-        yield ExtractionRow(
+        row = ExtractionRow(
             index=index,
             record_id=item.record.id,
             filename=item.record.name,
             values=values,
         )
+        if progress is not None:
+            progress(index + 1, item.record)
+        yield row
 
 
 def extract_value(
@@ -233,13 +237,18 @@ def export_jsonl(
     config: ExtractionConfig,
     *,
     cancellation: CancellationToken | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
     max_expanded_rows: int = MAX_EXPANDED_ROWS,
 ) -> int:
     """Stream complete extraction rows to JSON Lines."""
     count = 0
     with Path(path).open("w", encoding="utf-8") as stream:
         for row in extract_fields(
-            source, records, config.selectors, cancellation=cancellation
+            source,
+            records,
+            config.selectors,
+            cancellation=cancellation,
+            progress=progress,
         ):
             for expanded in _expanded_rows(row, config.selectors):
                 count += 1
@@ -277,6 +286,7 @@ def export_csv(
     config: ExtractionConfig,
     *,
     cancellation: CancellationToken | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
     max_flattened_columns: int = MAX_FLATTENED_COLUMNS,
     max_expanded_rows: int = MAX_EXPANDED_ROWS,
 ) -> int:
@@ -287,8 +297,15 @@ def export_csv(
         record_list,
         config.selectors,
         cancellation=cancellation,
+        progress=progress,
         maximum=max_flattened_columns,
     )
+    completed_offset = len(record_list) if flat_paths else 0
+
+    def export_progress(completed: int, record: RecordRef) -> None:
+        if progress is not None:
+            progress(completed_offset + completed, record)
+
     value_columns: list[tuple[int, JsonPath | None, str]] = []
     for selector_index, selector in enumerate(config.selectors):
         paths = flat_paths.get(selector_index)
@@ -319,7 +336,11 @@ def export_csv(
         writer = csv.writer(stream)
         writer.writerow(headers)
         for row in extract_fields(
-            source, record_list, config.selectors, cancellation=cancellation
+            source,
+            record_list,
+            config.selectors,
+            cancellation=cancellation,
+            progress=export_progress,
         ):
             for expanded in _expanded_rows(row, config.selectors):
                 count += 1
@@ -403,13 +424,20 @@ def _collect_flat_paths(
     selectors: Sequence[FieldSelector],
     *,
     cancellation: CancellationToken | None,
+    progress: Callable[[int, RecordRef], None] | None,
     maximum: int,
 ) -> dict[int, tuple[JsonPath, ...]]:
     requested = {index for index, selector in enumerate(selectors) if selector.flatten}
     if not requested:
         return {}
     discovered: dict[int, set[JsonPath]] = {index: set() for index in requested}
-    for row in extract_fields(source, records, selectors, cancellation=cancellation):
+    for row in extract_fields(
+        source,
+        records,
+        selectors,
+        cancellation=cancellation,
+        progress=progress,
+    ):
         for index in requested:
             value = row.values[index].value
             if isinstance(value, dict):

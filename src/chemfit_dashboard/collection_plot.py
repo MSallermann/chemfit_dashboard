@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCharts import (
+    QAbstractAxis,
     QBarCategoryAxis,
     QBarSeries,
     QBarSet,
@@ -30,7 +31,7 @@ from PySide6.QtCharts import (
     QScatterSeries,
     QValueAxis,
 )
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -59,6 +60,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRubberBand,
     QSizePolicy,
     QSpinBox,
     QTableWidget,
@@ -297,6 +299,19 @@ class CollectionPlotPanel(QWidget):
         self.histogram_bins.valueChanged.connect(lambda _value: self._render_series())
         self.histogram_bins.hide()
         view_controls.addWidget(self.histogram_bins)
+        self.histogram_opacity = QSpinBox()
+        self.histogram_opacity.setRange(0, 100)
+        self.histogram_opacity.setValue(70)
+        self.histogram_opacity.setPrefix("Opacity: ")
+        self.histogram_opacity.setSuffix("%")
+        self.histogram_opacity.setToolTip(
+            "Opacity of histogram bar fills; borders remain more prominent"
+        )
+        self.histogram_opacity.valueChanged.connect(
+            lambda _value: self._render_series()
+        )
+        self.histogram_opacity.hide()
+        view_controls.addWidget(self.histogram_opacity)
         view_controls.addStretch()
         self.normalize = QCheckBox("Normalize")
         self.normalize.setToolTip("Scale every series independently to the 0-1 range")
@@ -318,10 +333,6 @@ class CollectionPlotPanel(QWidget):
         layout.addLayout(view_controls)
         self.chart_view = CoordinateChartView()
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.chart_view.setRubberBand(
-            QChartView.RubberBand.RectangleRubberBand
-            | QChartView.RubberBand.ClickThroughRubberBand
-        )
         self.chart_view.setInteractive(True)
         self.chart_view.coordinate_changed.connect(self._cursor_moved)
         layout.addWidget(self.chart_view, 1)
@@ -411,7 +422,13 @@ class CollectionPlotPanel(QWidget):
         self.chart_view.setVisible(mode != "statistics")
         self.statistics_table.setVisible(mode == "statistics")
         self.histogram_bins.setVisible(mode == "histogram")
-        self.normalize.setEnabled(mode == "line")
+        self.histogram_opacity.setVisible(mode == "histogram")
+        self.normalize.setEnabled(mode in {"line", "histogram"})
+        self.normalize.setToolTip(
+            "Scale each series' bin counts to sum to 1"
+            if mode == "histogram"
+            else "Scale every series independently to the 0-1 value range"
+        )
         self.log_y.setEnabled(mode == "line" and not self.normalize.isChecked())
         self.reset_zoom_button.setEnabled(mode != "statistics")
         if mode == "statistics":
@@ -549,9 +566,7 @@ class CollectionPlotPanel(QWidget):
                 y_axis.setRange(minimum - padding, maximum + padding)
                 y_axis.applyNiceNumbers()
         for axis in (x_axis, y_axis):
-            axis.setLabelsBrush(QColor(self._scheme.text))
-            axis.setTitleBrush(QColor(self._scheme.text))
-            axis.setGridLineColor(QColor(self._scheme.border))
+            _style_axis(axis, self._scheme)
             chart.addAxis(
                 axis,
                 (
@@ -666,28 +681,55 @@ class CollectionPlotPanel(QWidget):
     def _render_histogram(
         self, visible_collection: tuple[CollectionSeries, ...]
     ) -> None:
-        chart = _base_chart("Binned value distribution", self._scheme)
-        values = [
-            point.value for series in visible_collection for point in series.points
+        normalized = self.normalize.isChecked()
+        chart = _base_chart(
+            "Probability distribution" if normalized else "Binned value distribution",
+            self._scheme,
+        )
+        domain_values = [
+            point.value for series in self._data for point in series.points
         ]
-        if not values:
+        if not domain_values:
             self.chart_view.setChart(chart)
             self.status.setText("No numeric values are available for a histogram.")
             return
-        minimum, maximum = min(values), max(values)
+        if not visible_collection:
+            self.chart_view.setChart(chart)
+            self.status.setText(
+                "All series are hidden; check one in the series list to show it."
+            )
+            return
+        minimum, maximum = min(domain_values), max(domain_values)
         bins = self.histogram_bins.value()
         width = (maximum - minimum) / bins if maximum != minimum else 1.0
         bar_series = QBarSeries()
-        for data_index, series in enumerate(visible_collection):
+        maximum_bin_value = 0.0
+        palette_indexes = {
+            series.selector: index for index, series in enumerate(self._data)
+        }
+        for series in visible_collection:
             counts = [0] * bins
             for point in series.points:
                 index = min(bins - 1, max(0, int((point.value - minimum) / width)))
                 counts[index] += 1
             bar_set = QBarSet(series.selector.label)
-            bar_set.append(counts)
-            bar_set.setColor(
-                QColor(self._scheme.series[data_index % len(self._scheme.series)])
+            bar_values = (
+                [count / len(series.points) for count in counts]
+                if normalized and series.points
+                else counts
             )
+            maximum_bin_value = max(maximum_bin_value, max(bar_values, default=0))
+            bar_set.append(bar_values)
+            palette_index = palette_indexes[series.selector]
+            color = QColor(
+                self._scheme.series[palette_index % len(self._scheme.series)]
+            )
+            border_color = QColor(color)
+            fill_alpha = round(255 * self.histogram_opacity.value() / 100)
+            color.setAlpha(fill_alpha)
+            border_color.setAlpha(max(fill_alpha, 225))
+            bar_set.setColor(color)
+            bar_set.setBorderColor(border_color)
             bar_series.append(bar_set)
         chart.addSeries(bar_series)
         categories = [f"{minimum + index * width:.4g}" for index in range(bins)]
@@ -695,8 +737,15 @@ class CollectionPlotPanel(QWidget):
         x_axis.append(categories)
         x_axis.setTitleText("Bin lower bound")
         y_axis = QValueAxis()
-        y_axis.setTitleText("Count")
-        y_axis.setLabelFormat("%d")
+        y_axis.setTitleText("Probability" if normalized else "Count")
+        y_axis.setLabelFormat("%.2f" if normalized else "%d")
+        y_axis.setRange(
+            0,
+            max(0.01 if normalized else 1.0, maximum_bin_value),
+        )
+        y_axis.applyNiceNumbers()
+        for axis in (x_axis, y_axis):
+            _style_axis(axis, self._scheme)
         chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
         chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
         bar_series.attachAxis(x_axis)
@@ -705,8 +754,10 @@ class CollectionPlotPanel(QWidget):
         self.chart_view.setChart(chart)
         bin_label = "bin" if bins == 1 else "bins"
         self.status.setText(
-            f"{len(values):,} values in {bins} equal-width {bin_label} · "
+            f"{sum(len(series.points) for series in visible_collection):,} values "
+            f"in {bins} equal-width {bin_label} · "
             f"range {minimum:.8g} to {maximum:.8g}"
+            + (" · each series sums to probability 1" if normalized else "")
         )
 
     def _reset_zoom(self) -> None:
@@ -1128,13 +1179,60 @@ class CoordinateChartView(QChartView):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
+        self._zoom_origin: QPoint | None = None
+        self._zoom_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """Start a possible zoom drag while preserving ordinary point clicks."""
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.chart().axes()
+            and self._plot_area_rect().contains(event.position().toPoint())
+        ):
+            self._zoom_origin = event.position().toPoint()
+            self._zoom_band.setGeometry(QRect(self._zoom_origin, self._zoom_origin))
+        else:
+            self._zoom_origin = None
+        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         chart = self.chart()
         scene_position = self.mapToScene(event.position().toPoint())
         chart_position = chart.mapFromScene(scene_position)
         self.coordinate_changed.emit(chart.mapToValue(chart_position))
+        if (
+            self._zoom_origin is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            rectangle = QRect(
+                self._zoom_origin, event.position().toPoint()
+            ).normalized()
+            rectangle = rectangle.intersected(self._plot_area_rect())
+            if (
+                rectangle.width() >= QApplication.startDragDistance()
+                and rectangle.height() >= QApplication.startDragDistance()
+            ):
+                self._zoom_band.setGeometry(rectangle)
+                self._zoom_band.show()
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """Apply a dragged plot rectangle after Qt finishes click dispatch."""
+        zoom_rectangle = self._zoom_band.geometry()
+        zooming = (
+            event.button() == Qt.MouseButton.LeftButton and self._zoom_band.isVisible()
+        )
+        self._zoom_band.hide()
+        self._zoom_origin = None
+        super().mouseReleaseEvent(event)
+        if not zooming:
+            return
+        top_left = self.chart().mapFromScene(self.mapToScene(zoom_rectangle.topLeft()))
+        bottom_right = self.chart().mapFromScene(
+            self.mapToScene(zoom_rectangle.bottomRight())
+        )
+        self.chart().zoomIn(QRectF(top_left, bottom_right).normalized())
+        event.accept()
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         """Zoom interactively around the cursor while keeping axes synchronized."""
@@ -1151,6 +1249,13 @@ class CoordinateChartView(QChartView):
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
         self.coordinate_changed.emit(None)
         super().leaveEvent(event)
+
+    def _plot_area_rect(self) -> QRect:
+        plot_area = self.chart().mapRectToScene(self.chart().plotArea())
+        return QRect(
+            self.mapFromScene(plot_area.topLeft()),
+            self.mapFromScene(plot_area.bottomRight()),
+        ).normalized()
 
 
 def _selector_path_label(selector: NumberSelector) -> str:
@@ -1275,6 +1380,13 @@ def _base_chart(title: str, scheme: ColorScheme) -> QChart:
     chart.setPlotAreaBackgroundVisible(True)
     chart.setTitleBrush(QColor(scheme.text))
     return chart
+
+
+def _style_axis(axis: QAbstractAxis, scheme: ColorScheme) -> None:
+    """Apply the same subdued axis treatment in every chart mode."""
+    axis.setLabelsBrush(QColor(scheme.text))
+    axis.setTitleBrush(QColor(scheme.text))
+    axis.setGridLineColor(QColor(scheme.border))
 
 
 def _append_line(

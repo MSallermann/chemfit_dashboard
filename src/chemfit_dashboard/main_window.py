@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QSettings,
     QSortFilterProxyModel,
     Qt,
+    QThreadPool,
     QTimer,
     QUrl,
     Signal,
@@ -59,6 +60,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QStyle,
@@ -67,6 +69,7 @@ from PySide6.QtWidgets import (
     QTreeView,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from chemfit_dashboard.activity import ActivityStatus
@@ -121,7 +124,11 @@ from chemfit_dashboard.extraction_ui import PREVIEW_LIMIT, DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.models import ContextTreeModel, EvaluationListModel
-from chemfit_dashboard.process_search import CollectionSearchExecutor, SearchOptions
+from chemfit_dashboard.process_search import (
+    DEFAULT_SEARCH_WORKERS,
+    CollectionSearchExecutor,
+    SearchOptions,
+)
 from chemfit_dashboard.search_core import ContextSearchCache, ContextSearchIndex
 from chemfit_dashboard.semantic import (
     NodeTrail,
@@ -159,23 +166,38 @@ SESSION_WORKSPACE_TAB_SETTING = "session/workspace_tab"
 SESSION_WORKSPACE_KEY_SETTING = "session/workspace_key"
 SESSION_HIERARCHY_TAB_SETTING = "session/hierarchy_tab"
 MAX_RECENT_LOCATIONS = 10
-SEARCH_PROGRESS_INTERVAL_SECONDS = 0.1
+PROGRESS_INTERVAL_SECONDS = 0.1
 DOCUMENT_ACTIVITY_DELAY_MS = 200
 AUTO_ANALYSIS_RECORD_LIMIT = 5_000
+BACKGROUND_THREADS_SETTING = "performance/background_threads"
+SEARCH_PROCESSES_SETTING = "performance/search_processes"
+MAX_CONFIGURABLE_WORKERS = 64
 
 
-def _report_search_progress(
+def _report_progress(
     emit: Callable[[str, int, int], None],
+    name: str,
     completed: int,
     total: int,
     last_progress_at: float,
 ) -> float:
     """Emit bounded-rate progress so worker updates cannot flood Qt's event queue."""
     now = time.monotonic()
-    if completed == total or now - last_progress_at >= SEARCH_PROGRESS_INTERVAL_SECONDS:
-        emit("search", completed, total)
+    if completed == total or now - last_progress_at >= PROGRESS_INTERVAL_SECONDS:
+        emit(name, completed, total)
         return now
     return last_progress_at
+
+
+def _worker_count(value: object, default: int) -> int:
+    """Coerce a persisted worker count into the supported range."""
+    if not isinstance(value, (int, str)):
+        return min(MAX_CONFIGURABLE_WORKERS, max(1, default))
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = default
+    return min(MAX_CONFIGURABLE_WORKERS, max(1, count))
 
 
 class MainWindow(QMainWindow):
@@ -205,8 +227,23 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setAcceptDrops(True)
         self.source = source or JsonFileSource()
+        self._settings = settings or application_settings()
+        global_pool = QThreadPool.globalInstance()
+        self._background_thread_count = _worker_count(
+            self._settings.value(
+                BACKGROUND_THREADS_SETTING, global_pool.maxThreadCount()
+            ),
+            global_pool.maxThreadCount(),
+        )
+        self._search_process_count = _worker_count(
+            self._settings.value(SEARCH_PROCESSES_SETTING, DEFAULT_SEARCH_WORKERS),
+            DEFAULT_SEARCH_WORKERS,
+        )
+        global_pool.setMaxThreadCount(self._background_thread_count)
         self.tasks = TaskRunner(self)
-        self.collection_search = CollectionSearchExecutor()
+        self.collection_search = CollectionSearchExecutor(
+            max_workers=self._search_process_count
+        )
         # Generations invalidate results without unsafe thread termination.
         # Cancellation reduces wasted work; the generation check remains
         # necessary because already-running tasks can still complete.
@@ -236,7 +273,6 @@ class MainWindow(QMainWindow):
         self._active_plot_selectors: list[NumberSelector] = []
         self._current_document: ContextDocument | None = None
         self._tab_before_search: QWidget | None = None
-        self._settings = settings or application_settings()
         self._session_enabled = restore_session
         self._session_locations: list[str] = []
         self._restored_record_path: str | None = None
@@ -847,6 +883,36 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, value=key: self._set_density(value)
             )
 
+        workers_menu = settings_menu.addMenu("Workers")
+        self.background_thread_workers = QSpinBox(workers_menu)
+        self.background_thread_workers.setRange(1, MAX_CONFIGURABLE_WORKERS)
+        self.background_thread_workers.setValue(self._background_thread_count)
+        self.background_thread_workers.setPrefix("Background threads: ")
+        self.background_thread_workers.setToolTip(
+            "Shared Qt worker threads used by loading, analysis, plots, "
+            "extraction, and graph layout"
+        )
+        thread_workers_action = QWidgetAction(workers_menu)
+        thread_workers_action.setDefaultWidget(self.background_thread_workers)
+        workers_menu.addAction(thread_workers_action)
+        self.background_thread_workers.valueChanged.connect(
+            self._set_background_thread_count
+        )
+
+        self.search_process_workers = QSpinBox(workers_menu)
+        self.search_process_workers.setRange(1, MAX_CONFIGURABLE_WORKERS)
+        self.search_process_workers.setValue(self._search_process_count)
+        self.search_process_workers.setPrefix("Search processes: ")
+        self.search_process_workers.setToolTip(
+            "Persistent worker processes used only for whole-collection search"
+        )
+        search_workers_action = QWidgetAction(workers_menu)
+        search_workers_action.setDefaultWidget(self.search_process_workers)
+        workers_menu.addAction(search_workers_action)
+        self.search_process_workers.valueChanged.connect(
+            self._set_search_process_count
+        )
+
         help_menu = self.menuBar().addMenu("&Help")
         shortcuts_action = QAction("Keyboard shortcuts…", self)
         shortcuts_action.setShortcut(QKeySequence(Qt.Key.Key_F1))
@@ -972,6 +1038,25 @@ class MainWindow(QMainWindow):
     def _operation_progressed(self, name: str, value: int, total: int) -> None:
         self.activity.set_progress(name, value, total)
 
+    def _progress_callback(
+        self, name: str, total: int
+    ) -> Callable[[int, object], None]:
+        """Create a bounded-rate worker callback for one determinate operation."""
+        self.operation_progress.emit(name, 0, total)
+        last_progress_at = time.monotonic()
+
+        def report(completed: int, _item: object = None) -> None:
+            nonlocal last_progress_at
+            last_progress_at = _report_progress(
+                self.operation_progress.emit,
+                name,
+                completed,
+                total,
+                last_progress_at,
+            )
+
+        return report
+
     def _toggle_activity_panel(self, expanded: bool) -> None:
         self.activity.set_expanded(expanded)
 
@@ -1072,6 +1157,34 @@ class MainWindow(QMainWindow):
         )
         self._apply_application_stylesheet()
         self._show_status(f"Interface spacing: {density}", 3000)
+
+    def _set_background_thread_count(self, count: int) -> None:
+        """Resize the global Qt pool shared by GUI background operations."""
+        count = _worker_count(count, self._background_thread_count)
+        if count == self._background_thread_count:
+            return
+        self._background_thread_count = count
+        QThreadPool.globalInstance().setMaxThreadCount(count)
+        self._settings.setValue(BACKGROUND_THREADS_SETTING, count)
+        self._settings.sync()
+        self._show_status(f"Background worker threads: {count}", 3000)
+
+    def _set_search_process_count(self, count: int) -> None:
+        """Replace the persistent collection-search process pool."""
+        count = _worker_count(count, self._search_process_count)
+        if count == self._search_process_count:
+            return
+        self._cancel_operation("search")
+        self._search_generation += 1
+        previous = self.collection_search
+        self.collection_search = CollectionSearchExecutor(max_workers=count)
+        self._search_process_count = count
+        previous.shutdown(wait_for_workers=False)
+        self._settings.setValue(SEARCH_PROCESSES_SETTING, count)
+        self._settings.sync()
+        if self.field_search.text().strip():
+            self._search_timer.start()
+        self._show_status(f"Collection-search worker processes: {count}", 3000)
 
     def _show_keyboard_shortcuts(self) -> None:
         QMessageBox.information(
@@ -1987,13 +2100,17 @@ class MainWindow(QMainWindow):
             self.collection_analysis.show_deferred(len(records))
             return
         cancellation = self._begin_operation("analysis", "analyzing collection")
+        progress = self._progress_callback("analysis", len(records))
         self.collection_analysis.show_loading(len(records))
 
         def load_summary() -> CollectionSummary:
             pairs = (
                 (item.record, item.document)
                 for item in iter_collection(
-                    self.source, records, cancellation=cancellation
+                    self.source,
+                    records,
+                    cancellation=cancellation,
+                    progress=progress,
                 )
             )
             return analyze_collection(pairs)
@@ -2244,8 +2361,9 @@ class MainWindow(QMainWindow):
                     failed_records += 1
                 finally:
                     if not cancellation.cancelled:
-                        last_progress_at = _report_search_progress(
+                        last_progress_at = _report_progress(
                             self.operation_progress.emit,
+                            "search",
                             completed,
                             count,
                             last_progress_at,
@@ -2414,12 +2532,16 @@ class MainWindow(QMainWindow):
             self.collection_plot.show_error("No context collection is loaded.")
             return
         cancellation = self._begin_operation("plot", "loading plot values")
+        progress = self._progress_callback("plot", len(records))
 
         def load_series() -> tuple[CollectionSeries, ...]:
             pairs = (
                 (item.record, item.document)
                 for item in iter_collection(
-                    self.source, records, cancellation=cancellation
+                    self.source,
+                    records,
+                    cancellation=cancellation,
+                    progress=progress,
                 )
             )
             return build_collection_series_multi(selected, pairs)
@@ -2491,6 +2613,7 @@ class MainWindow(QMainWindow):
         self._order_generation += 1
         generation = self._order_generation
         cancellation = self._begin_operation("order", "loading sort values")
+        progress = self._progress_callback("order", len(records))
         self.order_status.setText("Order: loading selected values…")
         self.statusBar().showMessage(
             f"Ordering {len(records):,} contexts by {selector.label}…"
@@ -2500,7 +2623,10 @@ class MainWindow(QMainWindow):
             pairs = (
                 (item.record, item.document)
                 for item in iter_collection(
-                    self.source, records, cancellation=cancellation
+                    self.source,
+                    records,
+                    cancellation=cancellation,
+                    progress=progress,
                 )
             )
             return records, build_collection_series(selector, pairs)
@@ -2588,12 +2714,17 @@ class MainWindow(QMainWindow):
         cancellation = self._begin_operation(
             "order", f"sorting by extraction column {selector.column}"
         )
+        progress = self._progress_callback("order", len(records))
 
         def load_values():
             present: list[tuple[tuple, int, str]] = []
             missing: list[str] = []
             for row in extract_fields(
-                self.source, records, (selector,), cancellation=cancellation
+                self.source,
+                records,
+                (selector,),
+                cancellation=cancellation,
+                progress=progress,
             ):
                 extracted = row.values[0]
                 value = extracted.value
@@ -2791,6 +2922,9 @@ class MainWindow(QMainWindow):
         cancellation = self._begin_operation(
             "extraction_preview", "building extraction preview"
         )
+        progress = self._progress_callback(
+            "extraction_preview", min(len(records), PREVIEW_LIMIT)
+        )
         self.extraction.show_loading(len(records))
 
         def preview():
@@ -2801,6 +2935,7 @@ class MainWindow(QMainWindow):
                         records,
                         selected,
                         cancellation=cancellation,
+                        progress=progress,
                     ),
                     PREVIEW_LIMIT,
                 )
@@ -2837,6 +2972,15 @@ class MainWindow(QMainWindow):
         cancellation = self._begin_operation(
             "extraction_export", "exporting extracted data"
         )
+        export_passes = (
+            2
+            if format_name == "csv"
+            and any(selector.flatten for selector in config.selectors)
+            else 1
+        )
+        progress = self._progress_callback(
+            "extraction_export", len(records) * export_passes
+        )
         self.extraction.status.setText(
             f"Exporting {len(records):,} evaluations to {format_name.upper()}…"
         )
@@ -2849,6 +2993,7 @@ class MainWindow(QMainWindow):
                     records,
                     config,
                     cancellation=cancellation,
+                    progress=progress,
                 )
             return export_jsonl(
                 path,
@@ -2856,6 +3001,7 @@ class MainWindow(QMainWindow):
                 records,
                 config,
                 cancellation=cancellation,
+                progress=progress,
             )
 
         def export_finished(count: int) -> None:

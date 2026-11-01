@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCharts import QBarSeries, QLogValueAxis, QScatterSeries
+from PySide6.QtCharts import (
+    QBarCategoryAxis,
+    QBarSeries,
+    QLogValueAxis,
+    QScatterSeries,
+)
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
@@ -18,6 +23,7 @@ from chemfit_dashboard.collection_plot import (
     selector_for_document,
 )
 from chemfit_dashboard.context_search import SearchHit
+from chemfit_dashboard.extraction import ExtractionConfig, FieldSelector
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.source import JsonFileSource
@@ -186,6 +192,53 @@ def test_plot_reports_coordinates_and_can_hide_series(qapp):
     assert removed == [second.selector]
 
 
+def test_histogram_series_colors_stay_stable_when_visibility_changes():
+    labels = ("step_1.json", "step_2.json")
+    first = CollectionSeries(
+        NumberSelector((), "fields", ("loss",), "loss", "loss"),
+        labels,
+        (SeriesPoint(0, labels[0], 2.0), SeriesPoint(1, labels[1], 4.0)),
+    )
+    second = CollectionSeries(
+        NumberSelector((), "fields", ("runtime",), "runtime", "runtime"),
+        labels,
+        (SeriesPoint(0, labels[0], 10.0), SeriesPoint(1, labels[1], 30.0)),
+    )
+    panel = CollectionPlotPanel()
+    panel.set_series_collection((first, second))
+    panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("histogram"))
+    bars = next(
+        series
+        for series in panel.chart_view.chart().series()
+        if isinstance(series, QBarSeries)
+    )
+    original_colors = {
+        bar_set.label(): bar_set.color().rgba() for bar_set in bars.barSets()
+    }
+    horizontal_axis = panel.chart_view.chart().axes(Qt.Orientation.Horizontal)[0]
+    assert isinstance(horizontal_axis, QBarCategoryAxis)
+    original_categories = horizontal_axis.categories()
+    first_row = panel.series_list.itemWidget(panel.series_list.item(0))
+    assert first_row is not None
+    first_visibility = first_row.findChild(QCheckBox, "seriesVisibility")
+    assert first_visibility is not None
+
+    first_visibility.setChecked(False)
+
+    bars = next(
+        series
+        for series in panel.chart_view.chart().series()
+        if isinstance(series, QBarSeries)
+    )
+    remaining = bars.barSets()
+    assert len(remaining) == 1
+    assert remaining[0].label() == "runtime"
+    assert remaining[0].color().rgba() == original_colors["runtime"]
+    horizontal_axis = panel.chart_view.chart().axes(Qt.Orientation.Horizontal)[0]
+    assert isinstance(horizontal_axis, QBarCategoryAxis)
+    assert horizontal_axis.categories() == original_categories
+
+
 def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
     count = 5_000
     labels = tuple(f"step_{index}.json" for index in range(count))
@@ -205,11 +258,43 @@ def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
     assert scatter.count() <= 4_000
 
     panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("histogram"))
-    assert any(
-        isinstance(series, QBarSeries)
-        for series in panel.chart_view.chart().series()
+    chart = panel.chart_view.chart()
+    bars = next(series for series in chart.series() if isinstance(series, QBarSeries))
+    assert panel.normalize.isEnabled()
+    assert not panel.histogram_opacity.isHidden()
+    assert bars.barSets()[0].color().alpha() == 178
+    assert all(
+        axis.gridLineColor().name() == panel._scheme.border  # noqa: SLF001
+        for axis in chart.axes()
     )
     assert "bins" in panel.status.text()
+
+    panel.histogram_opacity.setValue(25)
+    bars = next(
+        series
+        for series in panel.chart_view.chart().series()
+        if isinstance(series, QBarSeries)
+    )
+
+    assert bars.barSets()[0].color().alpha() == 64
+    assert bars.barSets()[0].borderColor().alpha() == 225
+
+    panel.normalize.setChecked(True)
+    chart = panel.chart_view.chart()
+    vertical_axis = chart.axes(Qt.Orientation.Vertical)[0]
+    bars = next(series for series in chart.series() if isinstance(series, QBarSeries))
+    probabilities = bars.barSets()[0]
+
+    assert vertical_axis.titleText() == "Probability"
+    assert (
+        abs(
+            sum(probabilities.at(index) for index in range(probabilities.count()))
+            - 1
+        )
+        < 1e-12
+    )
+    assert "sums to probability 1" in panel.status.text()
+    assert "sum to 1" in panel.normalize.toolTip()
 
     panel.histogram_bins.setValue(1)
 
@@ -217,6 +302,7 @@ def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
     assert "1 equal-width bin" in panel.status.text()
 
     panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("statistics"))
+    assert not panel.histogram_opacity.isVisible()
     assert panel.statistics_table.rowCount() == 1
     assert panel.statistics_table.item(0, 1).text() == "5,000"
 
@@ -382,6 +468,57 @@ def test_png_plot_export_is_rendered_at_300_dpi(tmp_path):
         for y in range(exported_image.height() * 2 // 3, exported_image.height(), 4)
     }
     assert len(colors) > 1
+
+
+def test_plot_rectangle_drag_changes_visible_axis_ranges():
+    selector = NumberSelector((), "fields", ("loss",), "loss", "loss")
+    labels = tuple(f"step_{index}.json" for index in range(10))
+    data = CollectionSeries(
+        selector,
+        labels,
+        tuple(
+            SeriesPoint(index, label, float(index), str(index))
+            for index, label in enumerate(labels)
+        ),
+        tuple(map(str, range(10))),
+    )
+    panel = CollectionPlotPanel()
+    panel.resize(900, 600)
+    panel.set_series(data)
+    panel.show()
+    QApplication.processEvents()
+    chart = panel.chart_view.chart()
+    horizontal = chart.axes(Qt.Orientation.Horizontal)[0]
+    vertical = chart.axes(Qt.Orientation.Vertical)[0]
+    original_x_span = horizontal.max() - horizontal.min()
+    original_y_span = vertical.max() - vertical.min()
+    plot_area = chart.plotArea().toRect()
+    start = (
+        plot_area.topLeft()
+        + QPointF(plot_area.width() * 0.2, plot_area.height() * 0.2).toPoint()
+    )
+    end = (
+        plot_area.topLeft()
+        + QPointF(plot_area.width() * 0.7, plot_area.height() * 0.8).toPoint()
+    )
+
+    QTest.mousePress(
+        panel.chart_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start,
+    )
+    QTest.mouseMove(panel.chart_view.viewport(), end, 20)
+    QTest.mouseRelease(
+        panel.chart_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        end,
+    )
+    QApplication.processEvents()
+
+    assert horizontal.max() - horizontal.min() < original_x_span
+    assert vertical.max() - vertical.min() < original_y_span
 
 
 def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
@@ -608,6 +745,57 @@ def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
     assert not cancelled
     assert progress_updates == [("search", 0, 2), ("search", 2, 2)]
     window.collection_search.shutdown(wait_for_workers=True)
+
+
+def test_known_collection_operations_publish_record_progress(tmp_path, monkeypatch):
+    for index in range(2):
+        (tmp_path / f"step_{index}.json").write_text(
+            json.dumps({"loss": index + 1}), encoding="utf-8"
+        )
+    source = JsonFileSource()
+    records = source.discover([tmp_path])
+    window = MainWindow(source=source)
+    window.file_model.set_records(records)
+    submitted = []
+    monkeypatch.setattr(
+        window.tasks,
+        "submit",
+        lambda function, _on_success, _on_error: submitted.append(function),
+    )
+    updates = []
+    window.operation_progress.connect(
+        lambda name, value, total: updates.append((name, value, total))
+    )
+
+    window._refresh_collection_analysis(force=True)  # noqa: SLF001
+    submitted.pop()()
+    window._load_collection_plot(  # noqa: SLF001
+        NumberSelector((), "fields", ("loss",), "loss", "loss"),
+        activate=False,
+    )
+    submitted.pop()()
+    window._refresh_extraction_preview(  # noqa: SLF001
+        (FieldSelector((), "fields", ("loss",), "loss"),)
+    )
+    submitted.pop()()
+    window._export_extraction(  # noqa: SLF001
+        str(tmp_path / "progress.jsonl"),
+        "jsonl",
+        ExtractionConfig((FieldSelector((), "fields", ("loss",), "loss"),)),
+    )
+    submitted.pop()()
+
+    assert updates == [
+        ("analysis", 0, 2),
+        ("analysis", 2, 2),
+        ("plot", 0, 2),
+        ("plot", 2, 2),
+        ("extraction_preview", 0, 2),
+        ("extraction_preview", 2, 2),
+        ("extraction_export", 0, 2),
+        ("extraction_export", 2, 2),
+    ]
+    window.collection_search.shutdown(wait_for_workers=False)
 
 
 def test_superseded_collection_search_cannot_replace_current_results():
