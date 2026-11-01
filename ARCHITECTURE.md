@@ -44,6 +44,10 @@ file / folder / remote URI
   expandable status footer.
 - `appearance.py`: color palettes, persistent appearance settings, and the
   application stylesheet.
+- `ui_components.py`: shared action rows, muted labels, panel layouts,
+  detachable-panel controls, and interaction constants. Repeated GUI roles
+  belong here rather than in feature-local widget factories.
+- `chart_style.py`: shared Qt Charts palette, axis, grid, and legend policy.
 - `workers.py`, `traversal.py`: Qt thread-pool callbacks, cooperative
   cancellation, and consistent incremental collection loading.
 
@@ -133,8 +137,11 @@ debugging unexpected cross-view navigation.
   `CollectionSeries`. Plotting, ordering, and point-to-record navigation share
   that selector rather than storing raw widget indexes.
 - **Extraction:** Inspector emits a `FieldSelector`; semantic trails resolve it
-  per document. Preview reads at most 200 expanded rows, while export streams
-  the complete collection and does not depend on the preview model.
+  per document. Object flattening and per-selector array depth both derive
+  output columns through `column_paths_for_value`, shared by preview and CSV
+  export. They never multiply evaluation rows. Preview reads at most 200 rows,
+  while export streams the complete collection and does not depend on the
+  preview model.
 
 ## Background work and stale results
 

@@ -6,6 +6,7 @@ from contextlib import suppress
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
 from PySide6.QtCore import QMimeData, QModelIndex, QPoint, Qt, QThreadPool, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QHeaderView, QLabel, QPushButton
 
 from chemfit_dashboard import main_window as main_window_module
@@ -107,6 +108,51 @@ def test_file_menu_closes_loaded_collection_without_quitting(tmp_path, monkeypat
         source.discover([context_path]), collection_generation
     )
     assert window.file_model.records == ()
+
+
+def test_selected_evaluation_path_is_visible_copyable_and_opens_folder(
+    tmp_path, monkeypatch, qapp
+):
+    context_path = tmp_path / "step_1.json"
+    context_path.write_text("{}", encoding="utf-8")
+    source = JsonFileSource()
+    window = MainWindow(source=source)
+    monkeypatch.setattr(
+        window.tasks,
+        "submit",
+        lambda function, on_success, _on_error: on_success(function()),
+    )
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", opened.append)
+
+    window._records_discovered(source.discover([context_path]))  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window.evaluation_path.text() == str(context_path)
+    assert window.evaluation_path.isReadOnly()
+    window.copy_evaluation_path_button.click()
+    assert qapp.clipboard().text() == str(context_path)
+    window.open_file_explorer_button.click()
+    assert opened
+    assert opened[-1].toLocalFile() == str(tmp_path)
+
+
+def test_number_shortcuts_navigate_major_dashboard_views():
+    window = MainWindow()
+
+    destinations = (
+        (0, window.context_workspace, window.tree),
+        (1, window.context_workspace, window.graph),
+        (2, window.context_workspace, window.collection_plot),
+        (3, window.collection_analysis, None),
+        (4, window.search_workspace, None),
+        (5, window.extraction, None),
+    )
+    for shortcut_index, workspace, hierarchy in destinations:
+        window._navigation_shortcuts[shortcut_index].activated.emit()  # noqa: SLF001
+        assert window.workspace_tabs.currentWidget() is workspace
+        if hierarchy is not None:
+            assert window.hierarchy_tabs.currentWidget() is hierarchy
 
 
 def test_dashboard_accepts_dropped_json_files_and_directories(tmp_path):

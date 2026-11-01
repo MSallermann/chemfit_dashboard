@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from chemfit_dashboard.source import ContextSource, RecordRef
 
 JsonPath = tuple[str | int, ...]
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 MAX_FLATTENED_COLUMNS = 512
 MAX_EXPANDED_ROWS = 1_000_000
 _MISSING = object()
@@ -65,9 +65,16 @@ class FieldSelector:
     column: str = "value"
     node_trail: NodeTrail | None = None
     flatten: bool = False
+    array_expansion_depth: int = 0
+    # Kept for source/config compatibility; expansion now always creates columns.
     expand_array: bool = False
     excluded_paths: tuple[JsonPath, ...] = ()
     flattened_column_names: tuple[tuple[JsonPath, str], ...] = ()
+
+    @property
+    def column_expansion_depth(self) -> int:
+        """Return requested array levels, including legacy boolean configs."""
+        return max(self.array_expansion_depth, int(self.expand_array))
 
     @property
     def path_label(self) -> str:
@@ -122,7 +129,7 @@ class ExtractionConfig:
     def from_dict(cls, value: Mapping[str, Any]) -> ExtractionConfig:
         """Validate and construct a configuration from decoded JSON."""
         version = value.get("version")
-        if version != CONFIG_VERSION:
+        if version not in {1, CONFIG_VERSION}:
             message = f"Unsupported extraction configuration version: {version!r}"
             raise ValueError(message)
         raw_selectors = value.get("selectors")
@@ -146,6 +153,7 @@ def selector_for_document(
         column=selector.column,
         node_trail=component_trail_for_path(document, selector.node_path),
         flatten=selector.flatten,
+        array_expansion_depth=selector.array_expansion_depth,
         expand_array=selector.expand_array,
         excluded_paths=selector.excluded_paths,
         flattened_column_names=selector.flattened_column_names,
@@ -240,7 +248,8 @@ def export_jsonl(
     progress: Callable[[int, RecordRef], None] | None = None,
     max_expanded_rows: int = MAX_EXPANDED_ROWS,
 ) -> int:
-    """Stream complete extraction rows to JSON Lines."""
+    """Stream one complete extraction row per evaluation to JSON Lines."""
+    del max_expanded_rows  # Retained for API compatibility with version-1 callers.
     count = 0
     with Path(path).open("w", encoding="utf-8") as stream:
         for row in extract_fields(
@@ -250,32 +259,25 @@ def export_jsonl(
             cancellation=cancellation,
             progress=progress,
         ):
-            for expanded in _expanded_rows(row, config.selectors):
-                count += 1
-                if count > max_expanded_rows:
-                    raise ValueError(
-                        "Array expansion exceeded the configured row limit"
-                    )
-                payload: dict[str, Any] = {}
-                if config.include_identifiers:
-                    payload.update(
-                        {
-                            "collection_index": row.index,
-                            "filename": row.filename,
-                            "record_id": row.record_id,
-                        }
-                    )
-                values: dict[str, Any] = {}
-                statuses: dict[str, str] = {}
-                for selector, extracted in zip(config.selectors, expanded, strict=True):
-                    values[selector.column] = extracted.value
-                    statuses[selector.column] = extracted.status.value
-                payload["values"] = values
-                payload["status"] = statuses
-                stream.write(
-                    json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            count += 1
+            payload: dict[str, Any] = {}
+            if config.include_identifiers:
+                payload.update(
+                    {
+                        "collection_index": row.index,
+                        "filename": row.filename,
+                        "record_id": row.record_id,
+                    }
                 )
-                stream.write("\n")
+            values: dict[str, Any] = {}
+            statuses: dict[str, str] = {}
+            for selector, extracted in zip(config.selectors, row.values, strict=True):
+                values[selector.column] = extracted.value
+                statuses[selector.column] = extracted.status.value
+            payload["values"] = values
+            payload["status"] = statuses
+            stream.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            stream.write("\n")
     return count
 
 
@@ -291,6 +293,7 @@ def export_csv(
     max_expanded_rows: int = MAX_EXPANDED_ROWS,
 ) -> int:
     """Stream extraction rows to CSV, JSON-encoding structured cells."""
+    del max_expanded_rows  # Retained for API compatibility with version-1 callers.
     record_list = list(records)
     flat_paths = _collect_flat_paths(
         source,
@@ -309,7 +312,7 @@ def export_csv(
     value_columns: list[tuple[int, JsonPath | None, str]] = []
     for selector_index, selector in enumerate(config.selectors):
         paths = flat_paths.get(selector_index)
-        if selector.flatten:
+        if selector.flatten or selector.column_expansion_depth:
             value_columns.extend(
                 (
                     selector_index,
@@ -342,26 +345,21 @@ def export_csv(
             cancellation=cancellation,
             progress=export_progress,
         ):
-            for expanded in _expanded_rows(row, config.selectors):
-                count += 1
-                if count > max_expanded_rows:
-                    raise ValueError(
-                        "Array expansion exceeded the configured row limit"
-                    )
-                output: list[Any] = (
-                    [row.index, row.filename, row.record_id]
-                    if config.include_identifiers
-                    else []
-                )
-                for selector_index, nested_path, _column in value_columns:
-                    extracted = expanded[selector_index]
-                    value = extracted.value
-                    if nested_path is not None:
-                        value = _get_json_path(value, nested_path, _MISSING)
-                    output.append(_csv_value(value, extracted.status))
-                if config.include_status_columns:
-                    output.extend(value.status.value for value in expanded)
-                writer.writerow(output)
+            count += 1
+            output: list[Any] = (
+                [row.index, row.filename, row.record_id]
+                if config.include_identifiers
+                else []
+            )
+            for selector_index, nested_path, _column in value_columns:
+                extracted = row.values[selector_index]
+                value = extracted.value
+                if nested_path is not None:
+                    value = _get_json_path(value, nested_path, _MISSING)
+                output.append(_csv_value(value, extracted.status))
+            if config.include_status_columns:
+                output.extend(value.status.value for value in row.values)
+            writer.writerow(output)
     return count
 
 
@@ -427,7 +425,11 @@ def _collect_flat_paths(
     progress: Callable[[int, RecordRef], None] | None,
     maximum: int,
 ) -> dict[int, tuple[JsonPath, ...]]:
-    requested = {index for index, selector in enumerate(selectors) if selector.flatten}
+    requested = {
+        index
+        for index, selector in enumerate(selectors)
+        if selector.flatten or selector.column_expansion_depth
+    }
     if not requested:
         return {}
     discovered: dict[int, set[JsonPath]] = {index: set() for index in requested}
@@ -440,12 +442,18 @@ def _collect_flat_paths(
     ):
         for index in requested:
             value = row.values[index].value
-            if isinstance(value, dict):
-                discovered[index].update(_mapping_leaf_paths(value))
-                if sum(map(len, discovered.values())) > maximum:
-                    raise ValueError(
-                        f"Flattening exceeds the {maximum:,}-column safeguard"
-                    )
+            selector = selectors[index]
+            discovered[index].update(
+                column_paths_for_value(
+                    value,
+                    flatten_mappings=selector.flatten,
+                    array_depth=selector.column_expansion_depth,
+                )
+            )
+            if sum(map(len, discovered.values())) > maximum:
+                raise ValueError(
+                    f"Column expansion exceeds the {maximum:,}-column safeguard"
+                )
     return {
         index: tuple(
             path
@@ -456,39 +464,39 @@ def _collect_flat_paths(
     }
 
 
-def _mapping_leaf_paths(
-    value: Mapping[str, Any], path: JsonPath = ()
+def column_paths_for_value(
+    value: Any,
+    *,
+    flatten_mappings: bool,
+    array_depth: int,
+    path: JsonPath = (),
 ) -> Iterator[JsonPath]:
-    if not value:
-        yield path
+    """Yield output-column paths under independent object/array policies."""
+    if flatten_mappings and isinstance(value, dict):
+        if not value:
+            yield path
+            return
+        for key in sorted(value, key=str):
+            yield from column_paths_for_value(
+                value[key],
+                flatten_mappings=True,
+                array_depth=array_depth,
+                path=(*path, str(key)),
+            )
         return
-    for key in sorted(value, key=str):
-        child_path = (*path, str(key))
-        child = value[key]
-        if isinstance(child, dict):
-            yield from _mapping_leaf_paths(child, child_path)
-        else:
-            yield child_path
-
-
-def _expanded_rows(
-    row: ExtractionRow, selectors: Sequence[FieldSelector]
-) -> Iterator[tuple[ExtractionValue, ...]]:
-    expanded_indexes = [
-        index for index, selector in enumerate(selectors) if selector.expand_array
-    ]
-    if not expanded_indexes:
-        yield row.values
+    if array_depth > 0 and isinstance(value, list):
+        if not value:
+            yield path
+            return
+        for index, child in enumerate(value):
+            yield from column_paths_for_value(
+                child,
+                flatten_mappings=flatten_mappings,
+                array_depth=array_depth - 1,
+                path=(*path, index),
+            )
         return
-    index = expanded_indexes[0]
-    selected = row.values[index]
-    if not isinstance(selected.value, list):
-        yield row.values
-        return
-    for item in selected.value:
-        values = list(row.values)
-        values[index] = ExtractionValue(item, selected.status)
-        yield tuple(values)
+    yield path
 
 
 def _validate_selectors(selectors: Sequence[FieldSelector]) -> None:
@@ -497,11 +505,8 @@ def _validate_selectors(selectors: Sequence[FieldSelector]) -> None:
         raise ValueError("Extraction column names cannot be empty")
     if len(columns) != len(set(columns)):
         raise ValueError("Extraction column names must be unique")
-    expanded = [selector for selector in selectors if selector.expand_array]
-    if len(expanded) > 1:
-        raise ValueError(
-            "Only one array selector may be expanded; Cartesian products are not implicit"
-        )
+    if any(selector.array_expansion_depth < 0 for selector in selectors):
+        raise ValueError("Array expansion depth cannot be negative")
 
 
 def _csv_value(value: Any, status: ExtractionStatus) -> str | int | float | bool:
@@ -534,6 +539,7 @@ def _selector_to_dict(selector: FieldSelector) -> dict[str, Any]:
         "path": list(selector.value_path),
         "column": selector.column,
         "flatten": selector.flatten,
+        "array_expansion_depth": selector.array_expansion_depth,
         "expand_array": selector.expand_array,
         "excluded_paths": [list(path) for path in selector.excluded_paths],
         "flattened_column_names": [
@@ -568,6 +574,15 @@ def _selector_from_dict(value: Any) -> FieldSelector:
         column=str(value.get("column", "value")),
         node_trail=trail,
         flatten=bool(value.get("flatten", False)),
+        array_expansion_depth=max(
+            0,
+            int(
+                value.get(
+                    "array_expansion_depth",
+                    1 if value.get("expand_array", False) else 0,
+                )
+            ),
+        ),
         expand_array=bool(value.get("expand_array", False)),
         excluded_paths=tuple(
             tuple(path)

@@ -84,13 +84,21 @@ chemfit-dashboard examples/context_collection/
 
 ### Evaluation hierarchy and inspector
 
-The **Evaluations** sidebar lists the loaded contexts. Select an evaluation to inspect its component hierarchy.
+The **Evaluations** sidebar lists the loaded contexts. Select an evaluation to
+inspect its component hierarchy. The selected file's full path is shown below
+the list, where it can be selected or copied, and **Open folder** reveals its
+containing directory in the system file explorer.
 
 Selecting a component displays its recorded inputs, outputs, metadata, and other information in the inspector. Nested dictionaries and arrays can be expanded to explore individual values.
 
 Components can be identified using a configurable metadata field, making it easier to navigate evaluations with descriptive component names.
 
 When working with a collection, evaluations can also be ordered by the value of a selected numerical field.
+
+Major views are directly accessible with **Ctrl+1** through **Ctrl+6**:
+Context Explorer, Data Flow, Plot, Collection Overview, Search, and Data
+Extraction respectively. Press **F1** in the dashboard for the complete shortcut
+list.
 
 ### Data Flow
 
@@ -195,12 +203,21 @@ The extraction follows the selected fields across the entire collection, rather 
 The extraction interface also supports nested data:
 
 - **+ Component** adds an entire component, including its fields and metadata.
-- **Flatten all** converts nested dictionary values into separate columns.
-- **Expand** converts the elements of a selected array into separate rows.
-- The preview context menu can rename or remove individual flattened columns and
-  sort the open collection by an extraction column.
+- **Flatten objects** converts nested dictionary values into separate columns.
+- **Expand arrays** is configured independently for every selected field. When
+  enabled, its **Levels** control chooses how many dimensions become columns;
+  disabling it keeps the array packed. For a positions array shaped `[N, 3]`,
+  choose two levels for scalar coordinate columns while retaining one row per
+  evaluation.
+- Right-click a preview column header to copy, sort, rename, or remove that
+  column. Select several fields or preview columns to remove them together;
+  **Delete** removes selected fields and **Backspace** removes selected preview
+  columns. In the preview, click a column header to select and highlight it,
+  then press **S** to sort or reverse the collection by that column or **R** to
+  rename it.
 
-For example, extracting a dictionary containing `energy` and `forces` can produce separate columns for these values when flattening is enabled.
+For example, extracting a dictionary containing `energy` and `forces` can
+produce separate columns for these values when object flattening is enabled.
 
 The preview displays up to 200 evaluations. Exports process the entire collection.
 
@@ -229,7 +246,10 @@ Existing output files are protected by default; pass `--force` to replace one.
 
 ### Export formats
 
-**CSV** produces a tabular representation suitable for Pandas, spreadsheets, and other analysis tools. Nested dictionaries and arrays are stored as JSON strings unless flattening or expansion is requested.
+**CSV** produces a tabular representation suitable for Pandas, spreadsheets,
+and other analysis tools. Nested dictionaries and arrays are stored as JSON
+strings unless object flattening or array-level column expansion is requested.
+Every evaluation still contributes exactly one CSV row.
 
 **JSONL** preserves nested JSON objects and arrays. Each line represents an extracted row and includes the selected values and their extraction statuses.
 

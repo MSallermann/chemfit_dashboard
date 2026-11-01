@@ -35,6 +35,7 @@ from PySide6.QtGui import (
     QActionGroup,
     QColor,
     QCursor,
+    QDesktopServices,
     QFont,
     QIcon,
     QKeySequence,
@@ -149,7 +150,7 @@ from chemfit_dashboard.traversal import (
     CancellationToken,
     iter_collection,
 )
-from chemfit_dashboard.ui_components import muted_label
+from chemfit_dashboard.ui_components import ActionRow, muted_label
 from chemfit_dashboard.workers import TaskRunner
 
 if TYPE_CHECKING:
@@ -312,6 +313,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.operation_progress.connect(self._operation_progressed)
         self._build_menu()
+        self._build_navigation_shortcuts()
         self._clipboard_toast = QLabel(self)
         self._clipboard_toast.setObjectName("clipboardToast")
         self._clipboard_toast.setTextFormat(Qt.TextFormat.PlainText)
@@ -546,6 +548,24 @@ class MainWindow(QMainWindow):
             Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self._file_copy_shortcut.activated.connect(self._copy_current_evaluation)
+        self._file_path_copy_shortcut = QShortcut(
+            QKeySequence("Ctrl+Shift+C"), self.file_list
+        )
+        self._file_path_copy_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._file_path_copy_shortcut.activated.connect(
+            self._copy_current_evaluation_path
+        )
+        self._file_explorer_shortcut = QShortcut(
+            QKeySequence("Ctrl+Return"), self.file_list
+        )
+        self._file_explorer_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._file_explorer_shortcut.activated.connect(
+            self._open_current_evaluation_folder
+        )
         self.evaluation_empty_state = QLabel(
             "No collection loaded.\n\n"
             "Drag and drop a file or folder here, or use:\n"
@@ -564,6 +584,32 @@ class MainWindow(QMainWindow):
         self.file_model.rowsInserted.connect(self._update_evaluation_empty_state)
         self.file_model.rowsRemoved.connect(self._update_evaluation_empty_state)
         self._update_evaluation_empty_state()
+
+        path_row = ActionRow()
+        self.evaluation_path = QLineEdit()
+        self.evaluation_path.setObjectName("evaluationPath")
+        self.evaluation_path.setReadOnly(True)
+        self.evaluation_path.setPlaceholderText("No evaluation selected")
+        self.evaluation_path.setToolTip("Full path of the selected evaluation")
+        path_row.add_widget(self.evaluation_path, 1)
+        self.copy_evaluation_path_button = path_row.add_action(
+            "copyEvaluationPathAction",
+            "Copy path",
+            "Copy the selected evaluation's full path",
+        )
+        self.copy_evaluation_path_button.clicked.connect(
+            self._copy_current_evaluation_path
+        )
+        self.open_file_explorer_button = path_row.add_action(
+            "openInFileExplorerAction",
+            "Open folder",
+            "Open the selected evaluation's folder in the file explorer",
+        )
+        self.open_file_explorer_button.clicked.connect(
+            self._open_current_evaluation_folder
+        )
+        layout.addWidget(path_row)
+        self._set_evaluation_path(None)
 
         self.focus_selected_button = QPushButton("Focus selected")
         self.focus_selected_button.setToolTip(
@@ -763,7 +809,7 @@ class MainWindow(QMainWindow):
         search_workspace_layout.addWidget(search_options)
         search_workspace_layout.addWidget(self.search_panel, 1)
         self.hierarchy_tabs = QTabWidget()
-        self.hierarchy_tabs.addTab(self.tree, "Tree")
+        self.hierarchy_tabs.addTab(self.tree, "Context Explorer")
         self._data_flow_tab_index = self.hierarchy_tabs.addTab(self.graph, "Data Flow")
         self._plot_tab_index = self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
@@ -923,6 +969,53 @@ class MainWindow(QMainWindow):
         shortcuts_action.setShortcut(QKeySequence(Qt.Key.Key_F1))
         shortcuts_action.triggered.connect(self._show_keyboard_shortcuts)
         help_menu.addAction(shortcuts_action)
+
+    def _build_navigation_shortcuts(self) -> None:
+        """Install direct, application-wide navigation to every major view."""
+        destinations = (
+            ("Ctrl+1", "context"),
+            ("Ctrl+2", "flow"),
+            ("Ctrl+3", "plot"),
+            ("Ctrl+4", "overview"),
+            ("Ctrl+5", "search"),
+            ("Ctrl+6", "extraction"),
+        )
+        self._navigation_shortcuts: list[QShortcut] = []
+        for sequence, destination in destinations:
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(
+                lambda target=destination: self._navigate_to_view(target)
+            )
+            self._navigation_shortcuts.append(shortcut)
+
+    def _navigate_to_view(self, destination: str) -> None:
+        if destination in {"context", "flow", "plot"}:
+            self.workspace_tabs.setCurrentWidget(self.context_workspace)
+            widget = {
+                "context": self.tree,
+                "flow": self.graph,
+                "plot": self.collection_plot,
+            }[destination]
+            index = self.hierarchy_tabs.indexOf(widget)
+            if index >= 0:
+                self.hierarchy_tabs.setCurrentIndex(index)
+            elif destination == "flow" and self._expanded_data_flow_dialog is not None:
+                self._expanded_data_flow_dialog.show()
+                self._expanded_data_flow_dialog.raise_()
+                self._expanded_data_flow_dialog.activateWindow()
+            elif destination == "plot" and self._expanded_plot_dialog is not None:
+                self._expanded_plot_dialog.show()
+                self._expanded_plot_dialog.raise_()
+                self._expanded_plot_dialog.activateWindow()
+            return
+        if destination == "overview":
+            self.workspace_tabs.setCurrentWidget(self.collection_analysis)
+        elif destination == "search":
+            self.workspace_tabs.setCurrentWidget(self.search_workspace)
+            self.field_search.setFocus()
+        elif destination == "extraction":
+            self.workspace_tabs.setCurrentWidget(self.extraction)
 
     def _set_navigation_icons(self, scheme: ColorScheme) -> None:
         self.back_action.setIcon(_chevron_icon(-1, scheme.text_strong))
@@ -1221,8 +1314,20 @@ class MainWindow(QMainWindow):
             "Ctrl+O  Open one context file\n"
             "Ctrl+Shift+O  Open one directory\n"
             "Ctrl+F  Search contexts\n"
+            "Ctrl+1  Context Explorer\n"
+            "Ctrl+2  Data Flow\n"
+            "Ctrl+3  Plot\n"
+            "Ctrl+4  Collection Overview\n"
+            "Ctrl+5  Search\n"
+            "Ctrl+6  Data Extraction\n"
             "Esc  Clear search and return to the previous workspace\n"
             "Ctrl+C  Copy the selection in trees, tables, plots, and previews\n"
+            "Ctrl+Shift+C  Copy the selected evaluation's full path\n"
+            "Ctrl+Return  Open the selected evaluation's folder\n"
+            "Delete  Remove selected extraction fields\n"
+            "Backspace  Remove selected extraction preview columns\n"
+            "S  Sort or reverse the selected extraction preview column\n"
+            "R  Rename the selected extraction preview column\n"
             "Alt+Left / Alt+Right  Navigate context history\n"
             "Ctrl+W  Close the current collection\n"
             "Ctrl+Q  Quit\n"
@@ -1393,12 +1498,30 @@ class MainWindow(QMainWindow):
         self._show_status(message, 2500)
 
     def _copy_current_evaluation(self) -> None:
-        record = self.file_model.record(
-            self.file_proxy.mapToSource(self.file_list.currentIndex())
-        )
+        record = self._selected_record()
         if record is not None:
             QApplication.clipboard().setText(record.name)
             self._clipboard_copied("Copied evaluation filename")
+
+    def _copy_current_evaluation_path(self) -> None:
+        record = self._selected_record()
+        if record is None:
+            return
+        QApplication.clipboard().setText(str(record.path))
+        self._clipboard_copied("Copied evaluation path")
+
+    def _open_current_evaluation_folder(self) -> None:
+        record = self._selected_record()
+        if record is None:
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(record.path.parent)))
+
+    def _set_evaluation_path(self, record: RecordRef | None) -> None:
+        path = str(record.path) if record is not None else ""
+        self.evaluation_path.setText(path)
+        enabled = record is not None
+        self.copy_evaluation_path_button.setEnabled(enabled)
+        self.open_file_explorer_button.setEnabled(enabled)
 
     def _copy_current_tree_component(self) -> None:
         info = self.tree_model.node_info(self.tree.currentIndex())
@@ -1495,6 +1618,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self.file_list)
         copy_name = menu.addAction("Copy filename")
         copy_path = menu.addAction("Copy full path")
+        open_folder = menu.addAction("Open folder in file explorer")
         selected = menu.exec(self.file_list.viewport().mapToGlobal(position))
         if selected is copy_name:
             QApplication.clipboard().setText(record.name)
@@ -1502,6 +1626,8 @@ class MainWindow(QMainWindow):
         elif selected is copy_path:
             QApplication.clipboard().setText(str(record.path))
             self._clipboard_copied("Copied evaluation path")
+        elif selected is open_folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(record.path.parent)))
 
     def _show_tree_context_menu(self, position) -> None:  # noqa: ANN001
         index = self.tree.indexAt(position)
@@ -1565,6 +1691,7 @@ class MainWindow(QMainWindow):
         self.search.clear()
         self.field_search.clear()
         self.file_model.clear_records()
+        self._set_evaluation_path(None)
         self.tree_model.set_document(None)
         self.graph.set_document(None)
         self.inspector.clear()
@@ -1695,11 +1822,14 @@ class MainWindow(QMainWindow):
     ) -> None:
         indexes = selected.indexes()
         if not indexes:
+            self._set_evaluation_path(None)
             return
         source_index = self.file_proxy.mapToSource(indexes[0])
         record = self.file_model.record(source_index)
         if record is None:
+            self._set_evaluation_path(None)
             return
+        self._set_evaluation_path(record)
         self.collection_plot.select_record(record.id)
         self._load_generation += 1
         generation = self._load_generation
@@ -2973,7 +3103,10 @@ class MainWindow(QMainWindow):
         export_passes = (
             2
             if format_name == "csv"
-            and any(selector.flatten for selector in config.selectors)
+            and any(
+                selector.flatten or selector.column_expansion_depth
+                for selector in config.selectors
+            )
             else 1
         )
         operation = self._begin_determinate_operation(
@@ -3022,11 +3155,14 @@ class MainWindow(QMainWindow):
         )
 
     def _selected_record_id(self) -> str | None:
+        record = self._selected_record()
+        return record.id if record is not None else None
+
+    def _selected_record(self) -> RecordRef | None:
         proxy_index = self.file_list.currentIndex()
         if not proxy_index.isValid():
             return None
-        record = self.file_model.record(self.file_proxy.mapToSource(proxy_index))
-        return record.id if record is not None else None
+        return self.file_model.record(self.file_proxy.mapToSource(proxy_index))
 
     def _restore_record_selection(self, record_id: str | None) -> None:
         if record_id is None:

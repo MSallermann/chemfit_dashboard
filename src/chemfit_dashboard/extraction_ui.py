@@ -14,21 +14,20 @@ import io
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from typing import Any, cast
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QItemSelectionModel,
     QModelIndex,
     QPersistentModelIndex,
     QPoint,
+    QRect,
     QSettings,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QPainter, QPalette, QPen, QPolygon, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -39,6 +38,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
+    QSpinBox,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
@@ -53,6 +53,7 @@ from chemfit_dashboard.extraction import (
     ExtractionValue,
     FieldSelector,
     JsonPath,
+    column_paths_for_value,
     flattened_column_name,
     load_config,
     save_config,
@@ -60,6 +61,7 @@ from chemfit_dashboard.extraction import (
 from chemfit_dashboard.ui_components import ActionRow, muted_label
 
 PREVIEW_LIMIT = 200
+_ACTIONS_COLUMN_MIN_WIDTH = 440
 _PREVIEW_MISSING = object()
 CONFIG_DIRECTORY_SETTING = "paths/extraction_config"
 EXPORT_DIRECTORY_SETTING = "paths/extraction_export"
@@ -72,6 +74,77 @@ class _PreviewColumn:
     label: str
 
 
+class _PreviewHeaderView(QHeaderView):
+    """Header with a passive sort marker that does not alter section behavior."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._sort_marker_section = -1
+        self._sort_marker_order = Qt.SortOrder.AscendingOrder
+        self.setSortIndicatorShown(False)
+
+    @property
+    def sort_marker_section(self) -> int:
+        return self._sort_marker_section
+
+    @property
+    def sort_marker_order(self) -> Qt.SortOrder:
+        return self._sort_marker_order
+
+    def set_sort_marker(self, section: int, order: Qt.SortOrder) -> None:
+        previous = self._sort_marker_section
+        self._sort_marker_section = section
+        self._sort_marker_order = order
+        if previous >= 0:
+            self.updateSection(previous)
+        self.updateSection(section)
+
+    def clear_sort_marker(self) -> None:
+        previous = self._sort_marker_section
+        self._sort_marker_section = -1
+        if previous >= 0:
+            self.updateSection(previous)
+
+    def paintSection(  # noqa: N802
+        self, painter: QPainter, rect: QRect, logical_index: int
+    ) -> None:
+        super().paintSection(painter, rect, logical_index)
+        if logical_index != self._sort_marker_section:
+            return
+        selection = self.selectionModel()
+        selected = bool(
+            selection
+            and selection.isColumnSelected(logical_index, QModelIndex())
+        )
+        color_role = (
+            QPalette.ColorRole.HighlightedText
+            if selected
+            else QPalette.ColorRole.ButtonText
+        )
+        center_x = rect.right() - 9
+        center_y = rect.center().y()
+        if self._sort_marker_order == Qt.SortOrder.DescendingOrder:
+            points = QPolygon(
+                (
+                    QPoint(center_x - 4, center_y - 2),
+                    QPoint(center_x, center_y + 2),
+                    QPoint(center_x + 4, center_y - 2),
+                )
+            )
+        else:
+            points = QPolygon(
+                (
+                    QPoint(center_x - 4, center_y + 2),
+                    QPoint(center_x, center_y - 2),
+                    QPoint(center_x + 4, center_y + 2),
+                )
+            )
+        painter.save()
+        painter.setPen(QPen(self.palette().color(color_role), 1.5))
+        painter.drawPolyline(points)
+        painter.restore()
+
+
 class ExtractionPreviewModel(QAbstractTableModel):
     """Compact preview model; export remains independent and complete."""
 
@@ -80,21 +153,14 @@ class ExtractionPreviewModel(QAbstractTableModel):
         super().__init__(parent)
         self._columns: tuple[_PreviewColumn, ...] = ()
         self._rows: tuple[ExtractionRow, ...] = ()
-        self._sort_column: int | None = None
-        self._sort_descending = False
 
     def set_data(
         self, selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
     ) -> None:
         """Replace preview rows and derive visible flattened columns."""
         self.beginResetModel()
-        expanded_rows = _expanded_preview_rows(rows, selectors)
-        self._rows = expanded_rows[:PREVIEW_LIMIT]
+        self._rows = rows[:PREVIEW_LIMIT]
         self._columns = _preview_columns(selectors, self._rows)
-        if self._sort_column is not None and self._sort_column >= 3 + len(
-            self._columns
-        ):
-            self._sort_column = None
         self.endResetModel()
 
     def rowCount(  # noqa: N802
@@ -121,29 +187,15 @@ class ExtractionPreviewModel(QAbstractTableModel):
             label = self._columns[section - 3].label
             reason = self.sort_unavailable_reason(section)
             if reason is not None:
-                return reason
-            return f"Click to sort the collection by {label}; click again to reverse"
+                return f"Click to select {label}. {reason}"
+            return (
+                f"Click to select {label}; press S to sort or reverse sorting, "
+                "or right-click for explicit sort directions"
+            )
         if role != Qt.ItemDataRole.DisplayRole:
             return None
         fixed = ("Index", "Filename", "Record ID")
-        label = fixed[section] if section < 3 else self._columns[section - 3].label
-        if section == self._sort_column:
-            arrow = "↓" if self._sort_descending else "↑"
-            return f"SORTED {arrow}  {label}"
-        return label
-
-    def set_sort_column(self, column: int | None, descending: bool = False) -> None:
-        """Emphasize the preview column controlling collection order."""
-        previous = self._sort_column
-        self._sort_column = column
-        self._sort_descending = descending
-        changed = [item for item in (previous, column) if item is not None]
-        if changed:
-            self.headerDataChanged.emit(
-                Qt.Orientation.Horizontal,
-                min(changed),
-                max(changed),
-            )
+        return fixed[section] if section < 3 else self._columns[section - 3].label
 
     def data(  # noqa: PLR0911
         self,
@@ -306,7 +358,8 @@ class DataExtractionPanel(QWidget):
         selection_header.setStretchLastSection(False)
         selection_header.resizeSection(0, 180)
         selection_header.resizeSection(1, 260)
-        selection_header.resizeSection(2, 400)
+        selection_header.resizeSection(2, _ACTIONS_COLUMN_MIN_WIDTH)
+        self._automatic_actions_column_width = _ACTIONS_COLUMN_MIN_WIDTH
         self.selections.setHorizontalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
@@ -317,8 +370,12 @@ class DataExtractionPanel(QWidget):
         self.selections.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        self.selections.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.selections.setMaximumHeight(190)
         self.selections.itemChanged.connect(self._column_edited)
+        self.selections.itemSelectionChanged.connect(self._update_controls)
         self.selections.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.selections.customContextMenuRequested.connect(
             self._show_selection_context_menu
@@ -330,9 +387,22 @@ class DataExtractionPanel(QWidget):
             Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self._selector_copy_shortcut.activated.connect(self._copy_current_selector)
+        self._selector_delete_shortcut = QShortcut(
+            QKeySequence.StandardKey.Delete, self.selections
+        )
+        self._selector_delete_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._selector_delete_shortcut.activated.connect(self._remove_selected_rows)
         layout.addWidget(self.selections)
 
         controls = QHBoxLayout()
+        self.remove_selected_button = QPushButton("Remove selected")
+        self.remove_selected_button.setToolTip(
+            "Remove every selected extraction field (Delete)"
+        )
+        self.remove_selected_button.clicked.connect(self._remove_selected_rows)
+        controls.addWidget(self.remove_selected_button)
         self.clear_button = QPushButton("Clear all")
         self.clear_button.clicked.connect(self.clear)
         controls.addStretch()
@@ -342,16 +412,24 @@ class DataExtractionPanel(QWidget):
         self.preview_model = ExtractionPreviewModel(self)
         self.preview = QTableView()
         self.preview.setModel(self.preview_model)
+        self.preview_header = _PreviewHeaderView(self.preview)
+        self.preview.setHorizontalHeader(self.preview_header)
         self.preview.setAlternatingRowColors(True)
+        self.preview.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.preview.setHorizontalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
-        self.preview.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
+        self.preview_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.preview_header.setSectionsClickable(True)
+        self.preview_header.setHighlightSections(True)
+        self.preview_header.sectionClicked.connect(self._select_preview_column)
+        self.preview_header.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
         )
-        self.preview.horizontalHeader().setSectionsClickable(True)
-        self.preview.horizontalHeader().sectionClicked.connect(
-            self._toggle_preview_sort
+        self.preview_header.customContextMenuRequested.connect(
+            self._show_preview_header_context_menu
         )
         self._preview_sort_column: int | None = None
         self._preview_sort_descending = False
@@ -364,6 +442,29 @@ class DataExtractionPanel(QWidget):
             Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self._preview_copy_shortcut.activated.connect(self._copy_preview_selection)
+        self._preview_delete_shortcut = QShortcut(
+            QKeySequence("Backspace"), self.preview
+        )
+        self._preview_delete_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._preview_delete_shortcut.activated.connect(
+            self._remove_selected_preview_columns
+        )
+        self._preview_sort_shortcut = QShortcut(QKeySequence("S"), self.preview)
+        self._preview_sort_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._preview_sort_shortcut.activated.connect(
+            self._sort_selected_preview_column
+        )
+        self._preview_rename_shortcut = QShortcut(QKeySequence("R"), self.preview)
+        self._preview_rename_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._preview_rename_shortcut.activated.connect(
+            self._rename_selected_preview_column
+        )
         layout.addWidget(self.preview, 1)
 
         actions = QHBoxLayout()
@@ -463,8 +564,7 @@ class DataExtractionPanel(QWidget):
         """Remove the header marker after collection order changes elsewhere."""
         self._preview_sort_column = None
         self._preview_sort_descending = False
-        self.preview_model.set_sort_column(None)
-        self.preview.horizontalHeader().setSortIndicatorShown(False)
+        self.preview_header.clear_sort_marker()
 
     def _rebuild_selection_table(self, selected_row: int) -> None:
         self.selections.blockSignals(True)
@@ -479,7 +579,23 @@ class DataExtractionPanel(QWidget):
         self.selections.blockSignals(False)
         if 0 <= selected_row < len(self._selectors):
             self.selections.setCurrentCell(selected_row, 0)
+        self._resize_field_actions_column()
         self._update_controls()
+
+    def _resize_field_actions_column(self) -> None:
+        required = _ACTIONS_COLUMN_MIN_WIDTH
+        for row in range(self.selections.rowCount()):
+            actions = self.selections.cellWidget(row, 2)
+            if actions is None:
+                continue
+            actions.layout().invalidate()
+            actions.layout().activate()
+            required = max(required, actions.minimumSizeHint().width() + 8)
+        header = self.selections.horizontalHeader()
+        current = header.sectionSize(2)
+        if current == self._automatic_actions_column_width or required > current:
+            header.resizeSection(2, required)
+        self._automatic_actions_column_width = required
 
     def _field_actions(self, row: int, selector: FieldSelector) -> ActionRow:
         actions = ActionRow()
@@ -515,7 +631,7 @@ class DataExtractionPanel(QWidget):
 
         flatten = actions.add_action(
             "flattenAction",
-            "Flatten all",
+            "Flatten objects",
             f"Recursively flatten nested dictionaries in {selector.column}",
             checkable=True,
         )
@@ -524,18 +640,41 @@ class DataExtractionPanel(QWidget):
             lambda checked, target=row: self._set_option(target, "flatten", checked)
         )
 
-        expand = actions.add_action(
-            "expandAction",
-            "Expand all",
-            f"Expand array values in {selector.column} into rows",
+        expand_arrays = actions.add_action(
+            "expandArraysAction",
+            "Expand arrays",
+            f"Expand array values in {selector.column} into columns",
             checkable=True,
         )
-        expand.setChecked(selector.expand_array)
-        expand.toggled.connect(
-            lambda checked, target=row: self._set_option(
-                target, "expand_array", checked
+        expand_arrays.setChecked(selector.column_expansion_depth > 0)
+
+        array_depth = QSpinBox()
+        array_depth.setObjectName("arrayExpansionDepth")
+        array_depth.setRange(1, 8)
+        array_depth.setValue(max(1, selector.column_expansion_depth))
+        array_depth.setPrefix("Levels: ")
+        depth_metrics = array_depth.fontMetrics()
+        array_depth.setMinimumWidth(
+            depth_metrics.horizontalAdvance("Levels: 8") + 40
+        )
+        array_depth.setToolTip(
+            f"Expand this many array levels in {selector.column} into columns; "
+            "for shape [N, 3], choose 2 for scalar coordinate columns"
+        )
+        array_depth.setHidden(not expand_arrays.isChecked())
+        expand_arrays.toggled.connect(
+            lambda checked, target=row, control=array_depth: (
+                self._set_array_expansion_enabled(target, checked, control)
             )
         )
+        array_depth.valueChanged.connect(
+            lambda depth, target=row, toggle=expand_arrays: (
+                self._set_array_expansion_depth(target, depth)
+                if toggle.isChecked()
+                else None
+            )
+        )
+        actions.add_widget(array_depth)
 
         remove = actions.add_action(
             "removeAction",
@@ -587,10 +726,25 @@ class DataExtractionPanel(QWidget):
             selector = self._selectors[row]
             if option == "flatten":
                 selector = replace(selector, flatten=checked)
-            elif option == "expand_array":
-                selector = replace(selector, expand_array=checked)
             self._selectors[row] = selector
             self._emit_changed()
+
+    def _set_array_expansion_depth(self, row: int, depth: int) -> None:
+        if not 0 <= row < len(self._selectors):
+            return
+        self._selectors[row] = replace(
+            self._selectors[row],
+            array_expansion_depth=depth,
+            expand_array=False,
+        )
+        self._emit_changed()
+
+    def _set_array_expansion_enabled(
+        self, row: int, enabled: bool, control: QSpinBox
+    ) -> None:
+        control.setVisible(enabled)
+        self._resize_field_actions_column()
+        self._set_array_expansion_depth(row, control.value() if enabled else 0)
 
     def _remove(self) -> None:
         self._remove_row(self.selections.currentRow())
@@ -600,6 +754,22 @@ class DataExtractionPanel(QWidget):
             del self._selectors[row]
             self._rebuild_selection_table(min(row, len(self._selectors) - 1))
             self._emit_changed()
+
+    def _remove_selected_rows(self) -> None:
+        selection = self.selections.selectionModel()
+        rows = sorted(
+            {index.row() for index in selection.selectedRows()} if selection else (),
+            reverse=True,
+        )
+        if not rows and self.selections.currentRow() >= 0:
+            rows = [self.selections.currentRow()]
+        if not rows:
+            return
+        for row in rows:
+            if 0 <= row < len(self._selectors):
+                del self._selectors[row]
+        self._rebuild_selection_table(min(rows[-1], len(self._selectors) - 1))
+        self._emit_changed()
 
     def _move(self, offset: int) -> None:
         self._move_row(self.selections.currentRow(), offset)
@@ -615,6 +785,9 @@ class DataExtractionPanel(QWidget):
             self._emit_changed()
 
     def _update_controls(self) -> None:
+        selection = self.selections.selectionModel()
+        has_selected_rows = bool(selection and selection.selectedRows())
+        self.remove_selected_button.setEnabled(has_selected_rows)
         self.clear_button.setEnabled(bool(self._selectors))
         self.save_button.setEnabled(bool(self._selectors))
         self.copy_config_button.setEnabled(bool(self._selectors))
@@ -676,9 +849,7 @@ class DataExtractionPanel(QWidget):
             "Copied extraction field configuration as JSON",
         )
 
-    def _show_preview_context_menu(  # noqa: PLR0912
-        self, position: QPoint
-    ) -> None:
+    def _show_preview_context_menu(self, position: QPoint) -> None:
         index = self.preview.indexAt(position)
         if not index.isValid():
             return
@@ -691,10 +862,13 @@ class DataExtractionPanel(QWidget):
         menu.addSeparator()
         copy_preview = menu.addAction("Copy preview as CSV")
         preview_column = self.preview_model.extraction_column(index.column())
-        sort_ascending = sort_descending = remove_flattened = rename_flattened = None
+        toggle_sort = sort_ascending = sort_descending = None
         if preview_column is not None:
             menu.addSeparator()
             sort_menu = menu.addMenu("Sort collection by this column")
+            toggle_sort = sort_menu.addAction("Sort / reverse sort")
+            toggle_sort.setShortcut(QKeySequence("S"))
+            sort_menu.addSeparator()
             sort_ascending = sort_menu.addAction("Sort ↑")
             sort_descending = sort_menu.addAction("Sort ↓")
             sort_reason = self.preview_model.sort_unavailable_reason(index.column())
@@ -702,9 +876,6 @@ class DataExtractionPanel(QWidget):
                 sort_menu.setTitle("Sorting unavailable (non-scalar column)")
                 sort_menu.setToolTip(sort_reason)
                 sort_menu.setEnabled(False)
-            if preview_column.nested_path is not None:
-                rename_flattened = menu.addAction("Rename flattened column…")
-                remove_flattened = menu.addAction("Remove flattened column")
         selected = menu.exec(self.preview.viewport().mapToGlobal(position))
         if selected is copy_cell:
             self._copy_preview_cell(index)
@@ -716,14 +887,162 @@ class DataExtractionPanel(QWidget):
             self._copy_preview_row(index.row(), as_json=True)
         elif selected is copy_preview:
             self._copy_preview_table()
+        elif selected is toggle_sort:
+            self._toggle_preview_sort(index.column())
         elif selected is sort_ascending and preview_column is not None:
             self._request_preview_sort(index.column(), preview_column, False)
         elif selected is sort_descending and preview_column is not None:
             self._request_preview_sort(index.column(), preview_column, True)
-        elif selected is remove_flattened and preview_column is not None:
-            self._exclude_flattened_column(preview_column)
-        elif selected is rename_flattened and preview_column is not None:
-            self._rename_flattened_column(preview_column)
+
+    def _show_preview_header_context_menu(self, position: QPoint) -> None:
+        header = self.preview_header
+        column = header.logicalIndexAt(position)
+        if column < 0:
+            return
+        preview_column = self.preview_model.extraction_column(column)
+        menu = QMenu(header)
+        copy_column = menu.addAction("Copy column as CSV")
+        toggle_sort = sort_ascending = sort_descending = None
+        rename_column = remove_column = None
+        selected_columns = self._selected_preview_columns(column)
+        remove_selected = None
+        if preview_column is not None:
+            menu.addSeparator()
+            sort_menu = menu.addMenu("Sort collection by this column")
+            toggle_sort = sort_menu.addAction("Sort / reverse sort")
+            toggle_sort.setShortcut(QKeySequence("S"))
+            sort_menu.addSeparator()
+            sort_ascending = sort_menu.addAction("Sort ↑")
+            sort_descending = sort_menu.addAction("Sort ↓")
+            reason = self.preview_model.sort_unavailable_reason(column)
+            if reason is not None:
+                sort_menu.setTitle("Sorting unavailable (non-scalar column)")
+                sort_menu.setToolTip(reason)
+                sort_menu.setEnabled(False)
+            rename_column = menu.addAction("Rename column…")
+            rename_column.setShortcut(QKeySequence("R"))
+            remove_column = menu.addAction("Remove column")
+            if len(selected_columns) > 1:
+                remove_selected = menu.addAction(
+                    f"Remove {len(selected_columns)} selected columns"
+                )
+                remove_selected.setShortcut(QKeySequence("Backspace"))
+        selected = menu.exec(header.mapToGlobal(position))
+        if selected is copy_column:
+            self._copy_preview_column(column)
+        elif selected is toggle_sort:
+            self._toggle_preview_sort(column)
+        elif selected is sort_ascending and preview_column is not None:
+            self._request_preview_sort(column, preview_column, False)
+        elif selected is sort_descending and preview_column is not None:
+            self._request_preview_sort(column, preview_column, True)
+        elif selected is rename_column and preview_column is not None:
+            self._rename_preview_column(preview_column)
+        elif selected is remove_column and preview_column is not None:
+            self._remove_preview_columns((preview_column,))
+        elif selected is remove_selected:
+            self._remove_preview_columns(selected_columns)
+
+    def _selected_preview_columns(
+        self, clicked_column: int | None = None
+    ) -> tuple[_PreviewColumn, ...]:
+        selection = self.preview.selectionModel()
+        indexes = selection.selectedIndexes() if selection is not None else []
+        columns = {index.column() for index in indexes}
+        if clicked_column is not None:
+            columns.add(clicked_column)
+        return tuple(
+            preview_column
+            for column in sorted(columns)
+            if (preview_column := self.preview_model.extraction_column(column))
+            is not None
+        )
+
+    def _remove_selected_preview_columns(self) -> None:
+        self._remove_preview_columns(self._selected_preview_columns())
+
+    def _remove_preview_columns(
+        self, columns: tuple[_PreviewColumn, ...]
+    ) -> None:
+        if not columns:
+            return
+        remove_selectors = {
+            column.selector_index for column in columns if column.nested_path is None
+        }
+        excluded: dict[int, set[JsonPath]] = {}
+        for column in columns:
+            if column.nested_path is not None:
+                excluded.setdefault(column.selector_index, set()).add(
+                    column.nested_path
+                )
+        updated: list[FieldSelector] = []
+        for index, selector in enumerate(self._selectors):
+            if index in remove_selectors:
+                continue
+            paths = excluded.get(index)
+            if paths:
+                names = tuple(
+                    (path, name)
+                    for path, name in selector.flattened_column_names
+                    if path not in paths
+                )
+                updated_selector = replace(
+                    selector,
+                    excluded_paths=tuple(
+                        dict.fromkeys(
+                            (
+                                *selector.excluded_paths,
+                                *sorted(paths, key=lambda path: tuple(map(str, path))),
+                            )
+                        )
+                    ),
+                    flattened_column_names=names,
+                )
+            else:
+                updated_selector = selector
+            updated.append(updated_selector)
+        self._selectors = updated
+        self._rebuild_selection_table(
+            min(self.selections.currentRow(), len(self._selectors) - 1)
+        )
+        self._emit_changed()
+
+    def _select_preview_column(self, column: int) -> None:
+        if not 0 <= column < self.preview_model.columnCount():
+            return
+        selection = self.preview.selectionModel()
+        if selection is None or self.preview_model.rowCount() == 0:
+            return
+        modifiers = QApplication.keyboardModifiers()
+        flags = QItemSelectionModel.SelectionFlag.Columns
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            flags |= QItemSelectionModel.SelectionFlag.Toggle
+        else:
+            flags |= QItemSelectionModel.SelectionFlag.ClearAndSelect
+        index = self.preview_model.index(0, column)
+        selection.select(index, flags)
+        selection.setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
+        self.preview.setFocus()
+
+    def _sort_selected_preview_column(self) -> None:
+        index = self.preview.currentIndex()
+        if not index.isValid():
+            return
+        self._toggle_preview_sort(index.column())
+
+    def _rename_selected_preview_column(self) -> None:
+        index = self.preview.currentIndex()
+        if not index.isValid():
+            return
+        column = self.preview_model.extraction_column(index.column())
+        if column is not None:
+            self._rename_preview_column(column)
+
+    def _rename_preview_column(self, column: _PreviewColumn) -> None:
+        if column.nested_path is None:
+            self._edit_column_name(column.selector_index)
+        else:
+            self._rename_flattened_column(column)
 
     def _toggle_preview_sort(self, column: int) -> None:
         preview_column = self.preview_model.extraction_column(column)
@@ -753,10 +1072,8 @@ class DataExtractionPanel(QWidget):
             if descending
             else Qt.SortOrder.AscendingOrder
         )
-        header = self.preview.horizontalHeader()
-        header.setSortIndicator(column, order)
-        header.setSortIndicatorShown(True)
-        self.preview_model.set_sort_column(column, descending)
+        header = self.preview_header
+        header.set_sort_marker(column, order)
         header.resizeSection(column, max(header.sectionSize(column), 150))
         self.sort_requested.emit(
             (
@@ -977,42 +1294,23 @@ def _csv_text(rows: tuple[tuple[str, ...], ...] | list[tuple[str, ...]]) -> str:
     return stream.getvalue().rstrip("\n")
 
 
-def _expanded_preview_rows(
-    rows: tuple[ExtractionRow, ...], selectors: tuple[FieldSelector, ...]
-) -> tuple[ExtractionRow, ...]:
-    expanded_index = next(
-        (index for index, selector in enumerate(selectors) if selector.expand_array),
-        None,
-    )
-    if expanded_index is None:
-        return rows
-    result: list[ExtractionRow] = []
-    for row in rows:
-        selected = row.values[expanded_index]
-        if not isinstance(selected.value, list):
-            result.append(row)
-            continue
-        for item in selected.value:
-            values = list(row.values)
-            values[expanded_index] = ExtractionValue(item, selected.status)
-            result.append(replace(row, values=tuple(values)))
-            if len(result) >= PREVIEW_LIMIT:
-                return tuple(result)
-    return tuple(result)
-
-
 def _preview_columns(
     selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
 ) -> tuple[_PreviewColumn, ...]:
     result: list[_PreviewColumn] = []
     for selector_index, selector in enumerate(selectors):
         paths: set[JsonPath] = set()
-        if selector.flatten:
+        if selector.flatten or selector.column_expansion_depth:
             for row in rows:
                 value = row.values[selector_index].value
-                if isinstance(value, dict):
-                    paths.update(_mapping_leaf_paths(value))
-        if selector.flatten:
+                paths.update(
+                    column_paths_for_value(
+                        value,
+                        flatten_mappings=selector.flatten,
+                        array_depth=selector.column_expansion_depth,
+                    )
+                )
+        if selector.flatten or selector.column_expansion_depth:
             result.extend(
                 _PreviewColumn(
                     selector_index,
@@ -1024,22 +1322,6 @@ def _preview_columns(
             )
         else:
             result.append(_PreviewColumn(selector_index, None, selector.column))
-    return tuple(result)
-
-
-def _mapping_leaf_paths(
-    value: Mapping[str, Any], path: JsonPath = ()
-) -> tuple[JsonPath, ...]:
-    if not value:
-        return (path,)
-    result: list[JsonPath] = []
-    for key in sorted(value, key=str):
-        child_path = (*path, str(key))
-        child = value[key]
-        if isinstance(child, dict):
-            result.extend(_mapping_leaf_paths(child, child_path))
-        else:
-            result.append(child_path)
     return tuple(result)
 
 

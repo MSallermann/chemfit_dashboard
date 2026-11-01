@@ -4,12 +4,13 @@ import csv
 import json
 
 import pytest
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QHeaderView,
     QLineEdit,
+    QSpinBox,
     QToolButton,
 )
 
@@ -42,6 +43,14 @@ def _inline_action(panel: DataExtractionPanel, row: int, name: str) -> QToolButt
     button = actions.findChild(QToolButton, name)
     assert button is not None
     return button
+
+
+def _array_depth(panel: DataExtractionPanel, row: int) -> QSpinBox:
+    actions = panel.selections.cellWidget(row, 2)
+    assert actions is not None
+    control = actions.findChild(QSpinBox, "arrayExpansionDepth")
+    assert control is not None
+    return control
 
 
 def _write_semantic_collection(tmp_path):
@@ -146,27 +155,45 @@ def test_component_extraction_csv_flatten_and_jsonl_preserve_structure(tmp_path)
     assert payload["status"]["component"] == "available"
 
 
-def test_array_expansion_is_long_format_and_never_implicit_cartesian_product(tmp_path):
+def test_array_expansion_creates_columns_and_preserves_one_row_per_evaluation(tmp_path):
     (tmp_path / "one.json").write_text(
-        json.dumps({"a": [1, 2], "b": [3, 4]}), encoding="utf-8"
+        json.dumps({"positions": [[1, 2, 3], [4, 5, 6]], "b": [7, 8]}),
+        encoding="utf-8",
     )
     source = JsonFileSource()
     records = source.discover([tmp_path])
-    first = FieldSelector((), "fields", ("a",), "a", expand_array=True)
-    second = FieldSelector((), "fields", ("b",), "b")
-    output = tmp_path / "long.jsonl"
-
-    assert export_jsonl(output, source, records, ExtractionConfig((first, second))) == 2
-    assert [
-        json.loads(line)["values"]["a"]
-        for line in output.read_text(encoding="utf-8").splitlines()
-    ] == [1, 2]
-
-    ambiguous = ExtractionConfig(
-        (first, FieldSelector((), "fields", ("b",), "b", expand_array=True))
+    positions = FieldSelector(
+        (),
+        "fields",
+        ("positions",),
+        "positions",
+        array_expansion_depth=2,
     )
-    with pytest.raises(ValueError, match="Cartesian"):
-        list(extract_fields(source, records, ambiguous.selectors))
+    second = FieldSelector(
+        (), "fields", ("b",), "b", array_expansion_depth=1
+    )
+    csv_output = tmp_path / "wide.csv"
+    jsonl_output = tmp_path / "structured.jsonl"
+
+    assert export_csv(
+        csv_output, source, records, ExtractionConfig((positions, second))
+    ) == 1
+    with csv_output.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.reader(stream))
+    assert rows[0][3:9] == [
+        "positions.0/0",
+        "positions.0/1",
+        "positions.0/2",
+        "positions.1/0",
+        "positions.1/1",
+        "positions.1/2",
+    ]
+    assert rows[1][3:9] == ["1", "2", "3", "4", "5", "6"]
+    assert export_jsonl(
+        jsonl_output, source, records, ExtractionConfig((positions, second))
+    ) == 1
+    payload = json.loads(jsonl_output.read_text(encoding="utf-8"))
+    assert payload["values"]["positions"] == [[1, 2, 3], [4, 5, 6]]
 
 
 def test_configuration_round_trip_and_cancellation(tmp_path):
@@ -197,6 +224,32 @@ def test_configuration_round_trip_and_cancellation(tmp_path):
                 cancellation=token,
             )
         )
+
+
+def test_version_one_array_expansion_migrates_to_one_column_level():
+    legacy = {
+        "version": 1,
+        "include_identifiers": True,
+        "include_status_columns": False,
+        "selectors": [
+            {
+                "component": {"preferred_path": [], "trail": None},
+                "section": "fields",
+                "path": ["positions"],
+                "column": "positions",
+                "flatten": False,
+                "expand_array": True,
+                "excluded_paths": [],
+                "flattened_column_names": [],
+            }
+        ],
+    }
+
+    migrated = ExtractionConfig.from_dict(legacy)
+
+    assert migrated.version == 2
+    assert migrated.selectors[0].array_expansion_depth == 1
+    assert migrated.selectors[0].column_expansion_depth == 1
 
 
 def test_extraction_and_exports_report_completed_records(tmp_path):
@@ -396,32 +449,33 @@ def test_extraction_options_immediately_rebuild_preview_shape():
     panel.set_preview(rows, 1)
     panel.selectors_changed.connect(lambda _selectors: panel.set_preview(rows, 1))
 
-    _inline_action(panel, 0, "expandAction").click()
+    _inline_action(panel, 0, "expandArraysAction").click()
 
-    assert panel.preview_model.rowCount() == 2
+    assert panel.preview_model.rowCount() == 1
+    assert panel.preview_model.columnCount() == 5
     assert panel.preview_model.data(panel.preview_model.index(0, 3)) == (
         '{"metrics":{"energy":1}}'
     )
-    assert panel.preview_model.data(panel.preview_model.index(1, 3)) == (
+    assert panel.preview_model.data(panel.preview_model.index(0, 4)) == (
         '{"metrics":{"energy":2}}'
     )
 
     flatten = _inline_action(panel, 0, "flattenAction")
-    assert flatten.text() == "Flatten all"
+    assert flatten.text() == "Flatten objects"
     assert "Recursively" in flatten.toolTip()
     flatten.click()
 
-    assert panel.preview_model.columnCount() == 4
+    assert panel.preview_model.columnCount() == 5
     assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == (
-        "payload.metrics/energy"
+        "payload.0/metrics/energy"
     )
     assert panel.preview_model.data(panel.preview_model.index(0, 3)) == "1"
-    assert panel.preview_model.data(panel.preview_model.index(1, 3)) == "2"
+    assert panel.preview_model.data(panel.preview_model.index(0, 4)) == "2"
     preview_column = panel.preview_model.extraction_column(3)
     assert preview_column is not None
     panel._exclude_flattened_column(preview_column)  # noqa: SLF001
 
-    assert panel.selectors[0].excluded_paths == (("metrics", "energy"),)
+    assert panel.selectors[0].excluded_paths == ((0, "metrics", "energy"),)
 
 
 def test_flattened_columns_can_be_filtered_renamed_and_round_trip(tmp_path):
@@ -440,7 +494,7 @@ def test_flattened_columns_can_be_filtered_renamed_and_round_trip(tmp_path):
 
     restored = load_config(config_path)
 
-    assert restored.version == 1
+    assert restored.version == 2
     assert restored.selectors[0].excluded_paths == (("energy",),)
     assert restored.selectors[0].flattened_column_names == (
         (("force",), "force_ev"),
@@ -473,6 +527,71 @@ def test_each_extraction_field_has_an_inline_remove_control():
     assert panel.selections.rowCount() == 1
 
 
+def test_extraction_fields_and_preview_columns_support_bulk_removal():
+    panel = DataExtractionPanel()
+    for column in ("energy", "force", "positions"):
+        panel.add_selector(FieldSelector((), "fields", (column,), column))
+    selection = panel.selections.selectionModel()
+    assert selection is not None
+    selection.clearSelection()
+    for row in (0, 1):
+        selection.select(
+            panel.selections.model().index(row, 0),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
+    panel._remove_selected_rows()  # noqa: SLF001
+
+    assert [selector.column for selector in panel.selectors] == ["positions"]
+    assert (
+        panel.preview.horizontalHeader().contextMenuPolicy()
+        == Qt.ContextMenuPolicy.CustomContextMenu
+    )
+
+    panel.set_config(
+        ExtractionConfig(
+            (
+                FieldSelector(
+                    (),
+                    "fields",
+                    ("positions",),
+                    "positions",
+                    array_expansion_depth=2,
+                ),
+            )
+        )
+    )
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record",
+                "step.json",
+                (
+                    ExtractionValue(
+                        [[1, 2, 3], [4, 5, 6]], ExtractionStatus.AVAILABLE
+                    ),
+                ),
+            ),
+        ),
+        1,
+    )
+    preview_selection = panel.preview.selectionModel()
+    assert preview_selection is not None
+    for column in (3, 4, 5):
+        preview_selection.select(
+            panel.preview_model.index(0, column),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Columns,
+        )
+
+    panel._preview_delete_shortcut.activated.emit()  # noqa: SLF001
+
+    assert panel._preview_delete_shortcut.key().toString() == "Backspace"  # noqa: SLF001
+    assert panel.selectors[0].excluded_paths == ((0, 0), (0, 1), (0, 2))
+
+
 def test_field_specific_extraction_controls_are_inline():
     panel = DataExtractionPanel()
     panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
@@ -483,22 +602,33 @@ def test_field_specific_extraction_controls_are_inline():
     assert _inline_action(panel, 1, "moveUpAction").isEnabled()
     assert not _inline_action(panel, 1, "moveDownAction").isEnabled()
     assert _inline_action(panel, 0, "flattenAction").isCheckable()
-    assert _inline_action(panel, 0, "expandAction").isCheckable()
+    expand_arrays = _inline_action(panel, 0, "expandArraysAction")
+    assert expand_arrays.isCheckable()
+    assert not expand_arrays.isChecked()
     assert _inline_action(panel, 0, "renameAction").text() == "Rename"
     assert _inline_action(panel, 0, "moveUpAction").text() == "↑"
     assert _inline_action(panel, 0, "moveDownAction").text() == "↓"
     assert _inline_action(panel, 0, "removeAction").text() == "\u00d7"
     flatten = _inline_action(panel, 0, "flattenAction")
-    expand = _inline_action(panel, 0, "expandAction")
-    assert flatten.text() == "Flatten all"
-    assert expand.text() == "Expand all"
+    array_depth = _array_depth(panel, 0)
+    assert flatten.text() == "Flatten objects"
+    assert expand_arrays.text() == "Expand arrays"
+    assert array_depth.isHidden()
+    packed_actions_width = panel.selections.columnWidth(2)
+    expand_arrays.click()
+    assert not array_depth.isHidden()
+    assert array_depth.value() == 1
+    assert panel.selectors[0].array_expansion_depth == 1
+    assert panel.selections.columnWidth(2) > packed_actions_width
+    assert "shape [N, 3]" in array_depth.toolTip()
+    assert array_depth.minimumWidth() >= (
+        array_depth.fontMetrics().horizontalAdvance("Levels: 8") + 40
+    )
     assert flatten.minimumWidth() >= flatten.fontMetrics().horizontalAdvance(
         flatten.text()
     )
-    assert expand.minimumWidth() >= expand.fontMetrics().horizontalAdvance(
-        expand.text()
-    )
     assert panel.selections.verticalHeader().defaultSectionSize() >= 40
+    assert panel.selections.columnWidth(2) >= 440
     assert (
         panel.selections.horizontalHeader().sectionResizeMode(2)
         == QHeaderView.ResizeMode.Interactive
@@ -511,12 +641,16 @@ def test_field_specific_extraction_controls_are_inline():
     assert not panel.selections.horizontalHeader().stretchLastSection()
     assert panel.selections.columnWidth(2) >= 400
 
+    expand_arrays.click()
+    assert array_depth.isHidden()
+    assert panel.selections.columnWidth(2) == packed_actions_width
+
     panel.selections.horizontalHeader().resizeSection(2, 480)
 
     assert panel.selections.columnWidth(2) == 480
 
 
-def test_extraction_preview_header_toggles_collection_sort():
+def test_extraction_preview_header_selects_column_and_sort_shortcut_toggles():
     panel = DataExtractionPanel()
     energy = FieldSelector((), "fields", ("energy",), "energy")
     panel.add_selector(energy)
@@ -528,8 +662,14 @@ def test_extraction_preview_header_toggles_collection_sort():
                 "step_1.json",
                 (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
             ),
+            ExtractionRow(
+                1,
+                "record-2",
+                "step_2.json",
+                (ExtractionValue(2.5, ExtractionStatus.AVAILABLE),),
+            ),
         ),
-        1,
+        2,
     )
     requested_sorts = []
     panel.sort_requested.connect(
@@ -538,16 +678,22 @@ def test_extraction_preview_header_toggles_collection_sort():
     header = panel.preview.horizontalHeader()
 
     header.sectionClicked.emit(3)
-    header.sectionClicked.emit(3)
+
+    selected = panel.preview.selectionModel().selectedIndexes()
+    assert selected
+    assert {index.column() for index in selected} == {3}
+    assert {index.row() for index in selected} == {0, 1}
+    assert not requested_sorts
+
+    panel._preview_sort_shortcut.activated.emit()  # noqa: SLF001
+    panel._preview_sort_shortcut.activated.emit()  # noqa: SLF001
 
     assert requested_sorts == [((energy, None), False), ((energy, None), True)]
-    assert header.isSortIndicatorShown()
-    assert header.sortIndicatorSection() == 3
-    assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
-    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal).startswith(
-        "SORTED ↓"
-    )
-    assert "click again to reverse" in str(
+    assert not header.isSortIndicatorShown()
+    assert panel.preview_header.sort_marker_section == 3
+    assert panel.preview_header.sort_marker_order == Qt.SortOrder.DescendingOrder
+    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == "energy"
+    assert "press s to sort or reverse" in str(
         panel.preview_model.headerData(
             3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
         )
@@ -556,7 +702,32 @@ def test_extraction_preview_header_toggles_collection_sort():
     panel.clear_collection_sort()
 
     assert not header.isSortIndicatorShown()
+    assert panel.preview_header.sort_marker_section == -1
     assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == "energy"
+
+
+def test_extraction_preview_rename_shortcut_targets_selected_column(monkeypatch):
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record-1",
+                "step_1.json",
+                (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
+            ),
+        ),
+        1,
+    )
+    renamed = []
+    monkeypatch.setattr(panel, "_edit_column_name", renamed.append)
+
+    panel.preview.horizontalHeader().sectionClicked.emit(3)
+    panel._preview_rename_shortcut.activated.emit()  # noqa: SLF001
+
+    assert panel._preview_rename_shortcut.key().toString() == "R"  # noqa: SLF001
+    assert renamed == [0]
 
 
 def test_extraction_preview_rejects_opaque_component_sorting():
@@ -583,6 +754,7 @@ def test_extraction_preview_rejects_opaque_component_sorting():
     panel.status_message.connect(messages.append)
 
     panel.preview.horizontalHeader().sectionClicked.emit(3)
+    panel._preview_sort_shortcut.activated.emit()  # noqa: SLF001
 
     assert not requested_sorts
     assert "flatten it or select a scalar field" in messages[-1].lower()
