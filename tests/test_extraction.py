@@ -382,13 +382,9 @@ def test_extraction_options_immediately_rebuild_preview_shape():
     )
     assert panel.preview_model.data(panel.preview_model.index(0, 3)) == "1"
     assert panel.preview_model.data(panel.preview_model.index(1, 3)) == "2"
-    assert panel.preview_column_label.text() == (
-        "Column actions: payload.metrics/energy"
-    )
-    assert panel.rename_column_button.isEnabled()
-    assert panel.remove_column_button.isEnabled()
-
-    panel.remove_column_button.click()
+    preview_column = panel.preview_model.extraction_column(3)
+    assert preview_column is not None
+    panel._exclude_flattened_column(preview_column)  # noqa: SLF001
 
     assert panel.selectors[0].excluded_paths == (("metrics", "energy"),)
 
@@ -454,7 +450,19 @@ def test_field_specific_extraction_controls_are_inline():
     assert _inline_action(panel, 0, "flattenAction").isCheckable()
     assert _inline_action(panel, 0, "expandAction").isCheckable()
     assert _inline_action(panel, 0, "renameAction").text() == "Rename"
-    assert _inline_action(panel, 0, "removeAction").text() == "Remove"
+    assert _inline_action(panel, 0, "moveUpAction").text() == "↑"
+    assert _inline_action(panel, 0, "moveDownAction").text() == "↓"
+    assert _inline_action(panel, 0, "removeAction").text() == "X"
+    flatten = _inline_action(panel, 0, "flattenAction")
+    expand = _inline_action(panel, 0, "expandAction")
+    assert flatten.text() == "Flatten all"
+    assert expand.text() == "Expand all"
+    assert flatten.minimumWidth() >= flatten.fontMetrics().horizontalAdvance(
+        flatten.text()
+    )
+    assert expand.minimumWidth() >= expand.fontMetrics().horizontalAdvance(
+        expand.text()
+    )
     assert panel.selections.verticalHeader().defaultSectionSize() >= 40
     assert (
         panel.selections.horizontalHeader().sectionResizeMode(2)
@@ -510,6 +518,11 @@ def test_extraction_preview_header_toggles_collection_sort():
         )
     ).lower()
 
+    panel.clear_collection_sort()
+
+    assert not header.isSortIndicatorShown()
+    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == "energy"
+
 
 def test_extraction_preview_rejects_opaque_component_sorting():
     panel = DataExtractionPanel()
@@ -538,7 +551,6 @@ def test_extraction_preview_rejects_opaque_component_sorting():
 
     assert not requested_sorts
     assert "flatten it or select a scalar field" in messages[-1].lower()
-    assert "sorting unavailable" in panel.preview_column_label.text().lower()
     assert "component or array values" in str(
         panel.preview_model.headerData(
             3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole

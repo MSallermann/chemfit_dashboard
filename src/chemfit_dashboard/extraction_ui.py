@@ -71,6 +71,7 @@ def _action_button(
     tooltip: str,
     *,
     checkable: bool = False,
+    compact: bool = False,
 ) -> QToolButton:
     button = QToolButton()
     button.setObjectName(name)
@@ -79,6 +80,12 @@ def _action_button(
     button.setAccessibleName(tooltip)
     button.setCheckable(checkable)
     button.setAutoRaise(True)
+    if compact:
+        button.setFixedWidth(28)
+    else:
+        # Cell layouts may otherwise shrink tool buttons below their size hint,
+        # clipping labels even though the table can scroll horizontally.
+        button.setMinimumWidth(button.fontMetrics().horizontalAdvance(text) + 22)
     return button
 
 
@@ -358,21 +365,6 @@ class DataExtractionPanel(QWidget):
         controls.addWidget(self.clear_button)
         layout.addLayout(controls)
 
-        column_actions = QHBoxLayout()
-        self.preview_column_label = QLabel("Column actions: select a preview column")
-        self.preview_column_label.setObjectName("mutedLabel")
-        column_actions.addWidget(self.preview_column_label)
-        column_actions.addStretch()
-        self.rename_column_button = QPushButton("Rename column")
-        self.rename_column_button.setEnabled(False)
-        self.rename_column_button.clicked.connect(self._rename_selected_preview_column)
-        column_actions.addWidget(self.rename_column_button)
-        self.remove_column_button = QPushButton("Remove column")
-        self.remove_column_button.setEnabled(False)
-        self.remove_column_button.clicked.connect(self._remove_selected_preview_column)
-        column_actions.addWidget(self.remove_column_button)
-        layout.addLayout(column_actions)
-
         self.preview_model = ExtractionPreviewModel(self)
         self.preview = QTableView()
         self.preview.setModel(self.preview_model)
@@ -384,20 +376,13 @@ class DataExtractionPanel(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         self.preview.horizontalHeader().setSectionsClickable(True)
-        self.preview.horizontalHeader().sectionPressed.connect(
-            self._select_preview_column
-        )
         self.preview.horizontalHeader().sectionClicked.connect(
             self._toggle_preview_sort
         )
         self._preview_sort_column: int | None = None
         self._preview_sort_descending = False
-        self._selected_preview_column: int | None = None
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview.customContextMenuRequested.connect(self._show_preview_context_menu)
-        self.preview.clicked.connect(
-            lambda index: self._select_preview_column(index.column())
-        )
         self._preview_copy_shortcut = QShortcut(
             QKeySequence.StandardKey.Copy, self.preview
         )
@@ -490,8 +475,6 @@ class DataExtractionPanel(QWidget):
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
         """Install preview rows while retaining the collection's full count."""
         self.preview_model.set_data(self.selectors, rows)
-        selected_column = self._preview_sort_column or 3
-        self._select_preview_column(selected_column)
         shown = self.preview_model.rowCount()
         suffix = " (limited)" if total > len(rows) or shown >= PREVIEW_LIMIT else ""
         self.status.setText(
@@ -501,6 +484,13 @@ class DataExtractionPanel(QWidget):
     def show_error(self, message: str) -> None:
         """Replace preview status with a user-facing extraction error."""
         self.status.setText(message)
+
+    def clear_collection_sort(self) -> None:
+        """Remove the header marker after collection order changes elsewhere."""
+        self._preview_sort_column = None
+        self._preview_sort_descending = False
+        self.preview_model.set_sort_column(None)
+        self.preview.horizontalHeader().setSortIndicatorShown(False)
 
     def _rebuild_selection_table(self, selected_row: int) -> None:
         self.selections.blockSignals(True)
@@ -523,7 +513,12 @@ class DataExtractionPanel(QWidget):
         layout.setContentsMargins(2, 1, 2, 1)
         layout.setSpacing(3)
 
-        move_up = _action_button("moveUpAction", "Up", f"Move {selector.column} up")
+        move_up = _action_button(
+            "moveUpAction",
+            "↑",
+            f"Move {selector.column} up",
+            compact=True,
+        )
         move_up.setEnabled(row > 0)
         move_up.clicked.connect(
             lambda _checked=False, target=row: self._move_row(target, -1)
@@ -531,7 +526,10 @@ class DataExtractionPanel(QWidget):
         layout.addWidget(move_up)
 
         move_down = _action_button(
-            "moveDownAction", "Down", f"Move {selector.column} down"
+            "moveDownAction",
+            "↓",
+            f"Move {selector.column} down",
+            compact=True,
         )
         move_down.setEnabled(row < len(self._selectors) - 1)
         move_down.clicked.connect(
@@ -561,7 +559,7 @@ class DataExtractionPanel(QWidget):
 
         expand = _action_button(
             "expandAction",
-            "Expand",
+            "Expand all",
             f"Expand array values in {selector.column} into rows",
             checkable=True,
         )
@@ -575,8 +573,9 @@ class DataExtractionPanel(QWidget):
 
         remove = _action_button(
             "removeAction",
-            "Remove",
+            "X",
             f"Remove {selector.column} from extraction",
+            compact=True,
         )
         remove.clicked.connect(
             lambda _checked=False, target=row: self._remove_row(target)
@@ -585,7 +584,9 @@ class DataExtractionPanel(QWidget):
         return actions
 
     def _emit_changed(self) -> None:
-        self._select_preview_column(-1)
+        # Moving, replacing, or reshaping selectors can make a numeric preview
+        # column refer to different data, so its collection-sort marker is stale.
+        self.clear_collection_sort()
         self._update_controls()
         self._update_dirty_indicator()
         self.selectors_changed.emit(self.selectors)
@@ -770,44 +771,6 @@ class DataExtractionPanel(QWidget):
         )
         self._request_preview_sort(column, preview_column, descending)
 
-    def _select_preview_column(self, column: int) -> None:
-        preview_column = self.preview_model.extraction_column(column)
-        self._selected_preview_column = column if preview_column is not None else None
-        enabled = preview_column is not None
-        self.rename_column_button.setEnabled(enabled)
-        self.remove_column_button.setEnabled(enabled)
-        if preview_column is None:
-            label = "Column actions: select a preview column"
-        else:
-            label = f"Column actions: {preview_column.label}"
-            if self.preview_model.sort_unavailable_reason(column) is not None:
-                label += " · sorting unavailable for non-scalar values"
-        self.preview_column_label.setText(label)
-
-    def _selected_column(self) -> _PreviewColumn | None:
-        if self._selected_preview_column is None:
-            return None
-        return self.preview_model.extraction_column(self._selected_preview_column)
-
-    def _rename_selected_preview_column(self) -> None:
-        preview_column = self._selected_column()
-        if preview_column is None:
-            return
-        if preview_column.nested_path is None:
-            self._edit_column_name(preview_column.selector_index)
-        else:
-            self._rename_flattened_column(preview_column)
-
-    def _remove_selected_preview_column(self) -> None:
-        preview_column = self._selected_column()
-        if preview_column is None:
-            return
-        if preview_column.nested_path is None:
-            self._remove_row(preview_column.selector_index)
-        else:
-            self._exclude_flattened_column(preview_column)
-        self._select_preview_column(-1)
-
     def _request_preview_sort(
         self,
         column: int,
@@ -829,7 +792,6 @@ class DataExtractionPanel(QWidget):
         header.setSortIndicator(column, order)
         header.setSortIndicatorShown(True)
         self.preview_model.set_sort_column(column, descending)
-        self._select_preview_column(column)
         header.resizeSection(column, max(header.sectionSize(column), 150))
         self.sort_requested.emit(
             (

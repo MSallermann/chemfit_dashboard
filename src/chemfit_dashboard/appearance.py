@@ -433,6 +433,14 @@ QTableWidget#extractionSelections QToolButton:hover {{
 QTableWidget#extractionSelections QToolButton:checked {{
     background: {scheme.accent_soft}; color: {scheme.accent}; border-color: {scheme.accent};
 }}
+QTableWidget#extractionSelections QToolButton#moveUpAction,
+QTableWidget#extractionSelections QToolButton#moveDownAction,
+QTableWidget#extractionSelections QToolButton#removeAction {{
+    font-size: 15px; font-weight: 700; padding: 2px;
+}}
+QTableWidget#extractionSelections QToolButton#removeAction:hover {{
+    background: {scheme.danger}; color: {scheme.danger_border}; border-color: {scheme.danger};
+}}
 QHeaderView::section {{
     background: {scheme.input}; color: {scheme.muted}; border: none;
     border-right: 1px solid {scheme.border}; border-bottom: 1px solid {scheme.border};

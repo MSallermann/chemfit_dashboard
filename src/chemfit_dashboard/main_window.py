@@ -1511,6 +1511,7 @@ class MainWindow(QMainWindow):
             merged.update({record.id: record for record in records})
             records = list(merged.values())
         self.file_model.set_records(records)
+        self.extraction.clear_collection_sort()
         count = len(self.file_model.records)
         self.file_count.setText(f"{count} file{'s' if count != 1 else ''}")
         self.ascending_order_button.setEnabled(count > 1)
@@ -2486,6 +2487,7 @@ class MainWindow(QMainWindow):
         if not records:
             self.statusBar().showMessage("No context collection is loaded.", 3000)
             return
+        self.extraction.clear_collection_sort()
         self._order_generation += 1
         generation = self._order_generation
         cancellation = self._begin_operation("order", "loading sort values")
@@ -2563,6 +2565,7 @@ class MainWindow(QMainWindow):
         if generation != self._order_generation:
             return
         self._finish_operation("order")
+        self.extraction.clear_collection_sort()
         logger.error("Could not order context collection\n%s", details)
         self.order_status.setText("Order: filename")
         self.statusBar().showMessage("Could not order the context collection.", 5000)
@@ -2668,6 +2671,7 @@ class MainWindow(QMainWindow):
         self._cancel_operation("order")
         self._order_generation += 1
         selected_id = self._selected_record_id()
+        self.extraction.clear_collection_sort()
         self._clear_numeric_order()
         self._filename_reversed = False
         self.file_model.set_record_order(None)
@@ -2682,6 +2686,11 @@ class MainWindow(QMainWindow):
     def _set_collection_order(self, *, descending: bool) -> None:
         if len(self.file_model.records) < 2:
             return
+        # A sidebar order action supersedes a still-running Inspector or
+        # extraction sort just as it supersedes the visible header marker.
+        self._cancel_operation("order")
+        self._order_generation += 1
+        self.extraction.clear_collection_sort()
         selected_id = self._selected_record_id()
         self._order_descending = descending
         if self._numeric_order_label is not None:

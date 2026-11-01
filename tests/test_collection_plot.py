@@ -440,7 +440,9 @@ def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
     assert selected == ["one", "two", "three", "two"]
 
 
-def test_main_window_orders_collection_by_selected_numeric_value(tmp_path):
+def test_main_window_orders_collection_by_selected_numeric_value(
+    tmp_path, monkeypatch
+):
     for name in ("step_1.json", "step_2.json", "step_10.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
     source = JsonFileSource()
@@ -467,7 +469,14 @@ def test_main_window_orders_collection_by_selected_numeric_value(tmp_path):
     ]
     assert "missing placed last" in window.statusBar().currentMessage()
 
+    sort_indicator_invalidations = []
+    monkeypatch.setattr(
+        window.extraction,
+        "clear_collection_sort",
+        lambda: sort_indicator_invalidations.append(True),
+    )
     window.reverse_order_button.click()
+    assert len(sort_indicator_invalidations) == 1
     assert [record.name for record in window.file_model.records] == [
         "step_1.json",
         "step_10.json",
@@ -476,6 +485,7 @@ def test_main_window_orders_collection_by_selected_numeric_value(tmp_path):
     assert window.order_status.text().endswith("↓")
 
     window.reset_order_button.click()
+    assert len(sort_indicator_invalidations) == 2
     assert [record.name for record in window.file_model.records] == [
         "step_1.json",
         "step_2.json",
