@@ -1,3 +1,12 @@
+"""
+Context discovery, JSON loading, and indexed document access.
+
+``JsonFileSource`` discovers immediate JSON files, materializes GIO-backed
+remote locations, and owns a bounded thread-safe document cache.
+``ContextDocument`` interprets ChemFit's serialized context hierarchy and is
+the data boundary consumed by every feature.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -38,6 +47,8 @@ class ContextSourceError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class RecordRef:
+    """Stable identity and file metadata for one discoverable evaluation."""
+
     id: str
     name: str
     path: Path
@@ -59,6 +70,8 @@ class _InflightDocument:
 
 @dataclass(frozen=True, slots=True)
 class NodeInfo:
+    """Small immutable summary used by lazy hierarchy models."""
+
     path: NodePath
     label: str
     kind: str
@@ -74,6 +87,8 @@ class NodeInfo:
 
 @dataclass(frozen=True, slots=True)
 class NodeDetails:
+    """Full, non-child data exposed for one indexed context node."""
+
     info: NodeInfo
     fields: Mapping[str, Any]
     metadata: Mapping[str, Any]
@@ -88,7 +103,13 @@ class _NodeRecord:
 
 
 class ContextDocument:
-    """One parsed JSON document with an immutable context-node index."""
+    """
+    One parsed JSON document with an immutable context-node index.
+
+    The document owns decoded JSON, structural node/child indexes, a small
+    thread-safe LRU of computed ``NodeDetails``, and the mutable presentation
+    label key. It does not own its source cache and remains valid after eviction.
+    """
 
     def __init__(
         self,
@@ -387,7 +408,14 @@ class ContextSource(ABC):
 
 
 class JsonFileSource(ContextSource):
-    """JSON context source with a stat-aware, bounded LRU document cache."""
+    """
+    JSON context source with a stat-aware, bounded LRU document cache.
+
+    The source may be called concurrently by several Qt workers. In-flight load
+    records ensure only one thread parses a given file signature; waiters reuse
+    its document or receive the same source error. Cache capacity and estimated
+    memory are independent limits, and callers may retain evicted documents.
+    """
 
     def __init__(
         self,
@@ -522,7 +550,8 @@ class JsonFileSource(ContextSource):
             raise ContextSourceError(message)
         return destination
 
-    def load(self, record: RecordRef) -> ContextDocument:  # noqa: PLR0912
+    def load(self, record: RecordRef) -> ContextDocument:  # noqa: PLR0912, PLR0915
+        """Load one record, deduplicating concurrent work by file signature."""
         try:
             stat = record.path.stat()
         except OSError as exc:

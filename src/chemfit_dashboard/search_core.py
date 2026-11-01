@@ -1,8 +1,19 @@
+"""
+Qt-independent indexing, matching, ranking, and caching for context search.
+
+``ContextSearchIndex`` turns one indexed :class:`ContextDocument` into bounded
+search entries. ``ContextSearchCache`` retains recently used document indexes
+for current-evaluation searches, while :mod:`process_search` owns its separate
+worker-process caches for collection-wide searches.
+"""
+
 from __future__ import annotations
 
 import heapq
 import re
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
@@ -50,7 +61,13 @@ class SearchHit:
 
 
 class ContextSearchIndex:
-    """Bounded fuzzy-search index for one context document."""
+    """
+    Bounded, document-independent search entries for one evaluation.
+
+    Construction snapshots labels and nested field previews but deliberately
+    does not retain ``ContextDocument``. Index depth, list width, and total entry
+    limits cap memory and worst-case query time.
+    """
 
     def __init__(
         self,
@@ -133,6 +150,76 @@ class ContextSearchIndex:
                     )
                 )
         return rank_search_hits(matches, limit)
+
+
+class ContextSearchCache:
+    """
+    Thread-safe, stat-aware LRU of indexes for interactive local search.
+
+    Indexes do not retain their source ``ContextDocument``. The cache key
+    includes the file signature and component-label setting because either can
+    change searchable breadcrumbs. Capacity is deliberately entry-based: each
+    individual index is already bounded by ``MAX_INDEX_ENTRIES``.
+    """
+
+    def __init__(self, capacity: int = 32) -> None:
+        """Create an LRU retaining at most ``capacity`` document indexes."""
+        if capacity < 0:
+            message = "Search cache capacity cannot be negative"
+            raise ValueError(message)
+        self.capacity = capacity
+        self._indexes: OrderedDict[
+            str, tuple[tuple[int, int, str], ContextSearchIndex]
+        ] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def clear(self) -> None:
+        """Discard all cached indexes, for example after a label-setting change."""
+        with self._lock:
+            self._indexes.clear()
+
+    def index_for(
+        self,
+        document: ContextDocument,
+        *,
+        cooperative: bool = False,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ContextSearchIndex:
+        """Return a current index, rebuilding outside the lock when necessary."""
+        try:
+            stat = document.record.path.stat()
+            file_signature = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            file_signature = (0, document.record.size)
+        signature = (
+            file_signature[0],
+            file_signature[1],
+            document.component_label_metadata_key,
+        )
+        record_id = document.record.id
+        with self._lock:
+            cached = self._indexes.get(record_id)
+            if cached is not None and cached[0] == signature:
+                self._indexes.move_to_end(record_id)
+                return cached[1]
+
+        # Building can be expensive and cooperatively yield. Do not hold the
+        # cache lock while another worker could be reading a different index.
+        index = ContextSearchIndex(
+            document,
+            cooperative=cooperative,
+            cancelled=cancelled,
+        )
+        if cancelled is not None and cancelled():
+            return index
+        if self.capacity == 0:
+            return index
+        with self._lock:
+            self._indexes[record_id] = (signature, index)
+            self._indexes.move_to_end(record_id)
+            while len(self._indexes) > self.capacity:
+                self._indexes.popitem(last=False)
+        return index
 
 
 def _rank_key(hit: SearchHit) -> tuple[Any, ...]:

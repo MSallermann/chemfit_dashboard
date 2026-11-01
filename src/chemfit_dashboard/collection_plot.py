@@ -1,3 +1,11 @@
+"""
+Collection-series construction and interactive Qt chart presentation.
+
+Selectors identify numeric leaves semantically across evaluations. The pure
+series builders resolve those selectors; ``CollectionPlotPanel`` renders line,
+histogram, and statistics modes and emits record-selection requests.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -114,6 +122,8 @@ class NumberSelector:
 
 @dataclass(frozen=True, slots=True)
 class SeriesPoint:
+    """One available numeric value and its original collection position."""
+
     index: int
     label: str
     value: float
@@ -122,6 +132,8 @@ class SeriesPoint:
 
 @dataclass(frozen=True, slots=True)
 class CollectionSeries:
+    """Resolved values and missing-value context for one numeric selector."""
+
     selector: NumberSelector
     labels: tuple[str, ...]
     points: tuple[SeriesPoint, ...]
@@ -129,6 +141,7 @@ class CollectionSeries:
 
     @property
     def missing_count(self) -> int:
+        """Return evaluations for which the selector had no numeric value."""
         return len(self.labels) - len(self.points)
 
 
@@ -202,7 +215,13 @@ def build_collection_series_multi(
 
 
 class CollectionPlotPanel(QWidget):
-    """Interactive multi-series chart across loaded evaluations."""
+    """
+    Interactive multi-series chart across loaded evaluations.
+
+    The panel owns resolved immutable series, visibility/color choices, plot
+    mode, and the selected-record marker. MainWindow remains responsible for
+    loading series and translating point clicks into document navigation.
+    """
 
     context_selected = Signal(str)
     point_selected = Signal(str, object)
@@ -343,6 +362,7 @@ class CollectionPlotPanel(QWidget):
     def show_loading(
         self, selectors: NumberSelector | tuple[NumberSelector, ...], count: int
     ) -> None:
+        """Present a loading state without discarding the active selectors."""
         selected = (selectors,) if isinstance(selectors, NumberSelector) else selectors
         description = (
             selected[0].label if len(selected) == 1 else f"{len(selected)} values"
@@ -352,9 +372,11 @@ class CollectionPlotPanel(QWidget):
         self._set_empty_chart("Values across context collection")
 
     def set_series(self, data: CollectionSeries) -> None:
+        """Replace the plot with one resolved collection series."""
         self.set_series_collection((data,))
 
     def set_series_collection(self, data: tuple[CollectionSeries, ...]) -> None:
+        """Install resolved series and rebuild the active visualization mode."""
         self._data = data
         available = {series.selector for series in data}
         self._hidden_selectors.intersection_update(available)
@@ -567,6 +589,7 @@ class CollectionPlotPanel(QWidget):
         )
 
     def show_error(self, message: str) -> None:
+        """Clear rendered chart data and show a user-facing load error."""
         self.status.setText(message)
 
     def clear(self) -> None:

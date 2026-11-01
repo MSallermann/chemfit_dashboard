@@ -1,3 +1,11 @@
+"""
+Qt presentation for context-search results.
+
+Search indexing and ranking live in :mod:`search_core`; this module owns result
+tables, match highlighting, clipboard actions, and navigation signals. Core
+search names are re-exported for compatibility with earlier callers.
+"""
+
 from __future__ import annotations
 
 import json
@@ -48,7 +56,13 @@ HIT_ROLE = Qt.ItemDataRole.UserRole.value
 
 
 class ContextSearchPanel(QWidget):
-    """Globally ranked search results with contextual hierarchy labels."""
+    """
+    Globally ranked search results with contextual hierarchy labels.
+
+    The panel may search one installed index directly, but collection-wide work
+    is coordinated by MainWindow. It stores rendered ``SearchHit`` objects and
+    emits the selected hit without loading or mutating documents.
+    """
 
     hit_selected = Signal(object)
     copy_completed = Signal(str)
@@ -106,6 +120,7 @@ class ContextSearchPanel(QWidget):
         layout.addWidget(self.results, 1)
 
     def set_index(self, index: ContextSearchIndex | None) -> None:
+        """Set the current-evaluation index used by direct panel searches."""
         self._index = index
         self.results.clear()
         self.status.setText(
@@ -129,6 +144,7 @@ class ContextSearchPanel(QWidget):
         self.status.setText(text)
 
     def show_message(self, text: str) -> None:
+        """Clear stale hits and display an informational or error state."""
         self.results.clear()
         self.status.setText(text)
 
@@ -142,6 +158,7 @@ class ContextSearchPanel(QWidget):
         include_components: bool = True,
         mode: SearchMode = "fuzzy",
     ) -> None:
+        """Search the installed index and render ranked hits synchronously."""
         self.results.clear()
         if self._index is None:
             self.status.setText("Select an evaluation to search its fields.")

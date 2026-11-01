@@ -1,3 +1,5 @@
+"""Command-line parsing for launching the optional Qt dashboard."""
+
 from __future__ import annotations
 
 import argparse

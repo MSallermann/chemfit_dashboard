@@ -1,3 +1,11 @@
+"""
+Minimal Qt thread-pool adapter for non-GUI callables.
+
+``TaskRunner`` executes a callable on Qt's global pool and always delivers its
+success or traceback callback on the owning GUI thread. Running tasks require
+their own cooperative cancellation token.
+"""
+
 from __future__ import annotations
 
 import traceback
@@ -11,11 +19,15 @@ if TYPE_CHECKING:
 
 
 class _TaskSignals(QObject):
+    """Marshal worker completion back to the owning Qt thread."""
+
     succeeded = Signal(object)
     failed = Signal(str)
 
 
 class _Task(QRunnable):
+    """Execute one callable and convert failures to printable tracebacks."""
+
     def __init__(self, function: Callable[[], Any]):
         """Store one function for execution on a worker thread."""
         super().__init__()

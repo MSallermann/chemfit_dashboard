@@ -1,3 +1,11 @@
+"""
+Portable process-pool orchestration for whole-collection search.
+
+Workers load documents and build bounded local indexes without importing Qt.
+The coordinator limits in-flight chunks, merges deterministic top results, and
+honors cooperative cancellation between process futures.
+"""
+
 from __future__ import annotations
 
 import math
@@ -76,6 +84,8 @@ class CollectionSearchResult:
 
 @dataclass(slots=True)
 class _WorkerState:
+    """Caches owned independently by each persistent spawned worker process."""
+
     source: JsonFileSource | None = None
     indexes: OrderedDict[
         tuple[str, int, int, str], ContextSearchIndex

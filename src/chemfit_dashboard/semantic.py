@@ -1,3 +1,11 @@
+"""
+Semantic component identities shared by plotting and extraction.
+
+Structural integer paths may differ between evaluations. ``NodeTrail`` records
+declared names, occurrences, and indexes so a selection can resolve to the same
+logical component in another document, including partial/missing paths.
+"""
+
 from __future__ import annotations
 
 from collections import defaultdict

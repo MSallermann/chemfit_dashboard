@@ -1,3 +1,11 @@
+"""
+Build a presentation-independent data-flow graph from ChemFit structure data.
+
+``build_data_flow`` interprets ``chemfit.structure`` declarations for one
+context level and produces immutable nodes and edges consumed by graph layout
+and the Qt graphics view.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

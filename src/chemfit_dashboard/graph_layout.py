@@ -1,3 +1,10 @@
+"""
+Deterministic, Qt-independent layout for declared data-flow graphs.
+
+``data_flow_layout`` assigns left-to-right ranks and cubic edge routes. It may
+run on a worker thread and accepts a cooperative cancellation callback.
+"""
+
 from __future__ import annotations
 
 from collections import defaultdict, deque
@@ -13,6 +20,8 @@ LayoutId: TypeAlias = Hashable
 
 @dataclass(frozen=True, slots=True)
 class RoutedEdge:
+    """One graph edge with cubic-path control points."""
+
     source: LayoutId
     target: LayoutId
     kind: str
@@ -21,6 +30,8 @@ class RoutedEdge:
 
 @dataclass(frozen=True, slots=True)
 class GraphLayout:
+    """Node positions and edge routes produced without Qt scene objects."""
+
     positions: Mapping[LayoutId, tuple[float, float]]
     edges: tuple[RoutedEdge, ...]
 

@@ -1,3 +1,11 @@
+"""
+Interactive Qt graphics view for declared ChemFit data flow.
+
+``DataFlowView`` coordinates graph construction, background layout, batched
+scene rendering, zoom, and selection. ``DataFlowPanel`` adds breadcrumbs and
+level navigation and synchronizes selections with MainWindow.
+"""
+
 from __future__ import annotations
 
 import math
@@ -49,6 +57,8 @@ MAX_FLOW_COMPONENTS = 5_000
 
 
 class _FlowNodeItem(QGraphicsPathItem):
+    """Single painted scene item used to keep large graphs lightweight."""
+
     def __init__(
         self,
         shape: QPainterPath,
@@ -113,7 +123,13 @@ class _FlowNodeItem(QGraphicsPathItem):
 
 
 class DataFlowView(QGraphicsView):
-    """Interactive canvas for one declared structural data-flow level."""
+    """
+    Interactive canvas for one declared structural data-flow level.
+
+    The view owns graph navigation, scene items, render generations, and its
+    layout task. Layout results are accepted only for the same generation and
+    document; all graphics-item creation remains on the GUI thread.
+    """
 
     node_selected = Signal(object)
     navigate_requested = Signal(object)
@@ -285,6 +301,7 @@ class DataFlowView(QGraphicsView):
         self._tasks.cancel_pending()
 
     def _render_current(self) -> None:
+        """Build the current graph and schedule expensive layout when needed."""
         document = self._document
         if document is None:
             return
@@ -321,6 +338,9 @@ class DataFlowView(QGraphicsView):
             return
         edge_pairs = tuple((edge.source, edge.target) for edge in graph.edges)
         if len(graph.nodes) >= BACKGROUND_LAYOUT_THRESHOLD:
+            # Layout is pure Python and can be cancelled. Scene construction is
+            # kept in the GUI-thread callback because Qt graphics items are not
+            # safe to create in the worker.
             cancellation = CancellationToken()
             self._layout_cancellation = cancellation
             self._show_message(f"Laying out {len(graph.nodes):,} flow nodes…")
@@ -403,6 +423,8 @@ class DataFlowView(QGraphicsView):
             message.setBrush(QColor(self._scheme.muted))
             message.setPos(0, -30)
         if len(graph.nodes) >= INCREMENTAL_RENDER_THRESHOLD:
+            # Yield between batches so painting and input events continue while
+            # thousands of Qt graphics items are being allocated.
             self._continue_node_render(graph, layout, 0, render_generation)
             return
         self._add_node_range(graph, layout, 0, len(graph.nodes))

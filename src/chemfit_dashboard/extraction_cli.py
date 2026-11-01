@@ -1,3 +1,5 @@
+"""Headless CLI for applying saved extraction configurations to collections."""
+
 from __future__ import annotations
 
 import argparse

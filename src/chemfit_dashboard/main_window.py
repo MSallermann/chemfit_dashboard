@@ -1,11 +1,18 @@
+"""
+Top-level Qt window and cross-feature application coordination.
+
+``MainWindow`` assembles feature panels and translates user actions into
+document loads, navigation, search, plotting, analysis, and extraction work.
+Feature-specific data processing lives in the corresponding modules; this
+module owns collection/session state and synchronization between views.
+"""
+
 from __future__ import annotations
 
 import logging
 import math
 import re
-import threading
 import time
-from collections import OrderedDict
 from contextlib import suppress
 from itertools import islice
 from pathlib import Path
@@ -51,7 +58,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -63,6 +69,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.activity import ActivityStatus
 from chemfit_dashboard.appearance import (
     COLOR_SCHEME_SETTING,
     COLOR_SCHEMES,
@@ -93,7 +100,6 @@ from chemfit_dashboard.collection_plot import (
 )
 from chemfit_dashboard.context_search import (
     MAX_RESULTS,
-    ContextSearchIndex,
     ContextSearchPanel,
     SearchHit,
     SearchMode,
@@ -116,6 +122,7 @@ from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.models import ContextTreeModel, EvaluationListModel
 from chemfit_dashboard.process_search import CollectionSearchExecutor, SearchOptions
+from chemfit_dashboard.search_core import ContextSearchCache, ContextSearchIndex
 from chemfit_dashboard.semantic import (
     NodeTrail,
     component_trail_for_path,
@@ -172,6 +179,19 @@ def _report_search_progress(
 
 
 class MainWindow(QMainWindow):
+    """
+    Coordinate one open collection and the dashboard's feature panels.
+
+    The window owns the current record/document, collection ordering, selection
+    history, and generation counters for asynchronous requests. Individual
+    widgets own presentation state; ``ActivityStatus`` owns operation tokens
+    and progress; ``ContextSource`` owns document caching.
+
+    Every background callback compares its captured generation with the current
+    feature generation before changing widgets. This is the central invariant
+    that prevents a slow result for an old selection from replacing newer UI.
+    """
+
     operation_progress = Signal(str, int, int)
 
     def __init__(  # noqa: PLR0915
@@ -187,6 +207,9 @@ class MainWindow(QMainWindow):
         self.source = source or JsonFileSource()
         self.tasks = TaskRunner(self)
         self.collection_search = CollectionSearchExecutor()
+        # Generations invalidate results without unsafe thread termination.
+        # Cancellation reduces wasted work; the generation check remains
+        # necessary because already-running tasks can still complete.
         self._collection_generation = 0
         self._load_generation = 0
         self._plot_generation = 0
@@ -194,12 +217,7 @@ class MainWindow(QMainWindow):
         self._search_generation = 0
         self._analysis_generation = 0
         self._extraction_generation = 0
-        self._search_index_cache: OrderedDict[
-            str, tuple[tuple[int, int], ContextSearchIndex]
-        ] = OrderedDict()
-        self._search_index_capacity = 32
-        self._search_index_lock = threading.Lock()
-        self._operation_tokens: dict[str, CancellationToken] = {}
+        self.search_indexes = ContextSearchCache(capacity=32)
         self._pending_search_hit: SearchHit | None = None
         self._pending_failure: FailureOccurrence | None = None
         self._pending_plot_selection: tuple[str, NumberSelector] | None = None
@@ -228,9 +246,6 @@ class MainWindow(QMainWindow):
         self._density = "comfortable"
         self._base_font: QFont | None = None
         self._base_stylesheet = ""
-        self._operation_labels: dict[str, str] = {}
-        self._operation_progress: dict[str, tuple[int, int] | None] = {}
-        self._active_progress_name: str | None = None
         self._expanded_data_flow_dialog: QDialog | None = None
         self._data_flow_placeholder: QWidget | None = None
         self._data_flow_tab_index = 1
@@ -427,35 +442,18 @@ class MainWindow(QMainWindow):
         self.main_workspace.setSizes([275, 1185])
         outer.addWidget(self.main_workspace, 1)
         self.setCentralWidget(container)
-        self.activity_toggle = QToolButton()
-        self.activity_toggle.setCheckable(True)
-        self.activity_toggle.setAutoRaise(True)
-        self.activity_toggle.setText("\N{BLACK UP-POINTING TRIANGLE}")
-        self.activity_toggle.setToolTip("Show all background operations")
-        self.activity_toggle.toggled.connect(self._toggle_activity_panel)
-        self.activity_toggle.hide()
-        self.statusBar().addPermanentWidget(self.activity_toggle)
-        self.activity_status = QLabel()
-        self.activity_status.setObjectName("activityStatus")
-        self.statusBar().addPermanentWidget(self.activity_status)
-        self.activity_progress = QProgressBar()
-        self.activity_progress.setFixedWidth(150)
-        self.activity_progress.setTextVisible(True)
-        self.activity_progress.hide()
-        self.statusBar().addPermanentWidget(self.activity_progress)
-        self.activity_panel = QFrame(self)
-        self.activity_panel.setObjectName("activityPanel")
-        self.activity_panel.setFrameShape(QFrame.Shape.StyledPanel)
-        self.activity_panel_layout = QVBoxLayout(self.activity_panel)
-        self.activity_panel_layout.setContentsMargins(10, 8, 10, 8)
-        self.activity_panel_layout.setSpacing(6)
-        activity_heading = QLabel("BACKGROUND OPERATIONS")
-        activity_heading.setObjectName("sectionLabel")
-        self.activity_panel_layout.addWidget(activity_heading)
-        self._activity_rows: dict[
-            str, tuple[QWidget, QLabel, QProgressBar]
-        ] = {}
-        self.activity_panel.hide()
+        self.activity = ActivityStatus(self)
+        # Compatibility handles for code that customizes the established
+        # MainWindow widgets. Mutable state itself is owned by ActivityStatus.
+        self.activity_toggle = self.activity.toggle
+        self.activity_status = self.activity.status
+        self.activity_progress = self.activity.progress
+        self.activity_panel = self.activity.panel
+        self.activity_panel_layout = self.activity.panel_layout
+        self._activity_rows = self.activity.rows
+        self._operation_tokens = self.activity.tokens
+        self._operation_labels = self.activity.labels
+        self._operation_progress = self.activity.progress_values
         self._show_status("Ready")
 
     def _build_evaluation_panel(self) -> QWidget:  # noqa: PLR0915
@@ -952,173 +950,42 @@ class MainWindow(QMainWindow):
         self._settings.sync()
 
     def _new_operation(self, name: str) -> CancellationToken:
-        previous = self._operation_tokens.get(name)
-        if previous is not None:
-            previous.cancel()
-        token = CancellationToken()
-        self._operation_tokens[name] = token
-        return token
+        """Compatibility entry point for creating a named cancellation token."""
+        return self.activity.new_token(name)
 
     def _begin_operation(
         self, name: str, label: str, *, display_delay_ms: int = 0
     ) -> CancellationToken:
-        token = self._new_operation(name)
-        self._operation_progress[name] = None
-        if display_delay_ms > 0 and name not in self._operation_labels:
-            QTimer.singleShot(
-                display_delay_ms,
-                lambda: self._show_delayed_operation(name, label, token),
-            )
-            return token
-        self._show_delayed_operation(name, label, token)
-        return token
+        return self.activity.begin(
+            name, label, display_delay_ms=display_delay_ms
+        )
 
     def _show_delayed_operation(
         self, name: str, label: str, token: CancellationToken
     ) -> None:
-        """Reveal an operation only if the same work is still active."""
-        if self._operation_tokens.get(name) is not token:
-            return
-        self._operation_labels[name] = label
-        self._active_progress_name = name
-        self._update_activity_status()
-        self._show_status(f"Started: {label}")
+        """Compatibility entry point for delayed activity callbacks."""
+        self.activity.show_if_current(name, label, token)
 
     def _finish_operation(self, name: str, message: str | None = None) -> None:
-        self._operation_labels.pop(name, None)
-        self._operation_progress.pop(name, None)
-        self._operation_tokens.pop(name, None)
-        if self._active_progress_name == name:
-            self._active_progress_name = next(
-                reversed(self._operation_labels), None
-            )
-        self._update_activity_status()
-        if message:
-            self._show_status(message, 4000)
-
-    def _update_activity_status(self) -> None:
-        if not hasattr(self, "activity_status"):
-            return
-        labels = tuple(self._operation_labels.values())
-        active_name = self._active_progress_name
-        if active_name not in self._operation_labels:
-            active_name = next(reversed(self._operation_labels), None)
-            self._active_progress_name = active_name
-        activity_text = ""
-        if labels and active_name is not None:
-            activity_text = f"● Working: {self._operation_labels[active_name]}"
-            if len(labels) > 1:
-                activity_text += f" (+{len(labels) - 1})"
-        self.activity_status.setText(activity_text)
-        has_operations = bool(labels)
-        self.activity_toggle.setVisible(has_operations)
-        self.activity_progress.setVisible(has_operations)
-        if active_name is not None:
-            progress = self._operation_progress.get(active_name)
-            if progress is None:
-                self.activity_progress.setRange(0, 0)
-                self.activity_progress.setFormat("")
-            else:
-                value, total = progress
-                self.activity_progress.setRange(0, max(1, total))
-                self.activity_progress.setValue(value)
-                self.activity_progress.setFormat("%p%")
-        if not has_operations:
-            self._rebuild_activity_panel()
-            self.activity_panel.hide()
-        elif self.activity_toggle.isChecked():
-            self._rebuild_activity_panel()
-            if not self.activity_panel.isVisible():
-                self._position_activity_panel()
-                self.activity_panel.show()
-                self.activity_panel.raise_()
+        self.activity.finish(name, message)
 
     def _operation_progressed(self, name: str, value: int, total: int) -> None:
-        if name not in self._operation_labels:
-            return
-        self._operation_progress[name] = (value, max(1, total))
-        self._active_progress_name = name
-        self._update_activity_status()
+        self.activity.set_progress(name, value, total)
 
     def _toggle_activity_panel(self, expanded: bool) -> None:
-        self.activity_toggle.setText(
-            "\N{BLACK DOWN-POINTING TRIANGLE}"
-            if expanded
-            else "\N{BLACK UP-POINTING TRIANGLE}"
-        )
-        if expanded and self._operation_labels:
-            self._rebuild_activity_panel()
-            self._position_activity_panel()
-            self.activity_panel.show()
-            self.activity_panel.raise_()
-        else:
-            self.activity_panel.hide()
+        self.activity.set_expanded(expanded)
 
     def _rebuild_activity_panel(self) -> None:
-        if not hasattr(self, "activity_panel_layout"):
-            return
-        structure_changed = False
-        for name in tuple(self._activity_rows):
-            if name in self._operation_labels:
-                continue
-            row, _label, _progress_bar = self._activity_rows.pop(name)
-            self.activity_panel_layout.removeWidget(row)
-            row.deleteLater()
-            structure_changed = True
-        for name, label in self._operation_labels.items():
-            widgets = self._activity_rows.get(name)
-            if widgets is None:
-                row = QWidget(self.activity_panel)
-                layout = QHBoxLayout(row)
-                layout.setContentsMargins(0, 0, 0, 0)
-                operation_label = QLabel()
-                layout.addWidget(operation_label, 1)
-                progress_bar = QProgressBar()
-                progress_bar.setFixedWidth(180)
-                layout.addWidget(progress_bar)
-                self.activity_panel_layout.addWidget(row)
-                widgets = (row, operation_label, progress_bar)
-                self._activity_rows[name] = widgets
-                structure_changed = True
-            _row, operation_label, progress_bar = widgets
-            operation_label.setText(label)
-            progress = self._operation_progress.get(name)
-            if progress is None:
-                progress_bar.setRange(0, 0)
-                progress_bar.setFormat("")
-            else:
-                value, total = progress
-                progress_bar.setRange(0, max(1, total))
-                progress_bar.setValue(value)
-                progress_bar.setFormat(f"{value:,}/{total:,}  %p%")
-        if structure_changed:
-            self.activity_panel.setFixedWidth(min(520, max(360, self.width() // 3)))
-            self.activity_panel.adjustSize()
-        if structure_changed and self.activity_panel.isVisible():
-            self._position_activity_panel()
+        self.activity.refresh_panel()
 
     def _position_activity_panel(self) -> None:
-        if not hasattr(self, "activity_panel"):
-            return
-        status_geometry = self.statusBar().geometry()
-        x = max(8, self.width() - self.activity_panel.width() - 8)
-        y = max(8, status_geometry.top() - self.activity_panel.height() - 4)
-        self.activity_panel.move(x, y)
+        self.activity.position_panel()
 
     def _show_status(self, message: str, timeout: int = 0) -> None:
-        self.statusBar().showMessage(message, timeout)
+        self.activity.show_message(message, timeout)
 
     def _cancel_operation(self, name: str) -> None:
-        token = self._operation_tokens.get(name)
-        if token is not None:
-            token.cancel()
-        self._operation_labels.pop(name, None)
-        self._operation_progress.pop(name, None)
-        if self._active_progress_name == name:
-            self._active_progress_name = next(
-                reversed(self._operation_labels), None
-            )
-        self._update_activity_status()
+        self.activity.cancel(name)
 
     def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
         super().resizeEvent(event)
@@ -1129,8 +996,7 @@ class MainWindow(QMainWindow):
         self._save_session_state()
         self._restore_data_flow_panel()
         self._restore_plot_panel()
-        for token in self._operation_tokens.values():
-            token.cancel()
+        self.activity.cancel_all()
         self.graph.view.cancel_pending_layout()
         self.tasks.cancel_pending()
         self.collection_search.shutdown(wait_for_workers=False)
@@ -1230,8 +1096,7 @@ class MainWindow(QMainWindow):
         self.source.set_component_label_metadata_key(key)
         self._settings.setValue(COMPONENT_LABEL_METADATA_KEY_SETTING, key)
         self._settings.sync()
-        with self._search_index_lock:
-            self._search_index_cache.clear()
+        self.search_indexes.clear()
 
         document = self._current_document
         if document is not None:
@@ -1526,15 +1391,9 @@ class MainWindow(QMainWindow):
             return
         self._restore_data_flow_panel()
         self._restore_plot_panel()
-        for token in self._operation_tokens.values():
-            token.cancel()
+        self.activity.clear()
         self.tasks.cancel_pending()
         self.graph.view.cancel_pending_layout()
-        self._operation_tokens.clear()
-        self._operation_labels.clear()
-        self._operation_progress.clear()
-        self._active_progress_name = None
-        self._update_activity_status()
         self._collection_generation += 1
         self._load_generation += 1
         self._plot_generation += 1
@@ -1556,8 +1415,7 @@ class MainWindow(QMainWindow):
         self._filename_reversed = False
         self._active_plot_selector = None
         self._active_plot_selectors = []
-        with self._search_index_lock:
-            self._search_index_cache.clear()
+        self.search_indexes.clear()
         clear_search_caches()
         clear_source_cache = getattr(self.source, "clear_cache", None)
         if callable(clear_source_cache):
@@ -1592,6 +1450,7 @@ class MainWindow(QMainWindow):
     def add_locations(
         self, locations: Sequence[str | Path], *, append: bool = False
     ) -> None:
+        """Discover locations off-thread and replace or extend the collection."""
         locations = [
             (
                 str(location)
@@ -1730,7 +1589,10 @@ class MainWindow(QMainWindow):
     def _document_loaded(  # noqa: PLR0912, PLR0915
         self, generation: int, document: ContextDocument
     ) -> None:
+        """Install a loaded document only if it is still the selected request."""
         if generation != self._load_generation:
+            # A previous record load completed after another selection. The
+            # source cache may keep its useful document, but the UI must not.
             return
         self._finish_operation("document")
         document.set_component_label_metadata_key(self._component_label_metadata_key)
@@ -1789,6 +1651,9 @@ class MainWindow(QMainWindow):
                 f"below {available_label} (selection retained)",
                 5000,
             )
+        # Search, analysis, and plot views select the target record first. Their
+        # node/value focus is deliberately deferred until that record's document
+        # is installed, otherwise it would address the previous document.
         has_pending_navigation = (
             (
                 self._pending_search_hit is not None
@@ -2083,6 +1948,7 @@ class MainWindow(QMainWindow):
             self._update_navigation_actions()
 
     def _select_context_path(self, path: NodePath, *, remember: bool) -> bool:
+        """Synchronize tree, inspector, and Data Flow on one document path."""
         if self._current_document is None:
             return False
         tree_index = self.tree_model.index_for_path(path)
@@ -2427,29 +2293,12 @@ class MainWindow(QMainWindow):
         cooperative: bool = False,
         cancelled: Callable[[], bool] | None = None,
     ) -> ContextSearchIndex:
-        try:
-            stat = document.record.path.stat()
-            signature = (stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            signature = (0, document.record.size)
-        with self._search_index_lock:
-            cached = self._search_index_cache.get(document.record.id)
-            if cached is not None and cached[0] == signature:
-                self._search_index_cache.move_to_end(document.record.id)
-                return cached[1]
-        index = ContextSearchIndex(
+        """Return the cached local index used for current-evaluation search."""
+        return self.search_indexes.index_for(
             document,
             cooperative=cooperative,
             cancelled=cancelled,
         )
-        if cancelled is not None and cancelled():
-            return index
-        with self._search_index_lock:
-            self._search_index_cache[document.record.id] = (signature, index)
-            self._search_index_cache.move_to_end(document.record.id)
-            while len(self._search_index_cache) > self._search_index_capacity:
-                self._search_index_cache.popitem(last=False)
-        return index
 
     def _search_loaded(
         self,
@@ -2464,6 +2313,7 @@ class MainWindow(QMainWindow):
         scope_label: str,
         searched_records: int,
     ) -> None:
+        """Publish search results only while query and collection are current."""
         if generation != self._search_generation:
             return
         self._finish_operation("search", "Finished searching collection")

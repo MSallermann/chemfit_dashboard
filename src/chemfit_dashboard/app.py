@@ -1,3 +1,10 @@
+"""
+Qt application bootstrap and process-signal integration.
+
+``run`` creates the application and main window, restores the saved session,
+and keeps Python signal handling responsive while Qt owns the event loop.
+"""
+
 from __future__ import annotations
 
 import signal

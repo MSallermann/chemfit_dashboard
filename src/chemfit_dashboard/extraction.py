@@ -1,3 +1,11 @@
+"""
+Reusable field extraction, configuration persistence, and streaming exports.
+
+Semantic ``FieldSelector`` objects resolve across differing evaluations while
+preserving explicit missing/skipped/failure statuses. This module contains no
+Qt code and is shared by the dashboard and the headless extraction CLI.
+"""
+
 from __future__ import annotations
 
 # ruff: noqa: EM101, EM102, PLR0911
@@ -35,6 +43,8 @@ _MISSING = object()
 
 
 class ExtractionStatus(str, Enum):
+    """Reason an extracted value is available, absent, or unusable."""
+
     AVAILABLE = "available"
     EXPLICIT_NULL = "explicit_null"
     MISSING_COMPONENT = "missing_component"
@@ -61,6 +71,7 @@ class FieldSelector:
 
     @property
     def path_label(self) -> str:
+        """Return a human-readable semantic component and JSON path."""
         component = (
             "Evaluation root"
             if not self.node_trail
@@ -73,12 +84,16 @@ class FieldSelector:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionValue:
+    """Extracted payload paired with its explicit availability status."""
+
     value: Any
     status: ExtractionStatus
 
 
 @dataclass(frozen=True, slots=True)
 class ExtractionRow:
+    """Values extracted from one evaluation in source collection order."""
+
     index: int
     record_id: str
     filename: str
@@ -87,12 +102,15 @@ class ExtractionRow:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionConfig:
+    """Persistent extraction selectors and export-column options."""
+
     selectors: tuple[FieldSelector, ...]
     include_identifiers: bool = True
     include_status_columns: bool = True
     version: int = CONFIG_VERSION
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the stable public configuration representation."""
         return {
             "version": self.version,
             "include_identifiers": self.include_identifiers,
@@ -102,6 +120,7 @@ class ExtractionConfig:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ExtractionConfig:
+        """Validate and construct a configuration from decoded JSON."""
         version = value.get("version")
         if version != CONFIG_VERSION:
             message = f"Unsupported extraction configuration version: {version!r}"

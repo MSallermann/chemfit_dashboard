@@ -16,6 +16,7 @@ from chemfit_dashboard.context_search import (
     TopKSearchHits,
     rank_search_hits,
 )
+from chemfit_dashboard.search_core import ContextSearchCache
 from chemfit_dashboard.source import JsonFileSource
 
 
@@ -317,6 +318,26 @@ def test_search_index_does_not_retain_document(chemfit_json_path):
 
     assert reference() is None
     assert index.search("output")
+
+
+def test_search_index_cache_reuses_current_signature_and_label(chemfit_document):
+    cache = ContextSearchCache(capacity=2)
+
+    first = cache.index_for(chemfit_document)
+    reused = cache.index_for(chemfit_document)
+    chemfit_document.set_component_label_metadata_key("component_name")
+    relabeled = cache.index_for(chemfit_document)
+
+    assert reused is first
+    assert relabeled is not first
+
+
+def test_zero_capacity_search_index_cache_does_not_retain_indexes(
+    chemfit_document,
+):
+    cache = ContextSearchCache(capacity=0)
+
+    assert cache.index_for(chemfit_document) is not cache.index_for(chemfit_document)
 
 
 def test_large_background_search_cooperatively_yields(tmp_path, monkeypatch):

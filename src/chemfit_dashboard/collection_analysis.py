@@ -1,3 +1,11 @@
+"""
+Collection-wide summaries and their overview panel.
+
+``analyze_collection`` is presentation-independent and consumes documents
+incrementally. ``CollectionAnalysisPanel`` renders aggregate counts, numeric
+fields, and grouped failures and emits navigation requests back to MainWindow.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -38,6 +46,8 @@ MAX_FAILURE_TREE_ITEMS = 1_000
 
 @dataclass(frozen=True, slots=True)
 class NumericSummary:
+    """Aggregate statistics for one numeric JSON path across a collection."""
+
     path: str
     count: int
     minimum: float
@@ -47,6 +57,8 @@ class NumericSummary:
 
 @dataclass(frozen=True, slots=True)
 class FailureOccurrence:
+    """One navigable primary failure found in an evaluation."""
+
     record_id: str
     record_name: str
     node_path: NodePath
@@ -57,6 +69,8 @@ class FailureOccurrence:
 
 @dataclass(frozen=True, slots=True)
 class FailureGroup:
+    """Equivalent failures grouped for compact collection presentation."""
+
     component: str
     exception_type: str
     message: str
@@ -65,12 +79,16 @@ class FailureGroup:
 
 @dataclass(frozen=True, slots=True)
 class ComponentCount:
+    """Frequency of a skipped or missing semantic component."""
+
     component: str
     count: int
 
 
 @dataclass(frozen=True, slots=True)
 class CollectionSummary:
+    """Immutable result of one complete collection-analysis pass."""
+
     total_records: int
     readable_records: int
     successful_records: int
@@ -85,6 +103,7 @@ class CollectionSummary:
 
     @property
     def failure_occurrences(self) -> tuple[FailureOccurrence, ...]:
+        """Return grouped failures as one navigation-ready sequence."""
         return tuple(
             occurrence
             for group in self.failure_groups
@@ -310,6 +329,7 @@ class CollectionAnalysisPanel(QWidget):
         self._current_occurrence = -1
 
     def show_loading(self, count: int) -> None:
+        """Replace summary content with a collection-size loading state."""
         self.summary_label.setText(
             f"Analyzing {count:,} evaluation{'s' if count != 1 else ''} in the background…"
         )
@@ -329,6 +349,7 @@ class CollectionAnalysisPanel(QWidget):
         self.refresh_button.setEnabled(True)
 
     def show_error(self, message: str) -> None:
+        """Clear stale results and present an analysis failure."""
         self.summary_label.setText(message)
         self.refresh_button.setEnabled(True)
 
@@ -349,6 +370,7 @@ class CollectionAnalysisPanel(QWidget):
         self.refresh_button.setEnabled(True)
 
     def set_summary(self, summary: CollectionSummary) -> None:
+        """Render one immutable analysis result on the GUI thread."""
         self.refresh_button.setText("Refresh")
         self.refresh_button.setEnabled(True)
         self.summary_label.setText(

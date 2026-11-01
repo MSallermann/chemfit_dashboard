@@ -304,6 +304,9 @@ The extraction API does not require Pandas or NumPy.
 
 ## Development
 
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the runtime data flow, module map,
+state and cache ownership, background-task rules, and pointers for common changes.
+
 Install the test dependencies:
 
 ```bash

@@ -1,3 +1,11 @@
+"""
+Qt editor and bounded preview for data-extraction configurations.
+
+``DataExtractionPanel`` edits selectors and emits export or collection-sort
+requests. ``ExtractionPreviewModel`` expands only enough data for interaction;
+complete export remains the responsibility of :mod:`extraction`.
+"""
+
 from __future__ import annotations
 
 # ruff: noqa: FBT003
@@ -95,6 +103,7 @@ class ExtractionPreviewModel(QAbstractTableModel):
     def set_data(
         self, selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
     ) -> None:
+        """Replace preview rows and derive visible flattened columns."""
         self.beginResetModel()
         expanded_rows = _expanded_preview_rows(rows, selectors)
         self._rows = expanded_rows[:PREVIEW_LIMIT]
@@ -260,7 +269,13 @@ class ExtractionPreviewModel(QAbstractTableModel):
 
 
 class DataExtractionPanel(QWidget):
-    """Selection editor, lazy preview, configuration, and export workspace."""
+    """
+    Selection editor, lazy preview, configuration, and export workspace.
+
+    The panel owns editable selector/options state and a bounded preview model.
+    It emits immutable configurations and sort/export requests; MainWindow owns
+    collection traversal and background-task lifetimes.
+    """
 
     selectors_changed = Signal(object)
     export_requested = Signal(str, str, object)
@@ -426,10 +441,12 @@ class DataExtractionPanel(QWidget):
 
     @property
     def selectors(self) -> tuple[FieldSelector, ...]:
+        """Return selectors in their visible configuration order."""
         return tuple(self._selectors)
 
     @property
     def config(self) -> ExtractionConfig:
+        """Build the complete configuration represented by the editor."""
         return ExtractionConfig(
             self.selectors,
             include_identifiers=self._include_identifiers,
@@ -437,6 +454,7 @@ class DataExtractionPanel(QWidget):
         )
 
     def add_selector(self, selector: FieldSelector) -> None:
+        """Append a selector with a unique export-column name."""
         existing = {item.column.casefold() for item in self._selectors}
         base = selector.column.strip() or "value"
         column = base
@@ -449,6 +467,7 @@ class DataExtractionPanel(QWidget):
         self._emit_changed()
 
     def set_config(self, config: ExtractionConfig, *, mark_clean: bool = False) -> None:
+        """Replace editor state from a validated saved configuration."""
         self._selectors = list(config.selectors)
         self._include_identifiers = config.include_identifiers
         self._include_status_columns = config.include_status_columns
@@ -458,15 +477,18 @@ class DataExtractionPanel(QWidget):
         self._emit_changed()
 
     def clear(self) -> None:
+        """Remove all configured selectors and preview rows."""
         self._selectors.clear()
         self._rebuild_selection_table(-1)
         self.preview_model.set_data((), ())
         self._emit_changed()
 
     def show_loading(self, count: int) -> None:
+        """Show that a bounded preview is being built for ``count`` records."""
         self.status.setText(f"Building preview from {count:,} evaluations…")
 
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
+        """Install preview rows while retaining the collection's full count."""
         self.preview_model.set_data(self.selectors, rows)
         selected_column = self._preview_sort_column or 3
         self._select_preview_column(selected_column)
@@ -477,6 +499,7 @@ class DataExtractionPanel(QWidget):
         )
 
     def show_error(self, message: str) -> None:
+        """Replace preview status with a user-facing extraction error."""
         self.status.setText(message)
 
     def _rebuild_selection_table(self, selected_row: int) -> None:

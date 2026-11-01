@@ -1,3 +1,11 @@
+"""
+Qt item models for evaluations, context nodes, and arbitrary JSON values.
+
+The evaluation model owns collection display order. Context and JSON models
+fetch children in batches from already indexed documents so expanding a large
+tree does not construct every Qt item at once.
+"""
+
 from __future__ import annotations
 
 import os
@@ -50,7 +58,12 @@ class _EvaluationItem:
 
 
 class EvaluationListModel(QAbstractItemModel):
-    """Hierarchical folder model containing discovered context files."""
+    """
+    Hierarchical folder model containing discovered context files.
+
+    This model is the authority for collection display order. Reordering resets
+    the tree while stable record IDs let MainWindow restore selection.
+    """
 
     RecordRole = Qt.ItemDataRole.UserRole.value + 1
 
@@ -253,7 +266,12 @@ class _ContextItem:
 
 
 class ContextTreeModel(QAbstractItemModel):
-    """Lazy Qt model backed by a pre-indexed ContextDocument."""
+    """
+    Lazy Qt model backed by a pre-indexed ``ContextDocument``.
+
+    Only visible branches become Qt items; each fetch adds a bounded child batch.
+    The document remains the owner of node data and path lookup.
+    """
 
     columns = ("Component", "Status", "Output")
     NodeRole = Qt.ItemDataRole.UserRole.value + 1
@@ -430,7 +448,13 @@ class _JsonItem:
 
 
 class JsonValueModel(QAbstractItemModel):
-    """Generic, lazily expanded mapping/list viewer."""
+    """
+    Generic, lazily expanded mapping/list viewer.
+
+    The model retains the current value and materializes mapping/list children
+    in batches, allowing the inspector to show large payloads without an eager
+    Qt-item tree.
+    """
 
     columns = ("Field", "Value", "Type")
     FETCH_BATCH_SIZE = 200

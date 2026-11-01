@@ -1,3 +1,10 @@
+"""
+Cooperative cancellation and incremental collection traversal primitives.
+
+Long-running analysis, plotting, and extraction share ``iter_collection`` so
+unreadable evaluations and cancellation have consistent semantics.
+"""
+
 from __future__ import annotations
 
 import threading
@@ -38,6 +45,8 @@ class CancellationToken:
 
 @dataclass(frozen=True, slots=True)
 class TraversalItem:
+    """One collection record with either its document or a load error."""
+
     record: RecordRef
     document: ContextDocument | None
     error: str | None = None

@@ -1,3 +1,11 @@
+"""
+Detail views and actions for the selected context node.
+
+``Inspector`` presents fields, metadata, structure, and raw JSON, and emits
+semantic plot, sort, and extraction requests. Lazy JSON models avoid eagerly
+materializing large nested values in the GUI thread.
+"""
+
 from __future__ import annotations
 
 import json
@@ -33,6 +41,8 @@ MAX_STRUCTURE_TABLE_ROWS = 500
 
 
 class JsonView(QTreeView):
+    """Lazy JSON tree with value selection and clipboard navigation actions."""
+
     numeric_selected = Signal(object)
     value_selected = Signal(object)
     copy_completed = Signal(str)
@@ -126,6 +136,8 @@ class JsonView(QTreeView):
 
 
 class StructureView(QWidget):
+    """Compact table presentation of a node's ChemFit structure declaration."""
+
     def __init__(self, parent: QWidget | None = None):
         """Initialize the structured metadata and fallback views."""
         super().__init__(parent)
@@ -216,6 +228,14 @@ class StructureView(QWidget):
 
 
 class Inspector(QWidget):
+    """
+    Present all details and actions for the currently selected context node.
+
+    The inspector owns only the selected ``NodeDetails`` and per-tab view state.
+    Plot, order, and extraction actions are emitted as semantic selectors so
+    MainWindow can apply them to the active collection.
+    """
+
     plot_requested = Signal(object)
     plot_add_requested = Signal(object)
     order_requested = Signal(object)
