@@ -4,7 +4,7 @@ import csv
 import json
 
 import pytest
-from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
+from PySide6.QtCore import QItemSelectionModel, QPoint, QSettings, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -737,6 +737,36 @@ def test_extraction_preview_rename_shortcut_targets_selected_column(monkeypatch)
 
     assert panel._preview_rename_shortcut.key().toString() == "R"  # noqa: SLF001
     assert renamed == [0]
+
+
+def test_dismissing_preview_header_context_menu_keeps_selected_column():
+    panel = DataExtractionPanel()
+    selector = FieldSelector((), "fields", ("energy",), "energy")
+    panel.add_selector(selector)
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record-1",
+                "step_1.json",
+                (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
+            ),
+        ),
+        1,
+    )
+    panel.preview_header.sectionClicked.emit(3)
+
+    def dismiss_menu() -> None:
+        menu = QApplication.activePopupWidget()
+        assert menu is not None
+        menu.close()
+
+    position = panel.preview_header.sectionViewportPosition(3) + 1
+    QTimer.singleShot(0, dismiss_menu)
+    panel._show_preview_header_context_menu(QPoint(position, 1))  # noqa: SLF001
+
+    assert panel.selectors == (selector,)
+    assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == "energy"
 
 
 def test_extraction_preview_rejects_opaque_component_sorting():

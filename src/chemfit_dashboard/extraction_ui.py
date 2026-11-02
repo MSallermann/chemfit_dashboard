@@ -849,6 +849,8 @@ class DataExtractionPanel(QWidget):
         copy_path = menu.addAction("Copy field path")
         copy_selector = menu.addAction("Copy field configuration as JSON")
         selected = menu.exec(self.selections.viewport().mapToGlobal(position))
+        if selected is None:
+            return
         if selected is copy_column:
             self._copy_text(
                 self._selectors[row].column, "Copied extraction column name"
@@ -900,6 +902,8 @@ class DataExtractionPanel(QWidget):
                 sort_menu.setToolTip(sort_reason)
                 sort_menu.setEnabled(False)
         selected = menu.exec(self.preview.viewport().mapToGlobal(position))
+        if selected is None:
+            return
         if selected is copy_cell:
             self._copy_preview_cell(index)
         elif selected is copy_column:
@@ -951,6 +955,8 @@ class DataExtractionPanel(QWidget):
                 )
                 remove_selected.setShortcut(QKeySequence("Backspace"))
         selected = menu.exec(header.mapToGlobal(position))
+        if selected is None:
+            return
         if selected is copy_column:
             self._copy_preview_column(column)
         elif selected is toggle_sort:
