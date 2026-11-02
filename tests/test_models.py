@@ -156,6 +156,12 @@ def test_number_shortcuts_navigate_major_dashboard_views():
         if hierarchy is not None:
             assert window.hierarchy_tabs.currentWidget() is hierarchy
 
+    extraction_shortcut = window._navigation_shortcuts[6]  # noqa: SLF001
+    assert extraction_shortcut.key().toString() == "Ctrl+D"
+    window.workspace_tabs.setCurrentWidget(window.collection_analysis)
+    extraction_shortcut.activated.emit()
+    assert window.workspace_tabs.currentWidget() is window.extraction
+
 
 def test_keyboard_shortcut_help_is_grouped_by_focus_context(monkeypatch):
     window = MainWindow()
@@ -172,6 +178,7 @@ def test_keyboard_shortcut_help_is_grouped_by_focus_context(monkeypatch):
     assert "<table" in displayed[0]
     assert "Extraction fields" in displayed[0]
     assert "Extraction preview" in displayed[0]
+    assert "Ctrl+D" in displayed[0]
     assert "Shortcuts marked with a specific view" in displayed[0]
 
 

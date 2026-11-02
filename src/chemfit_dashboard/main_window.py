@@ -568,6 +568,7 @@ class MainWindow(QMainWindow):
         self.extraction.selectors_changed.connect(self._update_extraction_tab_badge)
         self.extraction.export_requested.connect(self._export_extraction)
         self.extraction.sort_requested.connect(self._order_extraction_requested)
+        self.extraction.record_selected.connect(self._extraction_record_selected)
         self.workspace_tabs.setObjectName("workspaceTabs")
         self.workspace_tabs.tabBar().setObjectName("workspaceTabBar")
         self._extraction_tab_index = self.workspace_tabs.addTab(
@@ -1084,6 +1085,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+4", "overview"),
             ("Ctrl+5", "search"),
             ("Ctrl+6", "extraction"),
+            ("Ctrl+D", "extraction"),
         )
         self._navigation_shortcuts: list[QShortcut] = []
         for sequence, destination in destinations:
@@ -1410,6 +1412,8 @@ class MainWindow(QMainWindow):
             "<tr><td>Anywhere</td><td><code>Ctrl+1 … Ctrl+6</code></td>"
             "<td>Open Context Explorer, Data Flow, Plot, Collection Overview, "
             "Search, or Data Extraction</td></tr>"
+            "<tr><td>Anywhere</td><td><code>Ctrl+D</code></td>"
+            "<td>Open Data Extraction</td></tr>"
             "<tr><td>Anywhere</td><td><code>Ctrl+F</code></td>"
             "<td>Search collection fields</td></tr>"
             "<tr><td>Anywhere</td><td><code>Ctrl+O</code></td>"
@@ -2292,6 +2296,10 @@ class MainWindow(QMainWindow):
 
     def _plot_context_selected(self, record_id: str) -> None:
         self._select_record_by_id(record_id)
+
+    def _extraction_record_selected(self, record_id: str) -> None:
+        if self._select_record_by_id(record_id):
+            self._navigate_to_view("context")
 
     def _plot_point_selected(
         self, record_id: str, selector: NumberSelector | object

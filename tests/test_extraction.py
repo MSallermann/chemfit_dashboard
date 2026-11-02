@@ -5,11 +5,13 @@ import json
 
 import pytest
 from PySide6.QtCore import QItemSelectionModel, QPoint, QSettings, Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QHeaderView,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSpinBox,
     QToolButton,
@@ -767,6 +769,46 @@ def test_dismissing_preview_header_context_menu_keeps_selected_column():
 
     assert panel.selectors == (selector,)
     assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == "energy"
+
+
+def test_preview_row_header_context_menu_opens_evaluation():
+    panel = DataExtractionPanel()
+    panel.add_selector(FieldSelector((), "fields", ("energy",), "energy"))
+    panel.set_preview(
+        (
+            ExtractionRow(
+                0,
+                "record-1",
+                "step_1.json",
+                (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
+            ),
+        ),
+        1,
+    )
+    selected_records = []
+    visible_actions = []
+    panel.record_selected.connect(selected_records.append)
+
+    def choose_open_evaluation() -> None:
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        actions = {action.text(): action for action in menu.actions() if action.text()}
+        visible_actions.extend(actions)
+        menu.setActiveAction(actions["Open evaluation in Context Inspector"])
+        QTest.keyClick(menu, Qt.Key.Key_Return)
+
+    QTimer.singleShot(0, choose_open_evaluation)
+    panel._show_preview_row_context_menu(QPoint(1, 1))  # noqa: SLF001
+
+    assert selected_records == ["record-1"]
+    assert visible_actions == [
+        "Open evaluation in Context Inspector",
+        "Copy row as CSV",
+        "Copy row as JSON",
+        "Copy filename",
+        "Copy record ID",
+    ]
+    assert {index.row() for index in panel.preview.selectedIndexes()} == {0}
 
 
 def test_extraction_preview_rejects_opaque_component_sorting():

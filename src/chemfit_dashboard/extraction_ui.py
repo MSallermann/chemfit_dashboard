@@ -333,6 +333,7 @@ class DataExtractionPanel(QWidget):
     export_requested = Signal(str, str, object)
     status_message = Signal(str)
     sort_requested = Signal(object, bool)
+    record_selected = Signal(str)
 
     def __init__(  # noqa: PLR0915
         self,
@@ -436,6 +437,13 @@ class DataExtractionPanel(QWidget):
         self.preview_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview_header.customContextMenuRequested.connect(
             self._show_preview_header_context_menu
+        )
+        preview_row_header = self.preview.verticalHeader()
+        preview_row_header.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        preview_row_header.customContextMenuRequested.connect(
+            self._show_preview_row_context_menu
         )
         # Preview columns rebuild asynchronously after selector edits. This
         # state carries only interaction continuity across that rebuild.
@@ -971,6 +979,47 @@ class DataExtractionPanel(QWidget):
             self._remove_preview_columns((preview_column,))
         elif selected is remove_selected:
             self._remove_preview_columns(selected_columns)
+
+    def _show_preview_row_context_menu(self, position: QPoint) -> None:
+        header = self.preview.verticalHeader()
+        row = header.logicalIndexAt(position)
+        values = self.preview_model.row_mapping(row)
+        if not values:
+            return
+
+        index = self.preview_model.index(row, 0)
+        selection = self.preview.selectionModel()
+        if selection is not None:
+            selection.select(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+            selection.setCurrentIndex(
+                index, QItemSelectionModel.SelectionFlag.NoUpdate
+            )
+
+        menu = QMenu(header)
+        open_evaluation = menu.addAction("Open evaluation in Context Inspector")
+        menu.addSeparator()
+        copy_row = menu.addAction("Copy row as CSV")
+        copy_row_json = menu.addAction("Copy row as JSON")
+        menu.addSeparator()
+        copy_filename = menu.addAction("Copy filename")
+        copy_record_id = menu.addAction("Copy record ID")
+        selected = menu.exec(header.mapToGlobal(position))
+        if selected is None:
+            return
+        if selected is open_evaluation:
+            self.record_selected.emit(str(values["Record ID"]))
+        elif selected is copy_row:
+            self._copy_preview_row(row)
+        elif selected is copy_row_json:
+            self._copy_preview_row(row, as_json=True)
+        elif selected is copy_filename:
+            self._copy_text(str(values["Filename"]), "Copied evaluation filename")
+        elif selected is copy_record_id:
+            self._copy_text(str(values["Record ID"]), "Copied evaluation record ID")
 
     def _selected_preview_columns(
         self, clicked_column: int | None = None
