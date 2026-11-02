@@ -188,11 +188,7 @@ class StructureView(QWidget):
             return
 
         limited = len(children) > MAX_STRUCTURE_TABLE_ROWS
-        suffix = (
-            f" · showing first {MAX_STRUCTURE_TABLE_ROWS:,}"
-            if limited
-            else ""
-        )
+        suffix = f" · showing first {MAX_STRUCTURE_TABLE_ROWS:,}" if limited else ""
         self.note.setText(
             f"{len(children)} declared components{suffix} · outputs: "
             f"{_format_sources(structure.get('outputs'))}"

@@ -14,7 +14,8 @@ import math
 import re
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -150,8 +151,12 @@ from chemfit_dashboard.traversal import (
     CancellationToken,
     iter_collection,
 )
-from chemfit_dashboard.ui_components import ActionRow, muted_label
-from chemfit_dashboard.workers import TaskRunner
+from chemfit_dashboard.ui_components import (
+    ActionRow,
+    DetachablePanelController,
+    muted_label,
+)
+from chemfit_dashboard.workers import GenerationTracker, TaskRunner
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -175,6 +180,128 @@ AUTO_ANALYSIS_RECORD_LIMIT = 5_000
 BACKGROUND_THREADS_SETTING = "performance/background_threads"
 SEARCH_PROCESSES_SETTING = "performance/search_processes"
 MAX_CONFIGURABLE_WORKERS = 64
+
+
+class _RequestKind(Enum):
+    """Independent background-result families coordinated by MainWindow."""
+
+    COLLECTION = auto()
+    LOAD = auto()
+    PLOT = auto()
+    ORDER = auto()
+    SEARCH = auto()
+    ANALYSIS = auto()
+    EXTRACTION = auto()
+
+
+@dataclass(slots=True)
+class _PendingNavigation:
+    """Deferred cross-view targets waiting for their record to finish loading."""
+
+    search_hit: SearchHit | None = None
+    failure: FailureOccurrence | None = None
+    plot: tuple[str, NumberSelector] | None = None
+
+    def clear(self) -> None:
+        """Discard every deferred target when the collection changes."""
+        self.search_hit = None
+        self.failure = None
+        self.plot = None
+
+
+@dataclass(slots=True)
+class _NavigationState:
+    """History plus semantic component identity shared across evaluations."""
+
+    history: list[tuple[str, NodePath]] = field(default_factory=list)
+    index: int = -1
+    replaying: bool = False
+    sticky_path: NodePath = ()
+    sticky_trail: NodeTrail = ()
+    suppress_memory: bool = False
+
+    def reset(self) -> None:
+        """Return history and cross-evaluation component memory to defaults."""
+        self.history.clear()
+        self.index = -1
+        self.replaying = False
+        self.sticky_path = ()
+        self.sticky_trail = ()
+        self.suppress_memory = False
+
+    def remember(self, record_id: str, path: NodePath, *, limit: int = 200) -> None:
+        """Append a location, replacing the forward branch after Back."""
+        location = (record_id, path)
+        if 0 <= self.index < len(self.history) and self.history[self.index] == location:
+            return
+        del self.history[self.index + 1 :]
+        self.history.append(location)
+        if len(self.history) > limit:
+            self.history.pop(0)
+        self.index = len(self.history) - 1
+
+
+@dataclass(slots=True)
+class _CollectionOrderState:
+    """Canonical ordering split into numeric values and missing-value tail."""
+
+    present: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+    label: str | None = None
+    descending: bool = False
+    filename_reversed: bool = False
+
+    def clear_numeric(self) -> None:
+        """Forget a numeric order while retaining filename direction."""
+        self.present = ()
+        self.missing = ()
+        self.label = None
+        self.descending = False
+
+
+@dataclass(slots=True)
+class _PlotSelectionState:
+    """Selectors defining the collection plot, in stable display order."""
+
+    selectors: list[NumberSelector] = field(default_factory=list)
+
+    def replace(self, selector: NumberSelector) -> None:
+        """Start a plot containing only ``selector``."""
+        self.selectors[:] = [selector]
+
+    def add(self, selector: NumberSelector) -> None:
+        """Append a selector unless the plot already contains it."""
+        if selector not in self.selectors:
+            self.selectors.append(selector)
+
+    def remove(self, selector: NumberSelector) -> None:
+        """Remove every matching selector while preserving relative order."""
+        self.selectors[:] = [item for item in self.selectors if item != selector]
+
+    def clear(self) -> None:
+        """Remove all plotted selectors."""
+        self.selectors.clear()
+
+
+@dataclass(slots=True)
+class _SessionState:
+    """Restorable collection identity, separate from live widget state."""
+
+    enabled: bool
+    locations: list[str] = field(default_factory=list)
+    restored_record_path: str | None = None
+
+
+@dataclass(slots=True)
+class _AppearanceState:
+    """Persisted appearance choices and their unscaled application baseline."""
+
+    font_scale: float = 1.0
+    color_scheme_key: str = DEFAULT_COLOR_SCHEME
+    style_profile: str = "classic"
+    density: str = "comfortable"
+    base_font: QFont | None = None
+    base_stylesheet: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +343,7 @@ class MainWindow(QMainWindow):
     Coordinate one open collection and the dashboard's feature panels.
 
     The window owns the current record/document, collection ordering, selection
-    history, and generation counters for asynchronous requests. Individual
+    history, and freshness tokens for asynchronous requests. Individual
     widgets own presentation state; ``ActivityStatus`` owns operation tokens
     and progress; ``ContextSource`` owns document caching.
 
@@ -255,50 +382,18 @@ class MainWindow(QMainWindow):
         self.collection_search = CollectionSearchExecutor(
             max_workers=self._search_process_count
         )
-        # Generations invalidate results without unsafe thread termination.
-        # Cancellation reduces wasted work; the generation check remains
-        # necessary because already-running tasks can still complete.
-        self._collection_generation = 0
-        self._load_generation = 0
-        self._plot_generation = 0
-        self._order_generation = 0
-        self._search_generation = 0
-        self._analysis_generation = 0
-        self._extraction_generation = 0
+        # Cancellation reduces wasted work; freshness tokens remain necessary
+        # because a worker already running may still deliver its callback.
+        self._generations = GenerationTracker[_RequestKind]()
         self.search_indexes = ContextSearchCache(capacity=32)
-        self._pending_search_hit: SearchHit | None = None
-        self._pending_failure: FailureOccurrence | None = None
-        self._pending_plot_selection: tuple[str, NumberSelector] | None = None
-        self._navigation_history: list[tuple[str, NodePath]] = []
-        self._navigation_index = -1
-        self._navigation_replaying = False
-        self._sticky_node_path: NodePath = ()
-        self._sticky_node_trail: NodeTrail = ()
-        self._suppress_context_memory = False
-        self._numeric_order_present: tuple[str, ...] = ()
-        self._numeric_order_missing: tuple[str, ...] = ()
-        self._numeric_order_label: str | None = None
-        self._order_descending = False
-        self._filename_reversed = False
-        self._active_plot_selector: NumberSelector | None = None
-        self._active_plot_selectors: list[NumberSelector] = []
+        self._pending_navigation = _PendingNavigation()
+        self._navigation = _NavigationState()
+        self._collection_order = _CollectionOrderState()
+        self._plot_selection = _PlotSelectionState()
         self._current_document: ContextDocument | None = None
         self._tab_before_search: QWidget | None = None
-        self._session_enabled = restore_session
-        self._session_locations: list[str] = []
-        self._restored_record_path: str | None = None
-        self._font_scale = 1.0
-        self._color_scheme_key = DEFAULT_COLOR_SCHEME
-        self._style_profile = "classic"
-        self._density = "comfortable"
-        self._base_font: QFont | None = None
-        self._base_stylesheet = ""
-        self._expanded_data_flow_dialog: QDialog | None = None
-        self._data_flow_placeholder: QWidget | None = None
-        self._data_flow_tab_index = 1
-        self._expanded_plot_dialog: QDialog | None = None
-        self._plot_placeholder: QWidget | None = None
-        self._plot_tab_index = 2
+        self._session = _SessionState(enabled=restore_session)
+        self._appearance = _AppearanceState()
         saved_label_key = self._settings.value(
             COMPONENT_LABEL_METADATA_KEY_SETTING,
             DEFAULT_COMPONENT_LABEL_METADATA_KEY,
@@ -334,19 +429,19 @@ class MainWindow(QMainWindow):
         self._clipboard_toast_timer = QTimer(self)
         self._clipboard_toast_timer.setSingleShot(True)
         self._clipboard_toast_timer.timeout.connect(self._hide_clipboard_toast)
-        if self._session_enabled:
+        if self._session.enabled:
             self._restore_session_state()
 
         startup_paths = list(initial_paths or ())
-        if startup_paths and self._session_enabled:
+        if startup_paths and self._session.enabled:
             # Explicit command-line locations replace the saved collection while
             # retaining the restored window layout and appearance.
-            self._session_locations = []
-            self._restored_record_path = None
-            self._sticky_node_path = ()
-            self._sticky_node_trail = ()
-        elif self._session_enabled:
-            startup_paths = list(self._session_locations)
+            self._session.locations.clear()
+            self._session.restored_record_path = None
+            self._navigation.sticky_path = ()
+            self._navigation.sticky_trail = ()
+        elif self._session.enabled:
+            startup_paths = list(self._session.locations)
         if startup_paths:
             self.add_locations(startup_paths)
 
@@ -360,26 +455,28 @@ class MainWindow(QMainWindow):
             )
         except (TypeError, ValueError):
             font_scale = 1.0
-        self._font_scale = min(1.6, max(0.8, round(font_scale, 1)))
-        self._style_profile = str(
+        self._appearance.font_scale = min(1.6, max(0.8, round(font_scale, 1)))
+        self._appearance.style_profile = str(
             self._settings.value(STYLE_PROFILE_SETTING, "classic") or "classic"
         )
-        self._density = str(
+        self._appearance.density = str(
             self._settings.value(DENSITY_SETTING, "comfortable") or "comfortable"
         )
         saved_scheme = self._settings.value(COLOR_SCHEME_SETTING, DEFAULT_COLOR_SCHEME)
-        self._color_scheme_key = color_scheme(str(saved_scheme)).key
-        scheme = set_active_color_scheme(self._color_scheme_key)
+        self._appearance.color_scheme_key = color_scheme(str(saved_scheme)).key
+        scheme = set_active_color_scheme(self._appearance.color_scheme_key)
         application = QApplication.instance()
         if isinstance(application, QApplication):
             stored_base_font = application.property("chemfitBaseFont")
             if isinstance(stored_base_font, QFont):
-                self._base_font = QFont(stored_base_font)
+                self._appearance.base_font = QFont(stored_base_font)
             else:
-                self._base_font = QFont(application.font())
-                application.setProperty("chemfitBaseFont", self._base_font)
-        self._base_stylesheet = stylesheet_for(
-            scheme, style_profile=self._style_profile, density=self._density
+                self._appearance.base_font = QFont(application.font())
+                application.setProperty("chemfitBaseFont", self._appearance.base_font)
+        self._appearance.base_stylesheet = stylesheet_for(
+            scheme,
+            style_profile=self._appearance.style_profile,
+            density=self._appearance.density,
         )
         self._apply_application_font()
         self._apply_application_stylesheet()
@@ -491,17 +588,6 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.main_workspace, 1)
         self.setCentralWidget(container)
         self.activity = ActivityStatus(self)
-        # Compatibility handles for code that customizes the established
-        # MainWindow widgets. Mutable state itself is owned by ActivityStatus.
-        self.activity_toggle = self.activity.toggle
-        self.activity_status = self.activity.status
-        self.activity_progress = self.activity.progress
-        self.activity_panel = self.activity.panel
-        self.activity_panel_layout = self.activity.panel_layout
-        self._activity_rows = self.activity.rows
-        self._operation_tokens = self.activity.tokens
-        self._operation_labels = self.activity.labels
-        self._operation_progress = self.activity.progress_values
         self._show_status("Ready")
 
     def _build_evaluation_panel(self) -> QWidget:  # noqa: PLR0915
@@ -810,8 +896,29 @@ class MainWindow(QMainWindow):
         search_workspace_layout.addWidget(self.search_panel, 1)
         self.hierarchy_tabs = QTabWidget()
         self.hierarchy_tabs.addTab(self.tree, "Context Explorer")
-        self._data_flow_tab_index = self.hierarchy_tabs.addTab(self.graph, "Data Flow")
-        self._plot_tab_index = self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
+        data_flow_tab_index = self.hierarchy_tabs.addTab(self.graph, "Data Flow")
+        plot_tab_index = self.hierarchy_tabs.addTab(self.collection_plot, "Plot")
+        self._data_flow_detachment = DetachablePanelController(
+            self,
+            self.hierarchy_tabs,
+            self.graph,
+            tab_label="Data Flow",
+            window_title="ChemFit Data Flow",
+            object_prefix="dataFlow",
+            tab_index=data_flow_tab_index,
+            expanded_changed=self.graph.set_expanded,
+            detached=self.graph.ensure_rendered,
+        )
+        self._plot_detachment = DetachablePanelController(
+            self,
+            self.hierarchy_tabs,
+            self.collection_plot,
+            tab_label="Plot",
+            window_title="ChemFit Collection Plot",
+            object_prefix="plot",
+            tab_index=plot_tab_index,
+            expanded_changed=self.collection_plot.set_expanded,
+        )
         self.hierarchy_tabs.currentChanged.connect(self._hierarchy_tab_changed)
         layout.addWidget(self.hierarchy_tabs, 1)
         return panel
@@ -880,7 +987,7 @@ class MainWindow(QMainWindow):
         self.forward_action.triggered.connect(lambda: self._navigate_history(1))
         navigate_menu.addAction(self.forward_action)
         self.forward_button.setDefaultAction(self.forward_action)
-        self._set_navigation_icons(color_scheme(self._color_scheme_key))
+        self._set_navigation_icons(color_scheme(self._appearance.color_scheme_key))
 
         settings_menu = self.menuBar().addMenu("&Settings")
         self.settings_menu = settings_menu
@@ -894,7 +1001,7 @@ class MainWindow(QMainWindow):
             action = self.theme_menu.addAction(scheme.label)
             action.setCheckable(True)
             action.setData(scheme.key)
-            action.setChecked(scheme.key == self._color_scheme_key)
+            action.setChecked(scheme.key == self._appearance.color_scheme_key)
             self._theme_actions.addAction(action)
             action.triggered.connect(
                 lambda _checked=False,
@@ -902,7 +1009,7 @@ class MainWindow(QMainWindow):
                     self.color_scheme.findData(key)
                 )
             )
-        scheme_index = self.color_scheme.findData(self._color_scheme_key)
+        scheme_index = self.color_scheme.findData(self._appearance.color_scheme_key)
         self.color_scheme.setCurrentIndex(max(0, scheme_index))
         self.color_scheme.currentIndexChanged.connect(self._color_scheme_changed)
 
@@ -912,7 +1019,7 @@ class MainWindow(QMainWindow):
         for label, key in (("Classic", "classic"), ("Lightweight", "lightweight")):
             action = style_menu.addAction(label)
             action.setCheckable(True)
-            action.setChecked(key == self._style_profile)
+            action.setChecked(key == self._appearance.style_profile)
             self._style_actions.addAction(action)
             action.triggered.connect(
                 lambda _checked=False, value=key: self._set_style_profile(value)
@@ -928,7 +1035,7 @@ class MainWindow(QMainWindow):
         ):
             action = density_menu.addAction(label)
             action.setCheckable(True)
-            action.setChecked(key == self._density)
+            action.setChecked(key == self._appearance.density)
             self._density_actions.addAction(action)
             action.triggered.connect(
                 lambda _checked=False, value=key: self._set_density(value)
@@ -960,9 +1067,7 @@ class MainWindow(QMainWindow):
         search_workers_action = QWidgetAction(workers_menu)
         search_workers_action.setDefaultWidget(self.search_process_workers)
         workers_menu.addAction(search_workers_action)
-        self.search_process_workers.valueChanged.connect(
-            self._set_search_process_count
-        )
+        self.search_process_workers.valueChanged.connect(self._set_search_process_count)
 
         help_menu = self.menuBar().addMenu("&Help")
         shortcuts_action = QAction("Keyboard shortcuts…", self)
@@ -1000,14 +1105,10 @@ class MainWindow(QMainWindow):
             index = self.hierarchy_tabs.indexOf(widget)
             if index >= 0:
                 self.hierarchy_tabs.setCurrentIndex(index)
-            elif destination == "flow" and self._expanded_data_flow_dialog is not None:
-                self._expanded_data_flow_dialog.show()
-                self._expanded_data_flow_dialog.raise_()
-                self._expanded_data_flow_dialog.activateWindow()
-            elif destination == "plot" and self._expanded_plot_dialog is not None:
-                self._expanded_plot_dialog.show()
-                self._expanded_plot_dialog.raise_()
-                self._expanded_plot_dialog.activateWindow()
+            elif destination == "flow":
+                self._data_flow_detachment.show()
+            elif destination == "plot":
+                self._plot_detachment.show()
             return
         if destination == "overview":
             self.workspace_tabs.setCurrentWidget(self.collection_analysis)
@@ -1075,14 +1176,14 @@ class MainWindow(QMainWindow):
             self.workspace_tabs.setCurrentIndex(workspace_tab)
         if 0 <= hierarchy_tab < self.hierarchy_tabs.count():
             self.hierarchy_tabs.setCurrentIndex(hierarchy_tab)
-        self._session_locations = self._setting_strings(SESSION_LOCATIONS_SETTING)
+        self._session.locations = self._setting_strings(SESSION_LOCATIONS_SETTING)
         selected_record = self._settings.value(SESSION_RECORD_SETTING, "")
-        self._restored_record_path = str(selected_record) or None
+        self._session.restored_record_path = str(selected_record) or None
         node_path = self._setting_ints(SESSION_NODE_PATH_SETTING)
-        self._sticky_node_path = tuple(node_path)
+        self._navigation.sticky_path = tuple(node_path)
 
     def _save_session_state(self) -> None:
-        if not self._session_enabled:
+        if not self._session.enabled:
             return
         self._settings.setValue(SESSION_GEOMETRY_SETTING, self.saveGeometry())
         self._settings.setValue(
@@ -1102,33 +1203,21 @@ class MainWindow(QMainWindow):
         self._settings.setValue(
             SESSION_HIERARCHY_TAB_SETTING, self.hierarchy_tabs.currentIndex()
         )
-        self._settings.setValue(SESSION_LOCATIONS_SETTING, self._session_locations)
+        self._settings.setValue(SESSION_LOCATIONS_SETTING, self._session.locations)
         document = self._current_document
         if document is not None:
             self._settings.setValue(
                 SESSION_RECORD_SETTING, str(document.record.path.resolve())
             )
             self._settings.setValue(
-                SESSION_NODE_PATH_SETTING, list(self._sticky_node_path)
+                SESSION_NODE_PATH_SETTING, list(self._navigation.sticky_path)
             )
         self._settings.sync()
-
-    def _new_operation(self, name: str) -> CancellationToken:
-        """Compatibility entry point for creating a named cancellation token."""
-        return self.activity.new_token(name)
 
     def _begin_operation(
         self, name: str, label: str, *, display_delay_ms: int = 0
     ) -> CancellationToken:
-        return self.activity.begin(
-            name, label, display_delay_ms=display_delay_ms
-        )
-
-    def _show_delayed_operation(
-        self, name: str, label: str, token: CancellationToken
-    ) -> None:
-        """Compatibility entry point for delayed activity callbacks."""
-        self.activity.show_if_current(name, label, token)
+        return self.activity.begin(name, label, display_delay_ms=display_delay_ms)
 
     def _finish_operation(self, name: str, message: str | None = None) -> None:
         self.activity.finish(name, message)
@@ -1178,15 +1267,6 @@ class MainWindow(QMainWindow):
         ):
             yield item.record, item.document
 
-    def _toggle_activity_panel(self, expanded: bool) -> None:
-        self.activity.set_expanded(expanded)
-
-    def _rebuild_activity_panel(self) -> None:
-        self.activity.refresh_panel()
-
-    def _position_activity_panel(self) -> None:
-        self.activity.position_panel()
-
     def _show_status(self, message: str, timeout: int = 0) -> None:
         self.activity.show_message(message, timeout)
 
@@ -1195,8 +1275,8 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
         super().resizeEvent(event)
-        if hasattr(self, "activity_panel") and self.activity_panel.isVisible():
-            self._position_activity_panel()
+        if hasattr(self, "activity") and self.activity.panel.isVisible():
+            self.activity.position_panel()
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
         self._save_session_state()
@@ -1210,12 +1290,17 @@ class MainWindow(QMainWindow):
 
     def _change_font_scale(self, change: float) -> None:
         application = QApplication.instance()
-        if not isinstance(application, QApplication) or self._base_font is None:
+        if (
+            not isinstance(application, QApplication)
+            or self._appearance.base_font is None
+        ):
             return
-        self._font_scale = min(1.6, max(0.8, round(self._font_scale + change, 1)))
+        self._appearance.font_scale = min(
+            1.6, max(0.8, round(self._appearance.font_scale + change, 1))
+        )
         self._apply_application_font()
         self._apply_application_stylesheet()
-        self._settings.setValue(FONT_SCALE_SETTING, self._font_scale)
+        self._settings.setValue(FONT_SCALE_SETTING, self._appearance.font_scale)
         self._settings.sync()
         graph_document = self.graph.view.document
         graph_was_rendered = self.graph.view.rendered_node_count > 0
@@ -1224,15 +1309,17 @@ class MainWindow(QMainWindow):
             if graph_was_rendered:
                 self.graph.ensure_rendered()
         self.collection_plot.refresh_fonts()
-        percent = round(self._font_scale * 100)
+        percent = round(self._appearance.font_scale * 100)
         self.statusBar().showMessage(f"Interface font size: {percent}%", 2000)
 
     def _color_scheme_changed(self, _index: int) -> None:
         key = str(self.color_scheme.currentData())
         scheme = set_active_color_scheme(key)
-        self._color_scheme_key = scheme.key
-        self._base_stylesheet = stylesheet_for(
-            scheme, style_profile=self._style_profile, density=self._density
+        self._appearance.color_scheme_key = scheme.key
+        self._appearance.base_stylesheet = stylesheet_for(
+            scheme,
+            style_profile=self._appearance.style_profile,
+            density=self._appearance.density,
         )
         self._apply_application_stylesheet()
         self._settings.setValue(COLOR_SCHEME_SETTING, scheme.key)
@@ -1251,13 +1338,13 @@ class MainWindow(QMainWindow):
         )
 
     def _set_style_profile(self, profile: str) -> None:
-        self._style_profile = profile
+        self._appearance.style_profile = profile
         self._settings.setValue(STYLE_PROFILE_SETTING, profile)
         self._settings.sync()
-        self._base_stylesheet = stylesheet_for(
-            color_scheme(self._color_scheme_key),
-            style_profile=self._style_profile,
-            density=self._density,
+        self._appearance.base_stylesheet = stylesheet_for(
+            color_scheme(self._appearance.color_scheme_key),
+            style_profile=self._appearance.style_profile,
+            density=self._appearance.density,
         )
         self._apply_application_stylesheet()
         self._show_status(
@@ -1268,13 +1355,13 @@ class MainWindow(QMainWindow):
         )
 
     def _set_density(self, density: str) -> None:
-        self._density = density
+        self._appearance.density = density
         self._settings.setValue(DENSITY_SETTING, density)
         self._settings.sync()
-        self._base_stylesheet = stylesheet_for(
-            color_scheme(self._color_scheme_key),
-            style_profile=self._style_profile,
-            density=self._density,
+        self._appearance.base_stylesheet = stylesheet_for(
+            color_scheme(self._appearance.color_scheme_key),
+            style_profile=self._appearance.style_profile,
+            density=self._appearance.density,
         )
         self._apply_application_stylesheet()
         self._show_status(f"Interface spacing: {density}", 3000)
@@ -1296,7 +1383,7 @@ class MainWindow(QMainWindow):
         if count == self._search_process_count:
             return
         self._cancel_operation("search")
-        self._search_generation += 1
+        self._generations.invalidate(_RequestKind.SEARCH)
         previous = self.collection_search
         self.collection_search = CollectionSearchExecutor(max_workers=count)
         self._search_process_count = count
@@ -1384,15 +1471,14 @@ class MainWindow(QMainWindow):
                     document.details(current.path),
                     document.component_label(current.path),
                 )
-            self._sticky_node_trail = component_trail_for_path(
-                document, self._sticky_node_path
+            self._navigation.sticky_trail = component_trail_for_path(
+                document, self._navigation.sticky_path
             )
-            if self._active_plot_selectors:
-                self._active_plot_selectors = [
+            if self._plot_selection.selectors:
+                self._plot_selection.selectors[:] = [
                     selector_for_document(document, selector)
-                    for selector in self._active_plot_selectors
+                    for selector in self._plot_selection.selectors
                 ]
-                self._active_plot_selector = self._active_plot_selectors[0]
                 self._refresh_active_plot()
             if self.extraction.selectors:
                 config = self.extraction.config
@@ -1422,20 +1508,24 @@ class MainWindow(QMainWindow):
         stylesheet = re.sub(
             r"(font-size:\s*)(\d+(?:\.\d+)?)px",
             lambda match: (
-                f"{match.group(1)}{float(match.group(2)) * self._font_scale:.1f}px"
+                f"{match.group(1)}"
+                f"{float(match.group(2)) * self._appearance.font_scale:.1f}px"
             ),
-            self._base_stylesheet,
+            self._appearance.base_stylesheet,
         )
         application.setStyleSheet(stylesheet)
 
     def _apply_application_font(self) -> None:
         application = QApplication.instance()
-        if not isinstance(application, QApplication) or self._base_font is None:
+        if (
+            not isinstance(application, QApplication)
+            or self._appearance.base_font is None
+        ):
             return
-        font = QFont(self._base_font)
+        font = QFont(self._appearance.base_font)
         point_size = font.pointSizeF()
         if point_size > 0:
-            font.setPointSizeF(point_size * self._font_scale)
+            font.setPointSizeF(point_size * self._appearance.font_scale)
         application.setFont(font)
 
     def open_files(self) -> None:
@@ -1680,7 +1770,7 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(info.path_text)
             self._clipboard_copied("Copied structural path")
 
-    def close_collection(self) -> None:  # noqa: PLR0915
+    def close_collection(self) -> None:
         """Close all loaded contexts while leaving the application running."""
         if not self.file_model.records:
             return
@@ -1689,27 +1779,14 @@ class MainWindow(QMainWindow):
         self.activity.clear()
         self.tasks.cancel_pending()
         self.graph.view.cancel_pending_layout()
-        self._collection_generation += 1
-        self._load_generation += 1
-        self._plot_generation += 1
-        self._order_generation += 1
-        self._search_generation += 1
-        self._analysis_generation += 1
-        self._extraction_generation += 1
-        self._pending_search_hit = None
-        self._pending_failure = None
-        self._pending_plot_selection = None
-        self._navigation_history = []
-        self._navigation_index = -1
-        self._navigation_replaying = False
+        self._generations.invalidate_all()
+        self._pending_navigation.clear()
+        self._navigation.reset()
         self._update_navigation_actions()
         self._current_document = None
-        self._sticky_node_path = ()
-        self._sticky_node_trail = ()
         self._clear_numeric_order()
-        self._filename_reversed = False
-        self._active_plot_selector = None
-        self._active_plot_selectors = []
+        self._collection_order.filename_reversed = False
+        self._plot_selection.clear()
         self.search_indexes.clear()
         clear_search_caches()
         clear_source_cache = getattr(self.source, "clear_cache", None)
@@ -1735,8 +1812,8 @@ class MainWindow(QMainWindow):
         self.descending_order_button.setEnabled(False)
         self.reset_order_button.setEnabled(False)
         self.close_collection_action.setEnabled(False)
-        if self._session_enabled:
-            self._session_locations = []
+        if self._session.enabled:
+            self._session.locations.clear()
             self._settings.remove(SESSION_LOCATIONS_SETTING)
             self._settings.remove(SESSION_RECORD_SETTING)
             self._settings.remove(SESSION_NODE_PATH_SETTING)
@@ -1755,11 +1832,11 @@ class MainWindow(QMainWindow):
             )
             for location in locations
         ]
-        if self._session_enabled:
+        if self._session.enabled:
             for location in locations:
-                if location not in self._session_locations:
-                    self._session_locations.append(location)
-            self._settings.setValue(SESSION_LOCATIONS_SETTING, self._session_locations)
+                if location not in self._session.locations:
+                    self._session.locations.append(location)
+            self._settings.setValue(SESSION_LOCATIONS_SETTING, self._session.locations)
             recent = self._setting_strings(RECENT_LOCATIONS_SETTING)
             for location in reversed(locations):
                 if location in recent:
@@ -1770,7 +1847,7 @@ class MainWindow(QMainWindow):
             )
             self._settings.sync()
             self._rebuild_recent_menu()
-        collection_generation = self._collection_generation
+        collection_generation = self._generations.current(_RequestKind.COLLECTION)
         self._begin_operation("discovery", "scanning context files")
 
         def discovery_failed(details: str) -> None:
@@ -1792,9 +1869,8 @@ class MainWindow(QMainWindow):
         *,
         append: bool = False,
     ) -> None:
-        if (
-            collection_generation is not None
-            and collection_generation != self._collection_generation
+        if collection_generation is not None and not self._generations.is_current(
+            _RequestKind.COLLECTION, collection_generation
         ):
             return
         selected_id = (
@@ -1824,12 +1900,13 @@ class MainWindow(QMainWindow):
                 selected_index = self.file_model.index_for_record_id(selected_id)
                 if selected_index.isValid():
                     source_index = selected_index
-            if self._restored_record_path is not None:
+            if self._session.restored_record_path is not None:
                 restored = next(
                     (
                         record
                         for record in self.file_model.records
-                        if str(record.path.resolve()) == self._restored_record_path
+                        if str(record.path.resolve())
+                        == self._session.restored_record_path
                     ),
                     None,
                 )
@@ -1837,7 +1914,7 @@ class MainWindow(QMainWindow):
                     restored_index = self.file_model.index_for_record_id(restored.id)
                     if restored_index.isValid():
                         source_index = restored_index
-                self._restored_record_path = None
+                self._session.restored_record_path = None
             file_index = self.file_proxy.mapFromSource(source_index)
             parent = file_index.parent()
             while parent.isValid():
@@ -1859,13 +1936,12 @@ class MainWindow(QMainWindow):
             return
         self._set_evaluation_path(record)
         self.collection_plot.select_record(record.id)
-        self._load_generation += 1
-        generation = self._load_generation
+        generation = self._generations.advance(_RequestKind.LOAD)
         self._current_document = None
         self.tree_model.set_document(None)
         self.graph.set_document(None)
         if self.search_scope.currentData() == "current":
-            self._search_generation += 1
+            self._generations.invalidate(_RequestKind.SEARCH)
             self.search_panel.set_available(False)
         self.inspector.clear()
         self.node_count.setText("loading…")
@@ -1890,7 +1966,7 @@ class MainWindow(QMainWindow):
         self, generation: int, document: ContextDocument
     ) -> None:
         """Install a loaded document only if it is still the selected request."""
-        if generation != self._load_generation:
+        if not self._generations.is_current(_RequestKind.LOAD, generation):
             # A previous record load completed after another selection. The
             # source cache may keep its useful document, but the UI must not.
             return
@@ -1919,18 +1995,20 @@ class MainWindow(QMainWindow):
             self.graph.ensure_rendered()
         self.node_count.setText(f"{document.node_count} nodes")
         self.statusBar().showMessage(f"Loaded {document.record.name}", 3000)
-        if self._sticky_node_path and not self._sticky_node_trail:
+        if self._navigation.sticky_path and not self._navigation.sticky_trail:
             try:
-                self._sticky_node_trail = component_trail_for_path(
-                    document, self._sticky_node_path
+                self._navigation.sticky_trail = component_trail_for_path(
+                    document, self._navigation.sticky_path
                 )
             except ContextSourceError:
-                self._sticky_node_path = ()
+                self._navigation.sticky_path = ()
         resolution = resolve_component_selection(
-            document, self._sticky_node_path, self._sticky_node_trail
+            document,
+            self._navigation.sticky_path,
+            self._navigation.sticky_trail,
         )
         if resolution.complete:
-            self._sticky_node_path = resolution.path
+            self._navigation.sticky_path = resolution.path
             self._select_context_path(resolution.path, remember=False)
             if resolution.path:
                 selected_label = document.component_label(resolution.path)
@@ -1945,7 +2023,7 @@ class MainWindow(QMainWindow):
                 if resolution.path
                 else "evaluation root"
             )
-            target_label = self._sticky_node_trail[-1].name
+            target_label = self._navigation.sticky_trail[-1].name
             self.statusBar().showMessage(
                 f"Loaded {document.record.name}; {target_label} is unavailable "
                 f"below {available_label} (selection retained)",
@@ -1956,57 +2034,57 @@ class MainWindow(QMainWindow):
         # is installed, otherwise it would address the previous document.
         has_pending_navigation = (
             (
-                self._pending_search_hit is not None
-                and self._pending_search_hit.record_id == document.record.id
+                self._pending_navigation.search_hit is not None
+                and self._pending_navigation.search_hit.record_id == document.record.id
             )
             or (
-                self._pending_failure is not None
-                and self._pending_failure.record_id == document.record.id
+                self._pending_navigation.failure is not None
+                and self._pending_navigation.failure.record_id == document.record.id
             )
             or (
-                self._pending_plot_selection is not None
-                and self._pending_plot_selection[0] == document.record.id
+                self._pending_navigation.plot is not None
+                and self._pending_navigation.plot[0] == document.record.id
             )
         )
         if not has_pending_navigation:
             self._record_navigation(resolution.path)
-        self._navigation_replaying = False
-        pending_hit = self._pending_search_hit
+        self._navigation.replaying = False
+        pending_hit = self._pending_navigation.search_hit
         if pending_hit is not None and pending_hit.record_id == document.record.id:
-            self._pending_search_hit = None
+            self._pending_navigation.search_hit = None
             self._focus_search_hit(pending_hit)
-        pending_failure = self._pending_failure
+        pending_failure = self._pending_navigation.failure
         if (
             pending_failure is not None
             and pending_failure.record_id == document.record.id
         ):
-            self._pending_failure = None
+            self._pending_navigation.failure = None
             self._focus_failure_occurrence(pending_failure)
-        pending_plot = self._pending_plot_selection
+        pending_plot = self._pending_navigation.plot
         if pending_plot is not None and pending_plot[0] == document.record.id:
-            self._pending_plot_selection = None
+            self._pending_navigation.plot = None
             self._focus_plot_selection(pending_plot[1])
 
     def _load_failed(self, generation: int, record: RecordRef, details: str) -> None:
-        if generation != self._load_generation:
+        if not self._generations.is_current(_RequestKind.LOAD, generation):
             return
         self._finish_operation("document")
-        self._navigation_replaying = False
+        self._navigation.replaying = False
         if (
-            self._pending_search_hit is not None
-            and self._pending_search_hit.record_id == record.id
+            self._pending_navigation.search_hit is not None
+            and self._pending_navigation.search_hit.record_id == record.id
         ):
-            self._pending_search_hit = None
+            self._pending_navigation.search_hit = None
         if (
-            self._pending_failure is not None
-            and self._pending_failure.record_id == record.id
+            self._pending_navigation.failure is not None
+            and self._pending_navigation.failure.record_id == record.id
         ):
-            self._pending_failure = None
+            self._pending_navigation.failure = None
         if (
-            self._pending_plot_selection is not None
-            and self._pending_plot_selection[0] == record.id
+            self._pending_navigation.plot is not None
+            and self._pending_navigation.plot[0] == record.id
         ):
-            self._pending_plot_selection = None
+            self._pending_navigation.plot = None
         self.node_count.setText("error")
         self._show_error(f"Could not load {record.name}", details)
 
@@ -2026,7 +2104,7 @@ class MainWindow(QMainWindow):
             self._current_document.component_label(info.path),
         )
         self.graph.select_path(info.path)
-        if not self._suppress_context_memory:
+        if not self._navigation.suppress_memory:
             self._remember_context_selection(info.path)
 
     def _hierarchy_tab_changed(self, index: int) -> None:
@@ -2034,156 +2112,16 @@ class MainWindow(QMainWindow):
             self.graph.ensure_rendered()
 
     def _toggle_data_flow_expansion(self) -> None:
-        if self._expanded_data_flow_dialog is not None:
-            self._restore_data_flow_panel()
-            return
-        tab_index = self.hierarchy_tabs.indexOf(self.graph)
-        if tab_index >= 0:
-            self._data_flow_tab_index = tab_index
-            self.hierarchy_tabs.removeTab(tab_index)
-        placeholder = QWidget()
-        placeholder.setObjectName("dataFlowDetachedPlaceholder")
-        placeholder_layout = QVBoxLayout(placeholder)
-        placeholder_layout.addStretch()
-        message = QLabel("Data Flow is currently open in a detached window.")
-        message.setObjectName("dataFlowDetachedMessage")
-        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message.setWordWrap(True)
-        placeholder_layout.addWidget(message)
-        return_button = QPushButton("Return Data Flow to dashboard")
-        return_button.setObjectName("returnDataFlowButton")
-        return_button.clicked.connect(
-            lambda _checked=False: self._restore_data_flow_panel()
-        )
-        placeholder_layout.addWidget(
-            return_button, alignment=Qt.AlignmentFlag.AlignHCenter
-        )
-        placeholder_layout.addStretch()
-        self._data_flow_placeholder = placeholder
-        self.hierarchy_tabs.insertTab(
-            self._data_flow_tab_index, placeholder, "Data Flow"
-        )
-        self.hierarchy_tabs.setCurrentWidget(placeholder)
-
-        dialog = QDialog(self, Qt.WindowType.Window)
-        dialog.setWindowTitle("ChemFit Data Flow")
-        dialog.setModal(False)
-        dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.setContentsMargins(12, 12, 12, 12)
-        dialog_layout.addWidget(self.graph)
-        # QTabWidget keeps a removed page explicitly hidden. Reparenting alone
-        # therefore leaves an empty dialog unless the page is shown again.
-        self.graph.show()
-        dialog.finished.connect(
-            lambda _result, target=dialog: self._restore_data_flow_panel(target)
-        )
-        self._expanded_data_flow_dialog = dialog
-        self.graph.set_expanded(True)
-        self.graph.ensure_rendered()
-        dialog.resize(max(1100, self.width() - 80), max(720, self.height() - 80))
-        dialog.showMaximized()
+        self._data_flow_detachment.toggle()
 
     def _restore_data_flow_panel(self, dialog: QDialog | None = None) -> None:
-        expanded = self._expanded_data_flow_dialog
-        if expanded is None or (dialog is not None and dialog is not expanded):
-            return
-        self._expanded_data_flow_dialog = None
-        layout = expanded.layout()
-        if layout is not None:
-            layout.removeWidget(self.graph)
-        placeholder = self._data_flow_placeholder
-        placeholder_was_current = (
-            placeholder is not None
-            and self.hierarchy_tabs.currentWidget() is placeholder
-        )
-        if placeholder is not None:
-            placeholder_index = self.hierarchy_tabs.indexOf(placeholder)
-            if placeholder_index >= 0:
-                self._data_flow_tab_index = placeholder_index
-                self.hierarchy_tabs.removeTab(placeholder_index)
-            placeholder.deleteLater()
-        self._data_flow_placeholder = None
-        insert_at = min(self._data_flow_tab_index, self.hierarchy_tabs.count())
-        self._data_flow_tab_index = self.hierarchy_tabs.insertTab(
-            insert_at, self.graph, "Data Flow"
-        )
-        if placeholder_was_current:
-            self.hierarchy_tabs.setCurrentWidget(self.graph)
-        self.graph.set_expanded(False)
-        expanded.hide()
-        expanded.deleteLater()
+        self._data_flow_detachment.restore(dialog)
 
     def _toggle_plot_expansion(self) -> None:
-        if self._expanded_plot_dialog is not None:
-            self._restore_plot_panel()
-            return
-        tab_index = self.hierarchy_tabs.indexOf(self.collection_plot)
-        if tab_index >= 0:
-            self._plot_tab_index = tab_index
-            self.hierarchy_tabs.removeTab(tab_index)
-        placeholder = QWidget()
-        placeholder.setObjectName("plotDetachedPlaceholder")
-        placeholder_layout = QVBoxLayout(placeholder)
-        placeholder_layout.addStretch()
-        message = QLabel("Plot is currently open in a detached window.")
-        message.setObjectName("plotDetachedMessage")
-        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder_layout.addWidget(message)
-        return_button = QPushButton("Return Plot to dashboard")
-        return_button.setObjectName("returnPlotButton")
-        return_button.clicked.connect(lambda _checked=False: self._restore_plot_panel())
-        placeholder_layout.addWidget(
-            return_button, alignment=Qt.AlignmentFlag.AlignHCenter
-        )
-        placeholder_layout.addStretch()
-        self._plot_placeholder = placeholder
-        self.hierarchy_tabs.insertTab(self._plot_tab_index, placeholder, "Plot")
-        self.hierarchy_tabs.setCurrentWidget(placeholder)
-
-        dialog = QDialog(self, Qt.WindowType.Window)
-        dialog.setWindowTitle("ChemFit Collection Plot")
-        dialog.setModal(False)
-        dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.setContentsMargins(12, 12, 12, 12)
-        dialog_layout.addWidget(self.collection_plot)
-        self.collection_plot.show()
-        dialog.finished.connect(
-            lambda _result, target=dialog: self._restore_plot_panel(target)
-        )
-        self._expanded_plot_dialog = dialog
-        self.collection_plot.set_expanded(True)
-        dialog.resize(max(1100, self.width() - 80), max(720, self.height() - 80))
-        dialog.showMaximized()
+        self._plot_detachment.toggle()
 
     def _restore_plot_panel(self, dialog: QDialog | None = None) -> None:
-        expanded = self._expanded_plot_dialog
-        if expanded is None or (dialog is not None and dialog is not expanded):
-            return
-        self._expanded_plot_dialog = None
-        layout = expanded.layout()
-        if layout is not None:
-            layout.removeWidget(self.collection_plot)
-        placeholder = self._plot_placeholder
-        placeholder_was_current = (
-            placeholder is not None
-            and self.hierarchy_tabs.currentWidget() is placeholder
-        )
-        if placeholder is not None:
-            placeholder_index = self.hierarchy_tabs.indexOf(placeholder)
-            if placeholder_index >= 0:
-                self._plot_tab_index = placeholder_index
-                self.hierarchy_tabs.removeTab(placeholder_index)
-            placeholder.deleteLater()
-        self._plot_placeholder = None
-        insert_at = min(self._plot_tab_index, self.hierarchy_tabs.count())
-        self._plot_tab_index = self.hierarchy_tabs.insertTab(
-            insert_at, self.collection_plot, "Plot"
-        )
-        if placeholder_was_current:
-            self.hierarchy_tabs.setCurrentWidget(self.collection_plot)
-        self.collection_plot.set_expanded(False)
-        expanded.hide()
-        expanded.deleteLater()
+        self._plot_detachment.restore(dialog)
 
     def _graph_context_selected(self, path: NodePath) -> None:
         if self._current_document is not None:
@@ -2196,55 +2134,47 @@ class MainWindow(QMainWindow):
             trail = component_trail_for_path(self._current_document, path)
         except ContextSourceError:
             return
-        self._sticky_node_path = path
-        self._sticky_node_trail = trail
+        self._navigation.sticky_path = path
+        self._navigation.sticky_trail = trail
         self._record_navigation(path)
 
     def _record_navigation(self, path: NodePath) -> None:
-        if self._navigation_replaying or self._current_document is None:
+        if self._navigation.replaying or self._current_document is None:
             return
-        location = (self._current_document.record.id, path)
-        if (
-            0 <= self._navigation_index < len(self._navigation_history)
-            and self._navigation_history[self._navigation_index] == location
-        ):
-            return
-        del self._navigation_history[self._navigation_index + 1 :]
-        self._navigation_history.append(location)
-        if len(self._navigation_history) > 200:
-            self._navigation_history.pop(0)
-        self._navigation_index = len(self._navigation_history) - 1
+        self._navigation.remember(self._current_document.record.id, path)
         self._update_navigation_actions()
 
     def _update_navigation_actions(self) -> None:
         if not hasattr(self, "back_action"):
             return
-        self.back_action.setEnabled(self._navigation_index > 0)
+        self.back_action.setEnabled(self._navigation.index > 0)
         self.forward_action.setEnabled(
-            0 <= self._navigation_index < len(self._navigation_history) - 1
+            0 <= self._navigation.index < len(self._navigation.history) - 1
         )
 
     def _navigate_history(self, offset: int) -> None:
-        target_index = self._navigation_index + offset
-        if not 0 <= target_index < len(self._navigation_history):
+        target_index = self._navigation.index + offset
+        if not 0 <= target_index < len(self._navigation.history):
             return
-        previous_index = self._navigation_index
-        record_id, path = self._navigation_history[target_index]
-        self._navigation_index = target_index
+        previous_index = self._navigation.index
+        record_id, path = self._navigation.history[target_index]
+        self._navigation.index = target_index
         self._update_navigation_actions()
-        self._navigation_replaying = True
-        self._sticky_node_path = path
-        self._sticky_node_trail = ()
+        self._navigation.replaying = True
+        self._navigation.sticky_path = path
+        self._navigation.sticky_trail = ()
         document = self._current_document
         if document is not None and document.record.id == record_id:
             if self._select_context_path(path, remember=False):
                 with suppress(ContextSourceError):
-                    self._sticky_node_trail = component_trail_for_path(document, path)
-            self._navigation_replaying = False
+                    self._navigation.sticky_trail = component_trail_for_path(
+                        document, path
+                    )
+            self._navigation.replaying = False
             return
         if not self._select_record_by_id(record_id):
-            self._navigation_index = previous_index
-            self._navigation_replaying = False
+            self._navigation.index = previous_index
+            self._navigation.replaying = False
             self._update_navigation_actions()
 
     def _select_context_path(self, path: NodePath, *, remember: bool) -> bool:
@@ -2254,8 +2184,8 @@ class MainWindow(QMainWindow):
         tree_index = self.tree_model.index_for_path(path)
         if not tree_index.isValid():
             return False
-        previous_suppression = self._suppress_context_memory
-        self._suppress_context_memory = not remember
+        previous_suppression = self._navigation.suppress_memory
+        self._navigation.suppress_memory = not remember
         try:
             parent = tree_index.parent()
             while parent.isValid():
@@ -2269,7 +2199,7 @@ class MainWindow(QMainWindow):
             )
             self.graph.select_path(path)
         finally:
-            self._suppress_context_memory = previous_suppression
+            self._navigation.suppress_memory = previous_suppression
         if remember:
             self._remember_context_selection(path)
         return True
@@ -2277,8 +2207,7 @@ class MainWindow(QMainWindow):
     def _refresh_collection_analysis(self, *, force: bool = False) -> None:
         records = list(self.file_model.records)
         self._cancel_operation("analysis")
-        self._analysis_generation += 1
-        generation = self._analysis_generation
+        generation = self._generations.advance(_RequestKind.ANALYSIS)
         if not records:
             self.collection_analysis.clear()
             return
@@ -2300,12 +2229,12 @@ class MainWindow(QMainWindow):
         )
 
     def _analysis_loaded(self, generation: int, summary: CollectionSummary) -> None:
-        if generation == self._analysis_generation:
+        if self._generations.is_current(_RequestKind.ANALYSIS, generation):
             self._finish_operation("analysis", "Finished analyzing collection")
             self.collection_analysis.set_summary(summary)
 
     def _analysis_failed(self, generation: int, details: str) -> None:
-        if generation != self._analysis_generation:
+        if not self._generations.is_current(_RequestKind.ANALYSIS, generation):
             return
         self._finish_operation("analysis")
         logger.error("Could not analyze context collection\n%s", details)
@@ -2318,9 +2247,9 @@ class MainWindow(QMainWindow):
         ):
             self._focus_failure_occurrence(occurrence)
             return
-        self._pending_failure = occurrence
+        self._pending_navigation.failure = occurrence
         if not self._select_record_by_id(occurrence.record_id):
-            self._pending_failure = None
+            self._pending_navigation.failure = None
 
     def _focus_failure_occurrence(self, occurrence: FailureOccurrence) -> None:
         if self._current_document is None:
@@ -2375,9 +2304,9 @@ class MainWindow(QMainWindow):
         ):
             self._focus_plot_selection(selector)
             return
-        self._pending_plot_selection = (record_id, selector)
+        self._pending_navigation.plot = (record_id, selector)
         if not self._select_record_by_id(record_id):
-            self._pending_plot_selection = None
+            self._pending_navigation.plot = None
 
     def _focus_plot_selection(self, selector: NumberSelector) -> None:
         document = self._current_document
@@ -2403,14 +2332,14 @@ class MainWindow(QMainWindow):
     def _field_search_changed(self, text: str) -> None:
         self._cancel_operation("search")
         if text.strip():
-            self._search_generation += 1
+            self._generations.invalidate(_RequestKind.SEARCH)
             if self.workspace_tabs.currentWidget() is not self.search_workspace:
                 self._tab_before_search = self.workspace_tabs.currentWidget()
             self.workspace_tabs.setCurrentWidget(self.search_workspace)
             self._search_timer.start()
         else:
             self._search_timer.stop()
-            self._search_generation += 1
+            self._generations.invalidate(_RequestKind.SEARCH)
             self.search_panel.show_message(
                 "Type above to search context fields and values."
             )
@@ -2451,7 +2380,7 @@ class MainWindow(QMainWindow):
             try:
                 re.compile(query, re.IGNORECASE)
             except re.error as error:
-                self._search_generation += 1
+                self._generations.invalidate(_RequestKind.SEARCH)
                 self.search_panel.show_message(f"Invalid regular expression: {error}")
                 return
         include_keys = self.search_keys.isChecked()
@@ -2474,8 +2403,7 @@ class MainWindow(QMainWindow):
             self.search_panel.show_message("No context collection is loaded.")
             return
 
-        self._search_generation += 1
-        generation = self._search_generation
+        generation = self._generations.advance(_RequestKind.SEARCH)
         count = len(records)
         operation = self._begin_determinate_operation(
             "search", "searching collection", count
@@ -2561,19 +2489,19 @@ class MainWindow(QMainWindow):
     def _search_options_toggled(self, _checked: bool) -> None:
         if self.field_search.text().strip():
             self._cancel_operation("search")
-            self._search_generation += 1
+            self._generations.invalidate(_RequestKind.SEARCH)
             self._search_timer.start()
 
     def _search_mode_changed(self, _index: int) -> None:
         if self.field_search.text().strip():
             self._cancel_operation("search")
-            self._search_generation += 1
+            self._generations.invalidate(_RequestKind.SEARCH)
             self._search_timer.start()
 
     def _search_scope_changed(self, _index: int) -> None:
         if self.field_search.text().strip():
             self._cancel_operation("search")
-            self._search_generation += 1
+            self._generations.invalidate(_RequestKind.SEARCH)
             self._search_timer.start()
 
     def _cached_search_index(
@@ -2604,7 +2532,7 @@ class MainWindow(QMainWindow):
         searched_records: int,
     ) -> None:
         """Publish search results only while query and collection are current."""
-        if generation != self._search_generation:
+        if not self._generations.is_current(_RequestKind.SEARCH, generation):
             return
         self._finish_operation("search", "Finished searching collection")
         hits, failed_records, cancelled = result
@@ -2624,7 +2552,7 @@ class MainWindow(QMainWindow):
         )
 
     def _search_failed(self, generation: int, details: str) -> None:
-        if generation != self._search_generation:
+        if not self._generations.is_current(_RequestKind.SEARCH, generation):
             return
         self._finish_operation("search")
         logger.error("Could not search context collection\n%s", details)
@@ -2644,7 +2572,7 @@ class MainWindow(QMainWindow):
                 proxy_index = self.file_proxy.mapFromSource(source_index)
             if not proxy_index.isValid():
                 return
-            self._pending_search_hit = hit
+            self._pending_navigation.search_hit = hit
             self.file_list.setCurrentIndex(proxy_index)
             self.file_list.scrollTo(proxy_index)
             return
@@ -2673,17 +2601,14 @@ class MainWindow(QMainWindow):
     def _plot_requested(self, selector: NumberSelector) -> None:
         if self._current_document is not None:
             selector = selector_for_document(self._current_document, selector)
-        self._active_plot_selector = selector
-        self._active_plot_selectors = [selector]
+        self._plot_selection.replace(selector)
         self._load_collection_plot((selector,), activate=True)
 
     def _plot_add_requested(self, selector: NumberSelector) -> None:
         if self._current_document is not None:
             selector = selector_for_document(self._current_document, selector)
-        if selector not in self._active_plot_selectors:
-            self._active_plot_selectors.append(selector)
-        self._active_plot_selector = self._active_plot_selectors[0]
-        self._load_collection_plot(tuple(self._active_plot_selectors), activate=True)
+        self._plot_selection.add(selector)
+        self._load_collection_plot(tuple(self._plot_selection.selectors), activate=True)
 
     def _load_collection_plot(
         self,
@@ -2694,8 +2619,7 @@ class MainWindow(QMainWindow):
         selected = (selectors,) if isinstance(selectors, NumberSelector) else selectors
         records = list(self.file_model.records)
         self._cancel_operation("plot")
-        self._plot_generation += 1
-        generation = self._plot_generation
+        generation = self._generations.advance(_RequestKind.PLOT)
         if activate:
             self.hierarchy_tabs.setCurrentWidget(self.collection_plot)
         self.collection_plot.show_loading(selected, len(records))
@@ -2718,51 +2642,42 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_active_plot(self) -> None:
-        if self._active_plot_selectors:
+        if self._plot_selection.selectors:
             self._load_collection_plot(
-                tuple(self._active_plot_selectors), activate=False
+                tuple(self._plot_selection.selectors), activate=False
             )
-        elif self._active_plot_selector is not None:
-            self._active_plot_selectors = [self._active_plot_selector]
-            self._load_collection_plot((self._active_plot_selector,), activate=False)
 
     def _plot_loaded(
         self,
         generation: int,
         data: CollectionSeries | tuple[CollectionSeries, ...],
     ) -> None:
-        if generation == self._plot_generation:
+        if self._generations.is_current(_RequestKind.PLOT, generation):
             self._finish_operation("plot", "Finished loading plot values")
             collection = (data,) if isinstance(data, CollectionSeries) else data
             self.collection_plot.set_series_collection(collection)
             self.collection_plot.select_record(self._selected_record_id())
 
     def _plot_failed(self, generation: int, details: str) -> None:
-        if generation != self._plot_generation:
+        if not self._generations.is_current(_RequestKind.PLOT, generation):
             return
         self._finish_operation("plot")
         logger.error("Could not build collection plot\n%s", details)
         self.collection_plot.show_error("Could not build the collection plot.")
 
     def _remove_plot_series(self, selector: NumberSelector) -> None:
-        self._active_plot_selectors = [
-            active for active in self._active_plot_selectors if active != selector
-        ]
-        self._active_plot_selector = (
-            self._active_plot_selectors[0] if self._active_plot_selectors else None
-        )
-        if self._active_plot_selectors:
+        self._plot_selection.remove(selector)
+        if self._plot_selection.selectors:
             self._load_collection_plot(
-                tuple(self._active_plot_selectors), activate=False
+                tuple(self._plot_selection.selectors), activate=False
             )
         else:
             self.collection_plot.clear()
 
     def _clear_plot_series(self) -> None:
         self._cancel_operation("plot")
-        self._plot_generation += 1
-        self._active_plot_selector = None
-        self._active_plot_selectors = []
+        self._generations.invalidate(_RequestKind.PLOT)
+        self._plot_selection.clear()
         self.collection_plot.clear()
 
     def _order_requested(
@@ -2775,8 +2690,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No context collection is loaded.", 3000)
             return
         self.extraction.clear_collection_sort()
-        self._order_generation += 1
-        generation = self._order_generation
+        generation = self._generations.advance(_RequestKind.ORDER)
         operation = self._begin_determinate_operation(
             "order", "loading sort values", len(records)
         )
@@ -2806,7 +2720,7 @@ class MainWindow(QMainWindow):
         *,
         descending: bool = False,
     ) -> None:
-        if generation != self._order_generation:
+        if not self._generations.is_current(_RequestKind.ORDER, generation):
             return
         self._finish_operation("order")
         selected_id = self._selected_record_id()
@@ -2814,19 +2728,19 @@ class MainWindow(QMainWindow):
             data.points, key=lambda point: (point.value, point.index)
         )
         present_indices = {point.index for point in sorted_points}
-        self._numeric_order_present = tuple(
+        self._collection_order.present = tuple(
             records[point.index].id for point in sorted_points
         )
-        self._numeric_order_missing = tuple(
+        self._collection_order.missing = tuple(
             records[index].id
             for index in range(len(records))
             if index not in present_indices
         )
-        self._numeric_order_label = data.selector.label
-        self._order_descending = False
-        self._filename_reversed = False
+        self._collection_order.label = data.selector.label
+        self._collection_order.descending = False
+        self._collection_order.filename_reversed = False
         self.file_model.set_record_order(
-            (*self._numeric_order_present, *self._numeric_order_missing)
+            (*self._collection_order.present, *self._collection_order.missing)
         )
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
@@ -2847,7 +2761,7 @@ class MainWindow(QMainWindow):
             self._set_collection_order(descending=True)
 
     def _order_failed(self, generation: int, details: str) -> None:
-        if generation != self._order_generation:
+        if not self._generations.is_current(_RequestKind.ORDER, generation):
             return
         self._finish_operation("order")
         self.extraction.clear_collection_sort()
@@ -2868,8 +2782,7 @@ class MainWindow(QMainWindow):
         if not records:
             self._show_status("No context collection is loaded.", 3000)
             return
-        self._order_generation += 1
-        generation = self._order_generation
+        generation = self._generations.advance(_RequestKind.ORDER)
         operation = self._begin_determinate_operation(
             "order",
             f"sorting by extraction column {selector.column}",
@@ -2936,17 +2849,17 @@ class MainWindow(QMainWindow):
         missing: tuple[str, ...],
         descending: bool,
     ) -> None:
-        if generation != self._order_generation:
+        if not self._generations.is_current(_RequestKind.ORDER, generation):
             return
         self._finish_operation("order")
         selected_id = self._selected_record_id()
-        self._numeric_order_present = present
-        self._numeric_order_missing = missing
-        self._numeric_order_label = label
-        self._filename_reversed = False
+        self._collection_order.present = present
+        self._collection_order.missing = missing
+        self._collection_order.label = label
+        self._collection_order.filename_reversed = False
         ordered_present = tuple(reversed(present)) if descending else present
         self.file_model.set_record_order((*ordered_present, *missing))
-        self._order_descending = descending
+        self._collection_order.descending = descending
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
         self._refresh_extraction_preview(self.extraction.selectors)
@@ -2960,11 +2873,11 @@ class MainWindow(QMainWindow):
 
     def _reset_collection_order(self) -> None:
         self._cancel_operation("order")
-        self._order_generation += 1
+        self._generations.invalidate(_RequestKind.ORDER)
         selected_id = self._selected_record_id()
         self.extraction.clear_collection_sort()
         self._clear_numeric_order()
-        self._filename_reversed = False
+        self._collection_order.filename_reversed = False
         self.file_model.set_record_order(None)
         self._restore_record_selection(selected_id)
         self._refresh_active_plot()
@@ -2980,34 +2893,34 @@ class MainWindow(QMainWindow):
         # A sidebar order action supersedes a still-running Inspector or
         # extraction sort just as it supersedes the visible header marker.
         self._cancel_operation("order")
-        self._order_generation += 1
+        self._generations.invalidate(_RequestKind.ORDER)
         self.extraction.clear_collection_sort()
         selected_id = self._selected_record_id()
-        self._order_descending = descending
-        if self._numeric_order_label is not None:
+        self._collection_order.descending = descending
+        if self._collection_order.label is not None:
             present = (
-                tuple(reversed(self._numeric_order_present))
+                tuple(reversed(self._collection_order.present))
                 if descending
-                else self._numeric_order_present
+                else self._collection_order.present
             )
-            known_ids = {*present, *self._numeric_order_missing}
+            known_ids = {*present, *self._collection_order.missing}
             newly_added = tuple(
                 record.id
                 for record in self.file_model.filename_ordered_records
                 if record.id not in known_ids
             )
             self.file_model.set_record_order(
-                (*present, *self._numeric_order_missing, *newly_added)
+                (*present, *self._collection_order.missing, *newly_added)
             )
             arrow = "↓" if descending else "↑"
             direction = "Descending" if descending else "Ascending"
-            self.order_status.setText(f"Order: {self._numeric_order_label} {arrow}")
+            self.order_status.setText(f"Order: {self._collection_order.label} {arrow}")
             self.order_status.setToolTip(
-                f"{direction} numeric order by {self._numeric_order_label}; "
+                f"{direction} numeric order by {self._collection_order.label}; "
                 "missing values last"
             )
         else:
-            self._filename_reversed = descending
+            self._collection_order.filename_reversed = descending
             if descending:
                 filename_records = self.file_model.filename_ordered_records
                 self.file_model.set_record_order(
@@ -3031,13 +2944,10 @@ class MainWindow(QMainWindow):
 
     def _reverse_collection_order(self) -> None:
         """Compatibility helper for callers of the former toggle action."""
-        self._set_collection_order(descending=not self._order_descending)
+        self._set_collection_order(descending=not self._collection_order.descending)
 
     def _clear_numeric_order(self) -> None:
-        self._numeric_order_present = ()
-        self._numeric_order_missing = ()
-        self._numeric_order_label = None
-        self._order_descending = False
+        self._collection_order.clear_numeric()
 
     def _add_extraction_selector(self, selector: FieldSelector) -> None:
         if self._current_document is not None:
@@ -3068,8 +2978,7 @@ class MainWindow(QMainWindow):
             selected = self.extraction.selectors
         records = list(self.file_model.records)
         self._cancel_operation("extraction_preview")
-        self._extraction_generation += 1
-        generation = self._extraction_generation
+        generation = self._generations.advance(_RequestKind.EXTRACTION)
         if not selected:
             self.extraction.preview_model.set_data((), ())
             self.extraction.status.setText(
@@ -3111,14 +3020,14 @@ class MainWindow(QMainWindow):
     def _extraction_preview_loaded(
         self, generation: int, rows: tuple, total: int
     ) -> None:
-        if generation == self._extraction_generation:
+        if self._generations.is_current(_RequestKind.EXTRACTION, generation):
             self._finish_operation(
                 "extraction_preview", "Finished building extraction preview"
             )
             self.extraction.set_preview(rows, total)
 
     def _extraction_failed(self, generation: int, details: str) -> None:
-        if generation != self._extraction_generation:
+        if not self._generations.is_current(_RequestKind.EXTRACTION, generation):
             return
         self._finish_operation("extraction_preview")
         logger.error("Could not build extraction preview\n%s", details)

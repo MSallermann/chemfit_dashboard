@@ -9,6 +9,7 @@ level navigation and synchronizes selections with MainWindow.
 from __future__ import annotations
 
 import math
+from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
@@ -48,7 +49,7 @@ from chemfit_dashboard.ui_components import (
     panel_layout,
     set_expand_button_state,
 )
-from chemfit_dashboard.workers import TaskRunner
+from chemfit_dashboard.workers import GenerationTracker, TaskRunner
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,6 +60,13 @@ BACKGROUND_LAYOUT_THRESHOLD = 180
 INCREMENTAL_RENDER_THRESHOLD = 800
 RENDER_BATCH_SIZE = 250
 MAX_FLOW_COMPONENTS = 5_000
+
+
+class _GraphRequest(Enum):
+    """Freshness domains for layout workers and incremental scene rendering."""
+
+    LAYOUT = auto()
+    RENDER = auto()
 
 
 class _FlowNodeItem(QGraphicsPathItem):
@@ -155,10 +163,9 @@ class DataFlowView(QGraphicsView):
         self._items_by_id: dict[str, _FlowNodeItem] = {}
         self._styled_selected_item: _FlowNodeItem | None = None
         self._graph_bounds = QRectF()
-        self._render_generation = 0
         self._clearing_scene = False
         self._tasks = TaskRunner(self)
-        self._layout_generation = 0
+        self._generations = GenerationTracker[_GraphRequest]()
         self._layout_cancellation: CancellationToken | None = None
         self._scheme = active_color_scheme()
         self._font_metrics = QFontMetricsF(QFont())
@@ -215,7 +222,7 @@ class DataFlowView(QGraphicsView):
         """Rebuild visible node text while retaining navigation and selection."""
         was_rendered = self._rendered
         self._cancel_layout()
-        self._layout_generation += 1
+        self._generations.invalidate(_GraphRequest.LAYOUT)
         self._rendered = False
         self._clear_scene()
         if was_rendered:
@@ -313,8 +320,7 @@ class DataFlowView(QGraphicsView):
         if document is None:
             return
         self._cancel_layout()
-        self._layout_generation += 1
-        generation = self._layout_generation
+        generation = self._generations.advance(_GraphRequest.LAYOUT)
         self._clear_scene()
         self._render_status_message = None
         component_hint = _declared_component_count_hint(document, self._current_path)
@@ -382,7 +388,7 @@ class DataFlowView(QGraphicsView):
         layout: GraphLayout,
     ) -> None:
         if (
-            generation != self._layout_generation
+            not self._generations.is_current(_GraphRequest.LAYOUT, generation)
             or document is not self._document
             or cancellation.cancelled
         ):
@@ -391,7 +397,10 @@ class DataFlowView(QGraphicsView):
         self._finish_render(graph, layout)
 
     def _layout_failed(self, generation: int, cancellation: CancellationToken) -> None:
-        if generation != self._layout_generation or cancellation.cancelled:
+        if (
+            not self._generations.is_current(_GraphRequest.LAYOUT, generation)
+            or cancellation.cancelled
+        ):
             return
         self._layout_cancellation = None
         self._clear_scene()
@@ -405,7 +414,7 @@ class DataFlowView(QGraphicsView):
     def _finish_render(self, graph: DataFlowGraph, layout: GraphLayout) -> None:
         self._clear_scene()
         self._font_metrics = QFontMetricsF(QFont())
-        render_generation = self._render_generation
+        render_generation = self._generations.current(_GraphRequest.RENDER)
         edge_color = QColor(self._scheme.accent)
         edge_pen = QPen(edge_color, 2.0)
         edge_paths = QPainterPath()
@@ -460,7 +469,7 @@ class DataFlowView(QGraphicsView):
         start: int,
         render_generation: int,
     ) -> None:
-        if render_generation != self._render_generation:
+        if not self._generations.is_current(_GraphRequest.RENDER, render_generation):
             return
         stop = min(start + RENDER_BATCH_SIZE, len(graph.nodes))
         self._add_node_range(graph, layout, start, stop)
@@ -478,7 +487,7 @@ class DataFlowView(QGraphicsView):
         self._complete_render(graph, render_generation)
 
     def _complete_render(self, graph: DataFlowGraph, render_generation: int) -> None:
-        if render_generation != self._render_generation:
+        if not self._generations.is_current(_GraphRequest.RENDER, render_generation):
             return
         self._apply_selection(reveal=False)
         if len(graph.nodes) >= INCREMENTAL_RENDER_THRESHOLD:
@@ -589,7 +598,7 @@ class DataFlowView(QGraphicsView):
 
     def _clear_scene(self) -> None:
         """Drop Python item references before Qt destroys their C++ objects."""
-        self._render_generation += 1
+        self._generations.invalidate(_GraphRequest.RENDER)
         self._clearing_scene = True
         signals_were_blocked = self._scene.blockSignals(True)  # noqa: FBT003
         try:

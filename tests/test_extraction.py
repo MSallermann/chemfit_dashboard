@@ -170,15 +170,14 @@ def test_array_expansion_creates_columns_and_preserves_one_row_per_evaluation(tm
         "positions",
         array_expansion_depth=2,
     )
-    second = FieldSelector(
-        (), "fields", ("b",), "b", array_expansion_depth=1
-    )
+    second = FieldSelector((), "fields", ("b",), "b", array_expansion_depth=1)
     csv_output = tmp_path / "wide.csv"
     jsonl_output = tmp_path / "structured.jsonl"
 
-    assert export_csv(
-        csv_output, source, records, ExtractionConfig((positions, second))
-    ) == 1
+    assert (
+        export_csv(csv_output, source, records, ExtractionConfig((positions, second)))
+        == 1
+    )
     with csv_output.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.reader(stream))
     assert rows[0][3:9] == [
@@ -190,9 +189,12 @@ def test_array_expansion_creates_columns_and_preserves_one_row_per_evaluation(tm
         "positions.1/2",
     ]
     assert rows[1][3:9] == ["1", "2", "3", "4", "5", "6"]
-    assert export_jsonl(
-        jsonl_output, source, records, ExtractionConfig((positions, second))
-    ) == 1
+    assert (
+        export_jsonl(
+            jsonl_output, source, records, ExtractionConfig((positions, second))
+        )
+        == 1
+    )
     payload = json.loads(jsonl_output.read_text(encoding="utf-8"))
     assert payload["values"]["positions"] == [[1, 2, 3], [4, 5, 6]]
 
@@ -497,9 +499,7 @@ def test_flattened_columns_can_be_filtered_renamed_and_round_trip(tmp_path):
 
     assert restored.version == 2
     assert restored.selectors[0].excluded_paths == (("energy",),)
-    assert restored.selectors[0].flattened_column_names == (
-        (("force",), "force_ev"),
-    )
+    assert restored.selectors[0].flattened_column_names == ((("force",), "force_ev"),)
 
     context = tmp_path / "step_1.json"
     context.write_text(
@@ -568,11 +568,7 @@ def test_extraction_fields_and_preview_columns_support_bulk_removal():
             0,
             "record",
             "step.json",
-            (
-                ExtractionValue(
-                    [[1, 2, 3], [4, 5, 6]], ExtractionStatus.AVAILABLE
-                ),
-            ),
+            (ExtractionValue([[1, 2, 3], [4, 5, 6]], ExtractionStatus.AVAILABLE),),
         ),
     )
     panel.set_preview(preview_rows, 1)
@@ -605,8 +601,7 @@ def test_field_specific_extraction_controls_are_inline():
     panel.add_selector(FieldSelector((), "fields", ("force",), "force"))
 
     assert not any(
-        button.text() == "Remove selected"
-        for button in panel.findChildren(QPushButton)
+        button.text() == "Remove selected" for button in panel.findChildren(QPushButton)
     )
     assert not _inline_action(panel, 0, "moveUpAction").isEnabled()
     assert _inline_action(panel, 0, "moveDownAction").isEnabled()
@@ -704,11 +699,14 @@ def test_extraction_preview_header_selects_column_and_sort_shortcut_toggles():
     assert panel.preview_header.sort_marker_section == 3
     assert panel.preview_header.sort_marker_order == Qt.SortOrder.DescendingOrder
     assert panel.preview_model.headerData(3, Qt.Orientation.Horizontal) == "energy"
-    assert "press s to sort or reverse" in str(
-        panel.preview_model.headerData(
-            3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
-        )
-    ).lower()
+    assert (
+        "press s to sort or reverse"
+        in str(
+            panel.preview_model.headerData(
+                3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
+            )
+        ).lower()
+    )
 
     panel.clear_collection_sort()
 
@@ -750,11 +748,7 @@ def test_extraction_preview_rejects_opaque_component_sorting():
                 0,
                 "record-1",
                 "step_1.json",
-                (
-                    ExtractionValue(
-                        {"energy": 3.5}, ExtractionStatus.AVAILABLE
-                    ),
-                ),
+                (ExtractionValue({"energy": 3.5}, ExtractionStatus.AVAILABLE),),
             ),
         ),
         1,
@@ -769,11 +763,14 @@ def test_extraction_preview_rejects_opaque_component_sorting():
 
     assert not requested_sorts
     assert "flatten it or select a scalar field" in messages[-1].lower()
-    assert "component or array values" in str(
-        panel.preview_model.headerData(
-            3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
-        )
-    ).lower()
+    assert (
+        "component or array values"
+        in str(
+            panel.preview_model.headerData(
+                3, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole
+            )
+        ).lower()
+    )
 
 
 def test_extraction_column_editor_fits_inside_table_row():

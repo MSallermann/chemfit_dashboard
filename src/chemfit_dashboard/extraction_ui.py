@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QSpinBox,
@@ -72,6 +73,20 @@ class _PreviewColumn:
     selector_index: int
     nested_path: JsonPath | None
     label: str
+
+
+@dataclass(slots=True)
+class _PreviewInteractionState:
+    """Selection restoration and collection sort owned by the preview."""
+
+    pending_selection_column: int | None = None
+    sort_column: int | None = None
+    sort_descending: bool = False
+
+    def clear_sort(self) -> None:
+        """Forget the sort marker when another action changes collection order."""
+        self.sort_column = None
+        self.sort_descending = False
 
 
 class _PreviewHeaderView(QHeaderView):
@@ -113,8 +128,7 @@ class _PreviewHeaderView(QHeaderView):
             return
         selection = self.selectionModel()
         selected = bool(
-            selection
-            and selection.isColumnSelected(logical_index, QModelIndex())
+            selection and selection.isColumnSelected(logical_index, QModelIndex())
         )
         color_role = (
             QPalette.ColorRole.HighlightedText
@@ -274,7 +288,10 @@ class ExtractionPreviewModel(QAbstractTableModel):
         found_value = False
         for row in range(self.rowCount()):
             extracted = self._extracted_value(self.index(row, column))
-            if extracted.status != ExtractionStatus.AVAILABLE or extracted.value is None:
+            if (
+                extracted.status != ExtractionStatus.AVAILABLE
+                or extracted.value is None
+            ):
                 continue
             found_value = True
             if not isinstance(extracted.value, (bool, int, float, str)):
@@ -408,9 +425,7 @@ class DataExtractionPanel(QWidget):
         self.preview_header = _PreviewHeaderView(self.preview)
         self.preview.setHorizontalHeader(self.preview_header)
         self.preview.setAlternatingRowColors(True)
-        self.preview.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
-        )
+        self.preview.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.preview.setHorizontalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
@@ -418,15 +433,13 @@ class DataExtractionPanel(QWidget):
         self.preview_header.setSectionsClickable(True)
         self.preview_header.setHighlightSections(True)
         self.preview_header.sectionClicked.connect(self._select_preview_column)
-        self.preview_header.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
+        self.preview_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview_header.customContextMenuRequested.connect(
             self._show_preview_header_context_menu
         )
-        self._pending_preview_selection_column: int | None = None
-        self._preview_sort_column: int | None = None
-        self._preview_sort_descending = False
+        # Preview columns rebuild asynchronously after selector edits. This
+        # state carries only interaction continuity across that rebuild.
+        self._preview_state = _PreviewInteractionState()
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview.customContextMenuRequested.connect(self._show_preview_context_menu)
         self._preview_copy_shortcut = QShortcut(
@@ -509,7 +522,7 @@ class DataExtractionPanel(QWidget):
 
     def add_selector(self, selector: FieldSelector) -> None:
         """Append a selector with a unique export-column name."""
-        self._pending_preview_selection_column = None
+        self._preview_state.pending_selection_column = None
         existing = {item.column.casefold() for item in self._selectors}
         base = selector.column.strip() or "value"
         column = base
@@ -523,7 +536,7 @@ class DataExtractionPanel(QWidget):
 
     def set_config(self, config: ExtractionConfig, *, mark_clean: bool = False) -> None:
         """Replace editor state from a validated saved configuration."""
-        self._pending_preview_selection_column = None
+        self._preview_state.pending_selection_column = None
         self._selectors = list(config.selectors)
         self._include_identifiers = config.include_identifiers
         self._include_status_columns = config.include_status_columns
@@ -534,7 +547,7 @@ class DataExtractionPanel(QWidget):
 
     def clear(self) -> None:
         """Remove all configured selectors and preview rows."""
-        self._pending_preview_selection_column = None
+        self._preview_state.pending_selection_column = None
         self._selectors.clear()
         self._rebuild_selection_table(-1)
         self.preview_model.set_data((), ())
@@ -547,8 +560,8 @@ class DataExtractionPanel(QWidget):
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
         """Install preview rows while retaining the collection's full count."""
         self.preview_model.set_data(self.selectors, rows)
-        pending_column = self._pending_preview_selection_column
-        self._pending_preview_selection_column = None
+        pending_column = self._preview_state.pending_selection_column
+        self._preview_state.pending_selection_column = None
         if pending_column is not None and self.preview_model.columnCount() > 3:
             self._select_preview_column(
                 min(pending_column, self.preview_model.columnCount() - 1),
@@ -566,8 +579,7 @@ class DataExtractionPanel(QWidget):
 
     def clear_collection_sort(self) -> None:
         """Remove the header marker after collection order changes elsewhere."""
-        self._preview_sort_column = None
-        self._preview_sort_descending = False
+        self._preview_state.clear_sort()
         self.preview_header.clear_sort_marker()
 
     def _rebuild_selection_table(self, selected_row: int) -> None:
@@ -592,8 +604,10 @@ class DataExtractionPanel(QWidget):
             actions = self.selections.cellWidget(row, 2)
             if actions is None:
                 continue
-            actions.layout().invalidate()
-            actions.layout().activate()
+            actions_layout = actions.layout()
+            if actions_layout is not None:
+                actions_layout.invalidate()
+                actions_layout.activate()
             required = max(required, actions.minimumSizeHint().width() + 8)
         header = self.selections.horizontalHeader()
         current = header.sectionSize(2)
@@ -658,9 +672,7 @@ class DataExtractionPanel(QWidget):
         array_depth.setValue(max(1, selector.column_expansion_depth))
         array_depth.setPrefix("Levels: ")
         depth_metrics = array_depth.fontMetrics()
-        array_depth.setMinimumWidth(
-            depth_metrics.horizontalAdvance("Levels: 8") + 40
-        )
+        array_depth.setMinimumWidth(depth_metrics.horizontalAdvance("Levels: 8") + 40)
         array_depth.setToolTip(
             f"Expand this many array levels in {selector.column} into columns; "
             "for shape [N, 3], choose 2 for scalar coordinate columns"
@@ -724,6 +736,16 @@ class DataExtractionPanel(QWidget):
             return
         self.selections.setCurrentCell(row, 0)
         self.selections.editItem(item)
+        # Some Qt styles size the transient item editor one pixel below its
+        # font's readable height after other top-level windows have existed.
+        # Keep the editor and its row explicitly compatible across styles.
+        editor = self.selections.findChild(QLineEdit)
+        if editor is not None:
+            minimum_height = editor.fontMetrics().height() + 4
+            editor.setMinimumHeight(minimum_height)
+            self.selections.setRowHeight(
+                row, max(self.selections.rowHeight(row), minimum_height)
+            )
 
     def _set_option(self, row: int, option: str, checked: bool) -> None:
         if 0 <= row < len(self._selectors):
@@ -962,12 +984,10 @@ class DataExtractionPanel(QWidget):
     def _remove_selected_preview_columns(self) -> None:
         self._remove_preview_columns(self._selected_preview_columns())
 
-    def _remove_preview_columns(
-        self, columns: tuple[_PreviewColumn, ...]
-    ) -> None:
+    def _remove_preview_columns(self, columns: tuple[_PreviewColumn, ...]) -> None:
         if not columns:
             return
-        self._pending_preview_selection_column = (
+        self._preview_state.pending_selection_column = (
             self._next_preview_column_after_removal(columns)
         )
         remove_selectors = {
@@ -1017,9 +1037,7 @@ class DataExtractionPanel(QWidget):
         visible = tuple(
             preview_column
             for logical_column in range(3, self.preview_model.columnCount())
-            if (
-                preview_column := self.preview_model.extraction_column(logical_column)
-            )
+            if (preview_column := self.preview_model.extraction_column(logical_column))
             is not None
         )
         removed = set(columns)
@@ -1091,8 +1109,8 @@ class DataExtractionPanel(QWidget):
         if preview_column is None:
             return
         descending = (
-            not self._preview_sort_descending
-            if self._preview_sort_column == column
+            not self._preview_state.sort_descending
+            if self._preview_state.sort_column == column
             else False
         )
         self._request_preview_sort(column, preview_column, descending)
@@ -1107,12 +1125,10 @@ class DataExtractionPanel(QWidget):
         if reason is not None:
             self.status_message.emit(reason)
             return
-        self._preview_sort_column = column
-        self._preview_sort_descending = descending
+        self._preview_state.sort_column = column
+        self._preview_state.sort_descending = descending
         order = (
-            Qt.SortOrder.DescendingOrder
-            if descending
-            else Qt.SortOrder.AscendingOrder
+            Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder
         )
         header = self.preview_header
         header.set_sort_marker(column, order)

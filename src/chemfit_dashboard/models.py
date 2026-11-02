@@ -370,9 +370,7 @@ class ContextTreeModel(QAbstractItemModel):
         if not parent.isValid():
             return False
         item = self._item(parent)
-        return bool(
-            item.info and item.info.child_count > len(item.children)
-        )
+        return bool(item.info and item.info.child_count > len(item.children))
 
     def fetchMore(self, parent: ModelIndex) -> None:  # noqa: N802
         if self._document is None or not self.canFetchMore(parent):

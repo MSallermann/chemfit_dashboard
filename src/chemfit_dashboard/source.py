@@ -525,9 +525,7 @@ class JsonFileSource(ContextSource):
         for listed_name in listing.stdout.splitlines():
             child_name = listed_name.strip()
             if child_name.casefold().endswith(".json"):
-                downloaded.add(
-                    self._gio_copy(f"{base}{quote(child_name)}", child_name)
-                )
+                downloaded.add(self._gio_copy(f"{base}{quote(child_name)}", child_name))
         return downloaded
 
     def _gio_copy(self, uri: str, name: str) -> Path:

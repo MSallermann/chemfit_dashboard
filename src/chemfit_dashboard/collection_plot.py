@@ -15,7 +15,7 @@ import math
 import re
 import statistics
 from collections import defaultdict
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -164,6 +164,46 @@ class _PresentedSeries:
 
     index: int
     data: CollectionSeries
+
+
+@dataclass(slots=True)
+class _RenderedPointLookup:
+    """
+    Keep the three indexes for rendered points in lockstep.
+
+    The chart may sample a large collection before drawing it. Selection and
+    hover handling must therefore consult the points that were actually drawn,
+    not the complete source series. Keeping these indexes behind one object
+    makes rebuilding or clearing only part of that derived state impossible.
+    """
+
+    points_by_index: dict[int, list[QPointF]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    labels_by_coordinate: dict[tuple[int, float], list[str]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    selectors_by_coordinate: dict[tuple[int, float], list[NumberSelector]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+
+    def clear(self) -> None:
+        """Discard every index when the chart no longer represents data."""
+        self.points_by_index.clear()
+        self.labels_by_coordinate.clear()
+        self.selectors_by_coordinate.clear()
+
+    def add(
+        self,
+        point: SeriesPoint,
+        rendered_point: QPointF,
+        selector: NumberSelector,
+    ) -> None:
+        """Index one point using the coordinate identity used by Qt Charts."""
+        coordinate = (point.index, point.value)
+        self.points_by_index[point.index].append(rendered_point)
+        self.labels_by_coordinate[coordinate].append(selector.label)
+        self.selectors_by_coordinate[coordinate].append(selector)
 
 
 def ordered_records(records: Iterable[RecordRef]) -> list[RecordRef]:
@@ -376,11 +416,7 @@ class CollectionPlotPanel(QWidget):
         self._data: tuple[CollectionSeries, ...] = ()
         self._selected_record_id: str | None = None
         self._selection_series: QScatterSeries | None = None
-        self._rendered_points: dict[int, list[QPointF]] = {}
-        self._rendered_point_labels: dict[tuple[int, float], list[str]] = {}
-        self._rendered_point_selectors: dict[
-            tuple[int, float], list[NumberSelector]
-        ] = {}
+        self._point_lookup = _RenderedPointLookup()
         self._hidden_selectors: set[NumberSelector] = set()
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
@@ -451,9 +487,7 @@ class CollectionPlotPanel(QWidget):
         chart = create_chart("Values across context collection", self._scheme)
         all_points: list[SeriesPoint] = []
         nonpositive = 0
-        self._rendered_points = defaultdict(list)
-        self._rendered_point_labels = defaultdict(list)
-        self._rendered_point_selectors = defaultdict(list)
+        self._point_lookup.clear()
         for presented in visible_series:
             data_index = presented.index
             series_data = presented.data
@@ -475,14 +509,10 @@ class CollectionPlotPanel(QWidget):
             marker_points = [QPointF(point.index, point.value) for point in rendered]
             markers.replace(marker_points)
             for point in rendered:
-                self._rendered_points[point.index].append(
-                    QPointF(point.index, point.value)
-                )
-                self._rendered_point_labels[(point.index, point.value)].append(
-                    series_data.selector.label
-                )
-                self._rendered_point_selectors[(point.index, point.value)].append(
-                    series_data.selector
+                self._point_lookup.add(
+                    point,
+                    QPointF(point.index, point.value),
+                    series_data.selector,
                 )
             lines: list[QLineSeries] = []
             contiguous: list[SeriesPoint] = []
@@ -672,9 +702,7 @@ class CollectionPlotPanel(QWidget):
             "All series are hidden; check one in the series list to show it."
         )
 
-    def _render_statistics(
-        self, visible_series: tuple[_PresentedSeries, ...]
-    ) -> None:
+    def _render_statistics(self, visible_series: tuple[_PresentedSeries, ...]) -> None:
         self.statistics_table.setRowCount(len(visible_series))
         for row, presented in enumerate(visible_series):
             series = presented.data
@@ -693,9 +721,7 @@ class CollectionPlotPanel(QWidget):
         self.statistics_table.resizeColumnsToContents()
         self.status.setText(f"Statistics for {len(visible_series):,} visible series")
 
-    def _render_histogram(
-        self, visible_series: tuple[_PresentedSeries, ...]
-    ) -> None:
+    def _render_histogram(self, visible_series: tuple[_PresentedSeries, ...]) -> None:
         normalized = self.normalize.isChecked()
         chart = create_chart(
             "Probability distribution" if normalized else "Binned value distribution",
@@ -902,9 +928,7 @@ class CollectionPlotPanel(QWidget):
 
     def _set_empty_chart(self, title: str) -> None:
         self._labels = ()
-        self._rendered_points = {}
-        self._rendered_point_labels = {}
-        self._rendered_point_selectors = {}
+        self._point_lookup.clear()
         self._selection_series = None
         self.cursor_coordinates.setText("Cursor: —")
         self.chart_view.setChart(create_chart(title, self._scheme))
@@ -1099,7 +1123,7 @@ class CollectionPlotPanel(QWidget):
             index = record_ids.index(self._selected_record_id)
         except ValueError:
             return
-        points = self._rendered_points.get(index, [])
+        points = self._point_lookup.points_by_index.get(index, [])
         if not points or not chart.axes():
             return
         selection = QScatterSeries()
@@ -1133,7 +1157,9 @@ class CollectionPlotPanel(QWidget):
         record_ids = self._data[0].record_ids
         if not 0 <= index < len(record_ids):
             return
-        selectors = self._rendered_point_selectors.get((index, point.y()), ())
+        selectors = self._point_lookup.selectors_by_coordinate.get(
+            (index, point.y()), ()
+        )
         selector = selectors[0] if selectors else self._data[0].selector
         record_id = record_ids[index]
         self.context_selected.emit(record_id)
@@ -1142,7 +1168,9 @@ class CollectionPlotPanel(QWidget):
     def _selection_point_hovered(
         self, series: QScatterSeries, point: QPointF, state: bool
     ) -> None:
-        labels = self._rendered_point_labels.get((round(point.x()), point.y()), ())
+        labels = self._point_lookup.labels_by_coordinate.get(
+            (round(point.x()), point.y()), ()
+        )
         series_label = " · ".join(labels) if labels else "Selected context"
         self._point_hovered(series, point, state, series_label)
 

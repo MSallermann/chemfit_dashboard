@@ -4,6 +4,7 @@ import json
 
 from PySide6.QtCore import QModelIndex
 
+from chemfit_dashboard import main_window as main_window_module
 from chemfit_dashboard.data_flow import (
     INPUT_NODE,
     OUTPUT_NODE,
@@ -146,7 +147,9 @@ def test_static_children_survive_failed_and_missing_runtime_contexts(tmp_path):
         ),
     )
 
-    children = [node for node in build_data_flow(document).nodes if node.kind == "child"]
+    children = [
+        node for node in build_data_flow(document).nodes if node.kind == "child"
+    ]
 
     assert [node.status for node in children] == ["failed", "not recorded"]
     assert not children[1].recorded
@@ -247,9 +250,7 @@ def test_graph_batches_noninteractive_scene_items(chemfit_document):
     assert len(panel.view.scene().items()) <= node_count + 3
 
 
-def test_graph_refuses_oversized_declared_flow_before_building(
-    tmp_path, monkeypatch
-):
+def test_graph_refuses_oversized_declared_flow_before_building(tmp_path, monkeypatch):
     monkeypatch.setattr("chemfit_dashboard.graph_view.MAX_FLOW_COMPONENTS", 2)
     document = _document(
         tmp_path,
@@ -352,8 +353,10 @@ def test_tree_data_flow_and_inspector_selection_are_synchronized(tmp_path):
         ),
     )
     window = MainWindow(source=JsonFileSource())
-    window._load_generation = 1  # noqa: SLF001
-    window._document_loaded(1, document)  # noqa: SLF001
+    generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.LOAD  # noqa: SLF001
+    )
+    window._document_loaded(generation, document)  # noqa: SLF001
     window.hierarchy_tabs.setCurrentWidget(window.data_flow)
     window.data_flow.ensure_rendered()
 

@@ -87,9 +87,9 @@ class _WorkerState:
     """Caches owned independently by each persistent spawned worker process."""
 
     source: JsonFileSource | None = None
-    indexes: OrderedDict[
-        tuple[str, int, int, str], ContextSearchIndex
-    ] = field(default_factory=OrderedDict)
+    indexes: OrderedDict[tuple[str, int, int, str], ContextSearchIndex] = field(
+        default_factory=OrderedDict
+    )
     index_entries: int = 0
 
 
@@ -194,8 +194,7 @@ def _record_chunks(
 ) -> tuple[tuple[RecordRef, ...], ...]:
     size = search_chunk_size(len(records), worker_count)
     return tuple(
-        tuple(records[start : start + size])
-        for start in range(0, len(records), size)
+        tuple(records[start : start + size]) for start in range(0, len(records), size)
     )
 
 
@@ -258,9 +257,7 @@ def search_collection(
             for future in futures:
                 future.cancel()
             return CollectionSearchResult([], 0, cancelled=True)
-        done, _pending = wait(
-            tuple(futures), timeout=0.05, return_when=FIRST_COMPLETED
-        )
+        done, _pending = wait(tuple(futures), timeout=0.05, return_when=FIRST_COMPLETED)
         for future in done:
             chunk_index = futures.pop(future)
             try:

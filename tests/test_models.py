@@ -90,7 +90,9 @@ def test_file_menu_closes_loaded_collection_without_quitting(tmp_path, monkeypat
     window._records_discovered(source.discover([context_path]))  # noqa: SLF001
     assert window.close_collection_action.isEnabled()
     assert window._current_document is not None  # noqa: SLF001
-    collection_generation = window._collection_generation  # noqa: SLF001
+    collection_generation = window._generations.current(  # noqa: SLF001
+        main_window_module._RequestKind.COLLECTION  # noqa: SLF001
+    )
 
     window.close_collection_action.trigger()
 
@@ -226,28 +228,28 @@ def test_status_footer_expands_to_show_concurrent_operations(qapp):
     window._begin_operation("plot", "loading plot values")  # noqa: SLF001
     qapp.processEvents()
 
-    assert window.activity_toggle.isVisible()
-    assert "(+1)" in window.activity_status.text()
-    window.activity_toggle.setChecked(True)
+    assert window.activity.toggle.isVisible()
+    assert "(+1)" in window.activity.status.text()
+    window.activity.toggle.setChecked(True)
     qapp.processEvents()
-    assert window.activity_panel.isVisible()
-    assert window.activity_panel_layout.count() == 3
-    search_row = window._activity_rows["search"][0]  # noqa: SLF001
+    assert window.activity.panel.isVisible()
+    assert window.activity.panel_layout.count() == 3
+    search_row = window.activity.rows["search"][0]
     window.operation_progress.emit("search", 5, 10)
     qapp.processEvents()
-    assert window.activity_panel.isVisible()
-    assert window._activity_rows["search"][0] is search_row  # noqa: SLF001
+    assert window.activity.panel.isVisible()
+    assert window.activity.rows["search"][0] is search_row
 
     window._finish_operation("plot")  # noqa: SLF001
-    assert window._operation_progress["search"] == (5, 10)  # noqa: SLF001
+    assert window.activity.progress_values["search"] == (5, 10)
 
     window._cancel_operation("search")  # noqa: SLF001
-    assert window.activity_toggle.isChecked()
-    assert not window.activity_panel.isVisible()
+    assert window.activity.toggle.isChecked()
+    assert not window.activity.panel.isVisible()
     window._begin_operation("search", "searching collection")  # noqa: SLF001
     qapp.processEvents()
-    assert window.activity_toggle.isChecked()
-    assert window.activity_panel.isVisible()
+    assert window.activity.toggle.isChecked()
+    assert window.activity.panel.isVisible()
 
 
 def test_delayed_activity_avoids_short_operation_footer_flash():
@@ -256,20 +258,16 @@ def test_delayed_activity_avoids_short_operation_footer_flash():
     quick_token = window._begin_operation(  # noqa: SLF001
         "document", "loading quick.json", display_delay_ms=200
     )
-    assert "document" not in window._operation_labels  # noqa: SLF001
+    assert "document" not in window.activity.labels
     window._finish_operation("document")  # noqa: SLF001
-    window._show_delayed_operation(  # noqa: SLF001
-        "document", "loading quick.json", quick_token
-    )
-    assert "document" not in window._operation_labels  # noqa: SLF001
+    window.activity.show_if_current("document", "loading quick.json", quick_token)
+    assert "document" not in window.activity.labels
 
     slow_token = window._begin_operation(  # noqa: SLF001
         "document", "loading slow.json", display_delay_ms=200
     )
-    window._show_delayed_operation(  # noqa: SLF001
-        "document", "loading slow.json", slow_token
-    )
-    assert window._operation_labels["document"] == "loading slow.json"  # noqa: SLF001
+    window.activity.show_if_current("document", "loading slow.json", slow_token)
+    assert window.activity.labels["document"] == "loading slow.json"
     window._finish_operation("document")  # noqa: SLF001
 
 
@@ -364,13 +362,15 @@ def test_session_restores_collection_layout_and_recent_location(
     assert [record.name for record in overridden.file_model.records] == [
         "explicit.json"
     ]
-    assert overridden._session_locations == [str(explicit.resolve())]  # noqa: SLF001
+    assert overridden._session.locations == [str(explicit.resolve())]  # noqa: SLF001
 
 
 def test_find_shortcut_and_navigation_history(chemfit_document):
     window = MainWindow(source=JsonFileSource())
-    window._load_generation = 1  # noqa: SLF001
-    window._document_loaded(1, chemfit_document)  # noqa: SLF001
+    generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.LOAD  # noqa: SLF001
+    )
+    window._document_loaded(generation, chemfit_document)  # noqa: SLF001
     window.hierarchy_tabs.setCurrentWidget(window.tree)
     window.workspace_tabs.setCurrentWidget(window.collection_analysis)
 
@@ -401,8 +401,10 @@ def test_find_shortcut_and_navigation_history(chemfit_document):
 
 def test_tree_view_ctrl_c_copies_selected_component(chemfit_document, qapp):
     window = MainWindow(source=JsonFileSource())
-    window._load_generation = 1  # noqa: SLF001
-    window._document_loaded(1, chemfit_document)  # noqa: SLF001
+    generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.LOAD  # noqa: SLF001
+    )
+    window._document_loaded(generation, chemfit_document)  # noqa: SLF001
     index = window.tree_model.index_for_path((0,))
     window.tree.setCurrentIndex(index)
 
@@ -523,10 +525,10 @@ def test_data_flow_can_expand_into_window_and_collapse_back(qapp):
     window.graph.expand_button.click()
     qapp.processEvents()
 
-    dialog = window._expanded_data_flow_dialog  # noqa: SLF001
+    dialog = window._data_flow_detachment.dialog  # noqa: SLF001
     assert dialog is not None
     assert window.hierarchy_tabs.indexOf(window.graph) == -1
-    placeholder = window._data_flow_placeholder  # noqa: SLF001
+    placeholder = window._data_flow_detachment.placeholder  # noqa: SLF001
     assert placeholder is not None
     placeholder_index = window.hierarchy_tabs.indexOf(placeholder)
     assert placeholder_index == 1
@@ -553,7 +555,7 @@ def test_data_flow_can_expand_into_window_and_collapse_back(qapp):
     return_button.click()
     qapp.processEvents()
 
-    assert window._expanded_data_flow_dialog is None  # noqa: SLF001
+    assert window._data_flow_detachment.dialog is None  # noqa: SLF001
     assert window.hierarchy_tabs.indexOf(window.graph) == 1
     assert window.hierarchy_tabs.currentWidget() is window.graph
     assert window.graph.expand_button.text() == "Expand"
@@ -564,16 +566,16 @@ def test_data_flow_can_expand_into_window_and_collapse_back(qapp):
     window.graph.expand_button.click()
     qapp.processEvents()
 
-    assert window._expanded_data_flow_dialog is None  # noqa: SLF001
+    assert window._data_flow_detachment.dialog is None  # noqa: SLF001
     assert window.hierarchy_tabs.indexOf(window.graph) == 1
 
     window.graph.expand_button.click()
-    dialog = window._expanded_data_flow_dialog  # noqa: SLF001
+    dialog = window._data_flow_detachment.dialog  # noqa: SLF001
     assert dialog is not None
     dialog.reject()
     qapp.processEvents()
 
-    assert window._expanded_data_flow_dialog is None  # noqa: SLF001
+    assert window._data_flow_detachment.dialog is None  # noqa: SLF001
     assert window.hierarchy_tabs.indexOf(window.graph) == 1
     window.close()
 
@@ -673,15 +675,19 @@ def test_active_graph_rebuilds_when_evaluation_changes(tmp_path, chemfit_documen
     window = MainWindow(source=source)
     window.hierarchy_tabs.setCurrentWidget(window.graph)
 
-    window._load_generation = 1  # noqa: SLF001
-    window._document_loaded(1, chemfit_document)  # noqa: SLF001
+    first_generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.LOAD  # noqa: SLF001
+    )
+    window._document_loaded(first_generation, chemfit_document)  # noqa: SLF001
     assert window.graph.view.document is chemfit_document
     assert (
         window.graph.view.rendered_node_count == len(chemfit_document.children(())) + 2
     )
 
-    window._load_generation = 2  # noqa: SLF001
-    window._document_loaded(2, partial_document)  # noqa: SLF001
+    second_generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.LOAD  # noqa: SLF001
+    )
+    window._document_loaded(second_generation, partial_document)  # noqa: SLF001
     assert window.graph.view.document is partial_document
     assert window.graph.view.rendered_node_count == 0
 
@@ -1023,8 +1029,10 @@ def test_component_label_metadata_key_applies_across_views_and_persists(tmp_path
     source = JsonFileSource()
     document = source.load(source.discover([context_path])[0])
     window = MainWindow(source=source, settings=settings)
-    window._load_generation = 1  # noqa: SLF001
-    window._document_loaded(1, document)  # noqa: SLF001
+    generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.LOAD  # noqa: SLF001
+    )
+    window._document_loaded(generation, document)  # noqa: SLF001
     root = window.tree_model.index(0, 0)
     window.tree_model.fetchMore(root)
     child = window.tree_model.index(0, 0, root)
@@ -1066,15 +1074,15 @@ def test_header_controls_scale_application_fonts(qapp, tmp_path):
 
     window.font_larger_button.click()
 
-    assert window._font_scale == 1.1  # noqa: SLF001
+    assert window._appearance.font_scale == 1.1  # noqa: SLF001
     assert qapp.font().pointSizeF() > initial_size
     assert float(settings.value(FONT_SCALE_SETTING)) == 1.1
 
     restored = MainWindow(settings=application_settings(settings_directory))
-    assert restored._font_scale == 1.1  # noqa: SLF001
+    assert restored._appearance.font_scale == 1.1  # noqa: SLF001
 
     window.font_smaller_button.click()
-    assert window._font_scale == 1.0  # noqa: SLF001
+    assert window._appearance.font_scale == 1.0  # noqa: SLF001
 
 
 def test_color_scheme_is_persisted_in_portable_settings_directory(tmp_path, qapp):
@@ -1110,8 +1118,8 @@ def test_visual_style_and_spacing_are_persisted_in_settings_menu(tmp_path):
     assert settings.value(STYLE_PROFILE_SETTING) == "lightweight"
     assert settings.value(DENSITY_SETTING) == "compact"
     restored = MainWindow(settings=application_settings(settings_directory))
-    assert restored._style_profile == "lightweight"  # noqa: SLF001
-    assert restored._density == "compact"  # noqa: SLF001
+    assert restored._appearance.style_profile == "lightweight"  # noqa: SLF001
+    assert restored._appearance.density == "compact"  # noqa: SLF001
 
 
 def test_worker_pool_sizes_are_adjustable_and_persisted(tmp_path):

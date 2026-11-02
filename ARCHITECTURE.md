@@ -113,9 +113,10 @@ preserved by analysis and extraction.
   They first select that record and store one pending navigation object. The
   requested node/value is focused only after the matching document load wins
   its generation check.
-- `_sticky_node_path` and its semantic `NodeTrail` retain the logical component
-  while moving between evaluations. A partial resolution selects the deepest
-  available ancestor instead of silently choosing another component.
+- `_NavigationState.sticky_path` and its semantic `sticky_trail` retain the
+  logical component while moving between evaluations. A partial resolution
+  selects the deepest available ancestor instead of silently choosing another
+  component.
 - Back/forward history stores `(record_id, node_path)` entries. A replay flag
   prevents the resulting programmatic selection from creating duplicate history.
 
@@ -147,10 +148,10 @@ debugging unexpected cross-view navigation.
 
 Qt widgets are touched only on the GUI thread. `TaskRunner` runs ordinary Python
 callables on Qt's global thread pool and routes their result or traceback back
-through signals. Each feature has a monotonically increasing generation counter
-in `MainWindow`. A callback must match the current generation before changing
-the UI; cancellation alone is insufficient because already-running work can
-finish after a newer request.
+through signals. `GenerationTracker` issues monotonically increasing freshness
+tokens for the typed request families in `_RequestKind`. A callback must still
+hold the current token before changing the UI; cancellation alone is
+insufficient because already-running work can finish after a newer request.
 
 The shared Qt thread count and the separate whole-collection search process count
 are persisted independently and exposed under **Settings > Workers**. Resizing the
@@ -159,7 +160,8 @@ search pool replaces its persistent executor and invalidates any active search.
 `ActivityStatus` owns named `CancellationToken` objects. Reusing an operation
 name cancels its predecessor. Workers using `iter_collection` stop between
 records; search and graph layout use their own periodic checks. Closing a
-collection increments every relevant generation and cancels outstanding work.
+collection invalidates all observed request families and cancels outstanding
+work.
 
 Whole-collection search uses processes because JSON indexing and fuzzy matching
 are Python CPU work and can monopolize the GIL. The pool uses the portable
@@ -171,13 +173,27 @@ cannot be forcibly interrupted; their results are ignored after cancellation.
 
 | Owner | Mutable state |
 | --- | --- |
-| `MainWindow` | Open records, current document, selection/history, collection order, session state, feature generations |
+| `MainWindow` | Open records, current document, grouped navigation/order/plot/appearance state, session state, request freshness |
 | `ActivityStatus` | Operation tokens, labels, progress, footer rows |
 | `JsonFileSource` | Document LRU, in-flight load deduplication, temporary remote-file directory |
 | `ContextDocument` | Immutable node index, small lazy details LRU, active label key |
 | Feature panels | Widget-local options, selected rows/series, render state |
 | `ContextSearchCache` | Recent current-evaluation indexes |
 | Search worker process | Its own bounded document and index caches |
+
+State follows three rules throughout the GUI:
+
+1. Values that share a lifecycle or invariant live in a small named state
+   object. For example, navigation history and its replay flag belong to
+   `_NavigationState`, persisted collection identity belongs to
+   `_SessionState`, and rendered chart-point indexes belong to
+   `_RenderedPointLookup`.
+2. Repeated widget lifecycles are controllers, not copied fields and methods.
+   `DetachablePanelController` owns a detached dialog, placeholder, and restore
+   index for both Data Flow and Plot.
+3. Comments explain ownership, invariants, asynchronous boundaries, and Qt
+   workarounds. Field names and type annotations carry ordinary value meaning;
+   comments should not merely repeat an assignment.
 
 The important retained safeguards are:
 

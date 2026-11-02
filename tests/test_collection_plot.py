@@ -13,6 +13,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton, QToolButton
 
+from chemfit_dashboard import main_window as main_window_module
 from chemfit_dashboard.collection_plot import (
     CollectionPlotPanel,
     CollectionSeries,
@@ -285,7 +286,9 @@ def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
     data = CollectionSeries(
         NumberSelector((), "fields", ("loss",), "loss", "loss"),
         labels,
-        tuple(SeriesPoint(index, labels[index], float(index)) for index in range(count)),
+        tuple(
+            SeriesPoint(index, labels[index], float(index)) for index in range(count)
+        ),
     )
     panel = CollectionPlotPanel()
     panel.set_series(data)
@@ -327,10 +330,7 @@ def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
 
     assert vertical_axis.titleText() == "Probability"
     assert (
-        abs(
-            sum(probabilities.at(index) for index in range(probabilities.count()))
-            - 1
-        )
+        abs(sum(probabilities.at(index) for index in range(probabilities.count())) - 1)
         < 1e-12
     )
     assert "sums to probability 1" in panel.status.text()
@@ -356,10 +356,10 @@ def test_plot_can_expand_into_window_and_return(qapp):
     window.collection_plot.expand_button.click()
     qapp.processEvents()
 
-    dialog = window._expanded_plot_dialog  # noqa: SLF001
+    dialog = window._plot_detachment.dialog  # noqa: SLF001
     assert dialog is not None
     assert window.hierarchy_tabs.indexOf(window.collection_plot) == -1
-    placeholder = window._plot_placeholder  # noqa: SLF001
+    placeholder = window._plot_detachment.placeholder  # noqa: SLF001
     assert placeholder is not None
     message = placeholder.findChild(QLabel, "plotDetachedMessage")
     assert message is not None
@@ -371,7 +371,7 @@ def test_plot_can_expand_into_window_and_return(qapp):
     return_button.click()
     qapp.processEvents()
 
-    assert window._expanded_plot_dialog is None  # noqa: SLF001
+    assert window._plot_detachment.dialog is None  # noqa: SLF001
     assert window.hierarchy_tabs.indexOf(window.collection_plot) == 2
     assert window.collection_plot.expand_button.text() == "Expand"
     window.close()
@@ -617,9 +617,7 @@ def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
     assert selected == ["one", "two", "three", "two"]
 
 
-def test_main_window_orders_collection_by_selected_numeric_value(
-    tmp_path, monkeypatch
-):
+def test_main_window_orders_collection_by_selected_numeric_value(tmp_path, monkeypatch):
     for name in ("step_1.json", "step_2.json", "step_10.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
     source = JsonFileSource()
@@ -635,9 +633,11 @@ def test_main_window_orders_collection_by_selected_numeric_value(
             SeriesPoint(2, records[2].name, 1.0),
         ),
     )
-    window._order_generation = 1  # noqa: SLF001
+    generation = window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.ORDER  # noqa: SLF001
+    )
 
-    window._order_loaded(1, records, data)  # noqa: SLF001
+    window._order_loaded(generation, records, data)  # noqa: SLF001
 
     assert [record.name for record in window.file_model.records] == [
         "step_10.json",
@@ -733,7 +733,7 @@ def test_main_window_adds_plot_series_and_plot_click_selects_evaluation(
         NumberSelector((), "fields", ("runtime",), "runtime", "runtime")
     )
 
-    assert len(window._active_plot_selectors) == 2  # noqa: SLF001
+    assert len(window._plot_selection.selectors) == 2  # noqa: SLF001
     assert window.collection_plot.series_list.count() == 2
 
     plotted_markers = [
@@ -840,7 +840,12 @@ def test_known_collection_operations_publish_record_progress(tmp_path, monkeypat
 
 def test_superseded_collection_search_cannot_replace_current_results():
     window = MainWindow()
-    window._search_generation = 2  # noqa: SLF001
+    window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.SEARCH  # noqa: SLF001
+    )
+    window._generations.advance(  # noqa: SLF001
+        main_window_module._RequestKind.SEARCH  # noqa: SLF001
+    )
     window.search_panel.show_message("Current collection has no search yet")
     stale_hit = SearchHit(
         (),

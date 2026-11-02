@@ -12,9 +12,7 @@ from chemfit_dashboard.extraction_cli import main
 def _config(path) -> None:
     save_config(
         path,
-        ExtractionConfig(
-            (FieldSelector((), "fields", ("output",), "result"),)
-        ),
+        ExtractionConfig((FieldSelector((), "fields", ("output",), "result"),)),
     )
 
 
@@ -48,9 +46,7 @@ def test_cli_exports_gui_configuration_to_csv(tmp_path, capsys):
     assert "Wrote 2 rows" in capsys.readouterr().out
 
 
-def test_cli_infers_jsonl_and_excludes_config_inside_input_directory(
-    tmp_path, capsys
-):
+def test_cli_infers_jsonl_and_excludes_config_inside_input_directory(tmp_path, capsys):
     (tmp_path / "step_1.json").write_text('{"output": 4}', encoding="utf-8")
     config = tmp_path / "extraction.json"
     output = tmp_path / "values.jsonl"
