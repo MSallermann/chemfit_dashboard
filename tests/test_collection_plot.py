@@ -115,8 +115,10 @@ def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
 
     assert inspector.plot_button.text() == "Plot"
     assert inspector.plot_add_button.text() == "+ Series"
-    assert inspector.order_button.text() == "Sort ↑"
-    assert inspector.order_descending_button.text() == "Sort ↓"
+    assert inspector.order_button.text() == ""
+    assert inspector.order_descending_button.text() == ""
+    assert not inspector.order_button.icon().isNull()
+    assert not inspector.order_descending_button.icon().isNull()
     assert inspector.extract_button.text() == "+ Field"
     assert inspector.extract_component_button.text() == "+ Component"
     assert inspector.plot_button.property("primaryAction") == "true"
@@ -272,7 +274,9 @@ def test_interactive_item_rows_share_one_action_row_contract():
     extraction_remove = extraction_row.findChild(QToolButton, "removeAction")
     assert plot_remove is not None
     assert extraction_remove is not None
-    assert plot_remove.text() == extraction_remove.text() == "\u00d7"
+    assert plot_remove.text() == extraction_remove.text() == ""
+    assert not plot_remove.icon().isNull()
+    assert not extraction_remove.icon().isNull()
     assert plot_remove.width() == extraction_remove.width() == 28
     assert plot_remove.autoRaise()
     assert extraction_remove.autoRaise()
@@ -364,7 +368,8 @@ def test_plot_can_expand_into_window_and_return(qapp):
     message = placeholder.findChild(QLabel, "plotDetachedMessage")
     assert message is not None
     assert "detached window" in message.text()
-    assert window.collection_plot.expand_button.text() == "Collapse"
+    assert window.collection_plot.expand_button.text() == ""
+    assert "Return Plot" in window.collection_plot.expand_button.toolTip()
 
     return_button = placeholder.findChild(QPushButton, "returnPlotButton")
     assert return_button is not None
@@ -373,7 +378,8 @@ def test_plot_can_expand_into_window_and_return(qapp):
 
     assert window._plot_detachment.dialog is None  # noqa: SLF001
     assert window.hierarchy_tabs.indexOf(window.collection_plot) == 2
-    assert window.collection_plot.expand_button.text() == "Expand"
+    assert window.collection_plot.expand_button.text() == ""
+    assert "Open Plot" in window.collection_plot.expand_button.toolTip()
     window.close()
 
 

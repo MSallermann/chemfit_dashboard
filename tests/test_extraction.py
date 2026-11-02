@@ -613,10 +613,15 @@ def test_field_specific_extraction_controls_are_inline():
     expand_arrays = _inline_action(panel, 0, "expandArraysAction")
     assert expand_arrays.isCheckable()
     assert not expand_arrays.isChecked()
-    assert _inline_action(panel, 0, "renameAction").text() == "Rename"
-    assert _inline_action(panel, 0, "moveUpAction").text() == "↑"
-    assert _inline_action(panel, 0, "moveDownAction").text() == "↓"
-    assert _inline_action(panel, 0, "removeAction").text() == "\u00d7"
+    for action_name in (
+        "renameAction",
+        "moveUpAction",
+        "moveDownAction",
+        "removeAction",
+    ):
+        action = _inline_action(panel, 0, action_name)
+        assert action.text() == ""
+        assert not action.icon().isNull()
     flatten = _inline_action(panel, 0, "flattenAction")
     array_depth = _array_depth(panel, 0)
     assert flatten.text() == "Flatten objects"

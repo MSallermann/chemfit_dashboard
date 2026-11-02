@@ -34,16 +34,10 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
-    QColor,
     QCursor,
     QDesktopServices,
     QFont,
-    QIcon,
     QKeySequence,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QPixmap,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -66,7 +60,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
-    QStyle,
     QTabWidget,
     QToolButton,
     QTreeView,
@@ -125,6 +118,11 @@ from chemfit_dashboard.extraction import (
 )
 from chemfit_dashboard.extraction_ui import PREVIEW_LIMIT, DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
+from chemfit_dashboard.icons import (
+    make_icon_only,
+    refresh_themed_icons,
+    set_themed_icon,
+)
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.models import ContextTreeModel, EvaluationListModel
 from chemfit_dashboard.process_search import (
@@ -154,6 +152,7 @@ from chemfit_dashboard.traversal import (
 from chemfit_dashboard.ui_components import (
     ActionRow,
     DetachablePanelController,
+    add_clear_action,
     muted_label,
 )
 from chemfit_dashboard.workers import GenerationTracker, TaskRunner
@@ -512,8 +511,10 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.forward_button)
         header_layout.addStretch()
         files_button = QPushButton("Open file")
+        make_icon_only(files_button, "open_file", "Open context file")
         files_button.clicked.connect(self.open_files)
         directory_button = QPushButton("Open directory")
+        make_icon_only(directory_button, "open_folder", "Open context directory")
         directory_button.clicked.connect(self.open_directory)
         header_layout.addWidget(files_button)
         header_layout.addWidget(directory_button)
@@ -603,7 +604,7 @@ class MainWindow(QMainWindow):
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filter files…")
-        self.search.setClearButtonEnabled(True)
+        add_clear_action(self.search)
         layout.addWidget(self.search)
 
         self.file_model = EvaluationListModel(self)
@@ -683,6 +684,8 @@ class MainWindow(QMainWindow):
             "copyEvaluationPathAction",
             "Copy path",
             "Copy the selected evaluation's full path",
+            icon_name="copy",
+            icon_only=True,
         )
         self.copy_evaluation_path_button.clicked.connect(
             self._copy_current_evaluation_path
@@ -691,19 +694,22 @@ class MainWindow(QMainWindow):
             "openInFileExplorerAction",
             "Open folder",
             "Open the selected evaluation's folder in the file explorer",
+            icon_name="open_folder",
+            icon_only=True,
         )
         self.open_file_explorer_button.clicked.connect(
             self._open_current_evaluation_folder
         )
-        layout.addWidget(path_row)
-        self._set_evaluation_path(None)
-
-        self.focus_selected_button = QPushButton("Focus selected")
-        self.focus_selected_button.setToolTip(
-            "Reveal and center the currently loaded evaluation"
+        self.focus_selected_button = path_row.add_action(
+            "focusSelectedEvaluationAction",
+            "Focus selected",
+            "Reveal and center the currently loaded evaluation",
+            icon_name="target",
+            icon_only=True,
         )
         self.focus_selected_button.clicked.connect(self._focus_selected_record)
-        layout.addWidget(self.focus_selected_button)
+        layout.addWidget(path_row)
+        self._set_evaluation_path(None)
 
         self.file_count = muted_label("No files loaded")
         layout.addWidget(self.file_count)
@@ -712,16 +718,23 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.order_status)
         order_controls = QHBoxLayout()
         order_controls.setSpacing(6)
+        order_controls.addWidget(QLabel("Sort:"))
         self.ascending_order_button = QPushButton("Sort ↑")
-        self.ascending_order_button.setToolTip("Sort the collection in ascending order")
+        make_icon_only(
+            self.ascending_order_button,
+            "sort_up",
+            "Sort the collection in ascending order",
+        )
         self.ascending_order_button.setEnabled(False)
         self.ascending_order_button.clicked.connect(
             lambda: self._set_collection_order(descending=False)
         )
         order_controls.addWidget(self.ascending_order_button)
         self.descending_order_button = QPushButton("Sort ↓")
-        self.descending_order_button.setToolTip(
-            "Sort the collection in descending order"
+        make_icon_only(
+            self.descending_order_button,
+            "sort_down",
+            "Sort the collection in descending order",
         )
         self.descending_order_button.setEnabled(False)
         self.descending_order_button.clicked.connect(
@@ -730,12 +743,17 @@ class MainWindow(QMainWindow):
         order_controls.addWidget(self.descending_order_button)
         # Compatibility handle for integrations that used the old toggle button.
         self.reverse_order_button = self.descending_order_button
-        layout.addLayout(order_controls)
         self.reset_order_button = QPushButton("Filename order")
-        self.reset_order_button.setToolTip("Restore natural filename ordering")
+        make_icon_only(
+            self.reset_order_button,
+            "reset",
+            "Restore natural filename ordering",
+        )
         self.reset_order_button.setEnabled(False)
         self.reset_order_button.clicked.connect(self._reset_collection_order)
-        layout.addWidget(self.reset_order_button)
+        order_controls.addWidget(self.reset_order_button)
+        order_controls.addStretch()
+        layout.addLayout(order_controls)
         return panel
 
     def _update_evaluation_empty_state(self, *_args: object) -> None:
@@ -790,7 +808,7 @@ class MainWindow(QMainWindow):
         self.field_search.setPlaceholderText(
             "Search fields, values, and component hierarchy…"
         )
-        self.field_search.setClearButtonEnabled(True)
+        add_clear_action(self.field_search)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(120)
@@ -927,29 +945,30 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:  # noqa: PLR0915
         file_menu = self.menuBar().addMenu("&File")
         open_files = QAction("Open &file…", self)
+        set_themed_icon(open_files, "open_file")
         open_files.setShortcut(QKeySequence.StandardKey.Open)
         open_files.triggered.connect(self.open_files)
         file_menu.addAction(open_files)
         open_directory = QAction("Open &directory…", self)
+        set_themed_icon(open_directory, "open_folder")
         open_directory.setShortcut("Ctrl+Shift+O")
         open_directory.triggered.connect(self.open_directory)
         file_menu.addAction(open_directory)
         file_menu.addSeparator()
         add_files = QAction("&Add files to collection…", self)
+        set_themed_icon(add_files, "open_file")
         add_files.triggered.connect(self.add_files_to_collection)
         file_menu.addAction(add_files)
         add_directory = QAction("Add &directory to collection…", self)
+        set_themed_icon(add_directory, "open_folder")
         add_directory.triggered.connect(self.add_directory_to_collection)
         file_menu.addAction(add_directory)
         self.recent_menu = QMenu("Open &recent", self)
         file_menu.addMenu(self.recent_menu)
         self._rebuild_recent_menu()
         file_menu.addSeparator()
-        self.close_collection_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton),
-            "&Close collection",
-            self,
-        )
+        self.close_collection_action = QAction("&Close collection", self)
+        set_themed_icon(self.close_collection_action, "trash", role="danger")
         self.close_collection_action.setShortcut(QKeySequence.StandardKey.Close)
         self.close_collection_action.setToolTip(
             "Close the loaded collection and keep the application open"
@@ -1121,8 +1140,8 @@ class MainWindow(QMainWindow):
             self.workspace_tabs.setCurrentWidget(self.extraction)
 
     def _set_navigation_icons(self, scheme: ColorScheme) -> None:
-        self.back_action.setIcon(_chevron_icon(-1, scheme.text_strong))
-        self.forward_action.setIcon(_chevron_icon(1, scheme.text_strong))
+        set_themed_icon(self.back_action, "chevron_left", scheme=scheme)
+        set_themed_icon(self.forward_action, "chevron_right", scheme=scheme)
 
     def _setting_strings(self, key: str) -> list[str]:
         value = self._settings.value(key, [])
@@ -1327,6 +1346,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(COLOR_SCHEME_SETTING, scheme.key)
         self._settings.sync()
         self._set_navigation_icons(scheme)
+        refresh_themed_icons(self, scheme)
         if hasattr(self, "_theme_actions"):
             for action in self._theme_actions.actions():
                 action.setChecked(action.data() == scheme.key)
@@ -3144,24 +3164,3 @@ def _sortable_value(value: bool | float | str) -> tuple[int, object]:
     if isinstance(value, str):
         return (1, value.casefold())
     raise TypeError(type(value).__name__)
-
-
-def _chevron_icon(direction: int, color: str) -> QIcon:
-    """Create a small theme-aware navigation chevron."""
-    pixmap = QPixmap(20, 20)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color))
-    pen.setWidthF(1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    outer_x, tip_x = (13.0, 7.0) if direction < 0 else (7.0, 13.0)
-    path = QPainterPath()
-    path.moveTo(outer_x, 4.5)
-    path.lineTo(tip_x, 10.0)
-    path.lineTo(outer_x, 15.5)
-    painter.drawPath(path)
-    painter.end()
-    return QIcon(pixmap)

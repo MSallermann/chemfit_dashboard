@@ -37,6 +37,12 @@ from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.workers import TaskRunner
 
 
+def _assert_icon_action(button, tooltip_fragment: str) -> None:
+    assert button.text() == ""
+    assert tooltip_fragment in button.toolTip()
+    assert not button.icon().isNull()
+
+
 def test_evaluation_model_uses_natural_filename_order(tmp_path):
     for name in ("step_10.json", "step_1.json", "step_2.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
@@ -544,7 +550,7 @@ def test_data_flow_can_expand_into_window_and_collapse_back(qapp):
     message = placeholder.findChild(QLabel, "dataFlowDetachedMessage")
     assert message is not None
     assert "detached window" in message.text()
-    assert window.graph.expand_button.text() == "Collapse"
+    _assert_icon_action(window.graph.expand_button, "Return Data Flow")
     assert window.graph.view.transform().m11() == zoom
     assert window.graph.isVisibleTo(dialog)
     assert window.graph.view.isVisibleTo(dialog)
@@ -565,7 +571,7 @@ def test_data_flow_can_expand_into_window_and_collapse_back(qapp):
     assert window._data_flow_detachment.dialog is None  # noqa: SLF001
     assert window.hierarchy_tabs.indexOf(window.graph) == 1
     assert window.hierarchy_tabs.currentWidget() is window.graph
-    assert window.graph.expand_button.text() == "Expand"
+    _assert_icon_action(window.graph.expand_button, "Open Data Flow")
     assert window.graph.view.transform().m11() == zoom
 
     window.graph.expand_button.click()

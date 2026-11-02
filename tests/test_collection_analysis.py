@@ -109,7 +109,9 @@ def test_large_collection_analysis_can_be_explicitly_deferred():
 
     assert "50,000 evaluations loaded" in panel.summary_label.text()
     assert "deferred" in panel.summary_label.text()
-    assert panel.refresh_button.text() == "Analyze"
+    assert panel.refresh_button.text() == ""
+    assert "Analyze" in panel.refresh_button.toolTip()
+    assert not panel.refresh_button.icon().isNull()
     panel.refresh_button.click()
     assert requested == [True]
 

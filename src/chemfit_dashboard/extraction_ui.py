@@ -59,10 +59,11 @@ from chemfit_dashboard.extraction import (
     load_config,
     save_config,
 )
+from chemfit_dashboard.icons import make_icon_only, set_themed_icon
 from chemfit_dashboard.ui_components import ActionRow, muted_label
 
 PREVIEW_LIMIT = 200
-_ACTIONS_COLUMN_MIN_WIDTH = 440
+_ACTIONS_COLUMN_MIN_WIDTH = 320
 _PREVIEW_MISSING = object()
 CONFIG_DIRECTORY_SETTING = "paths/extraction_config"
 EXPORT_DIRECTORY_SETTING = "paths/extraction_export"
@@ -415,6 +416,7 @@ class DataExtractionPanel(QWidget):
 
         controls = QHBoxLayout()
         self.clear_button = QPushButton("Clear all")
+        set_themed_icon(self.clear_button, "trash", role="danger")
         self.clear_button.clicked.connect(self.clear)
         controls.addStretch()
         controls.addWidget(self.clear_button)
@@ -439,9 +441,7 @@ class DataExtractionPanel(QWidget):
             self._show_preview_header_context_menu
         )
         preview_row_header = self.preview.verticalHeader()
-        preview_row_header.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
+        preview_row_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         preview_row_header.customContextMenuRequested.connect(
             self._show_preview_row_context_menu
         )
@@ -484,17 +484,25 @@ class DataExtractionPanel(QWidget):
 
         actions = QHBoxLayout()
         self.save_button = QPushButton("Save config")
+        make_icon_only(self.save_button, "save", "Save extraction configuration")
         self.load_button = QPushButton("Load config")
+        make_icon_only(self.load_button, "load", "Load extraction configuration")
         self.copy_config_button = QPushButton("Copy config")
-        self.copy_config_button.setToolTip(
-            "Copy JSON compatible with chemfit-extract --config"
+        make_icon_only(
+            self.copy_config_button,
+            "copy",
+            "Copy JSON compatible with chemfit-extract --config",
         )
         self.paste_config_button = QPushButton("Paste config")
-        self.paste_config_button.setToolTip(
-            "Load a chemfit-extract configuration from the clipboard"
+        make_icon_only(
+            self.paste_config_button,
+            "paste",
+            "Load an extraction configuration from the clipboard",
         )
-        self.csv_button = QPushButton("Export CSV")
-        self.jsonl_button = QPushButton("Export JSONL")
+        self.csv_button = QPushButton("CSV")
+        self.csv_button.setToolTip("Export extracted values as CSV")
+        self.jsonl_button = QPushButton("JSONL")
+        self.jsonl_button.setToolTip("Export extracted values as JSON Lines")
         self.save_button.clicked.connect(self._save)
         self.load_button.clicked.connect(self._load)
         self.copy_config_button.clicked.connect(self.copy_configuration)
@@ -506,10 +514,12 @@ class DataExtractionPanel(QWidget):
             self.load_button,
             self.copy_config_button,
             self.paste_config_button,
-            self.csv_button,
-            self.jsonl_button,
         ):
             actions.addWidget(widget)
+        actions.addSpacing(8)
+        actions.addWidget(QLabel("Export:"))
+        actions.addWidget(self.csv_button)
+        actions.addWidget(self.jsonl_button)
         actions.addStretch()
         layout.addLayout(actions)
         self._update_controls()
@@ -632,6 +642,8 @@ class DataExtractionPanel(QWidget):
             f"Move {selector.column} up",
             compact=True,
             enabled=row > 0,
+            icon_name="arrow_up",
+            icon_only=True,
         )
         move_up.clicked.connect(
             lambda _checked=False, target=row: self._move_row(target, -1)
@@ -643,13 +655,19 @@ class DataExtractionPanel(QWidget):
             f"Move {selector.column} down",
             compact=True,
             enabled=row < len(self._selectors) - 1,
+            icon_name="arrow_down",
+            icon_only=True,
         )
         move_down.clicked.connect(
             lambda _checked=False, target=row: self._move_row(target, 1)
         )
 
         rename = actions.add_action(
-            "renameAction", "Rename", f"Rename extraction column {selector.column}"
+            "renameAction",
+            "Rename",
+            f"Rename extraction column {selector.column}",
+            icon_name="pencil",
+            icon_only=True,
         )
         rename.clicked.connect(
             lambda _checked=False, target=row: self._edit_column_name(target)
@@ -705,6 +723,9 @@ class DataExtractionPanel(QWidget):
             "\u00d7",
             f"Remove {selector.column} from extraction",
             compact=True,
+            icon_name="trash",
+            icon_role="danger",
+            icon_only=True,
         )
         remove.clicked.connect(
             lambda _checked=False, target=row: self._remove_row(target)
@@ -995,9 +1016,7 @@ class DataExtractionPanel(QWidget):
                 QItemSelectionModel.SelectionFlag.ClearAndSelect
                 | QItemSelectionModel.SelectionFlag.Rows,
             )
-            selection.setCurrentIndex(
-                index, QItemSelectionModel.SelectionFlag.NoUpdate
-            )
+            selection.setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
 
         menu = QMenu(header)
         open_evaluation = menu.addAction("Open evaluation in Context Inspector")

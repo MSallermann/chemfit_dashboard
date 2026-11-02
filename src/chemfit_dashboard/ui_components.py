@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTabWidget,
     QToolButton,
@@ -16,10 +18,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.icons import IconRole, make_icon_only, set_themed_icon
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 INTERACTIVE_ZOOM_STEP = 1.15
+
+
+def add_clear_action(editor: QLineEdit) -> QAction:
+    """Add a portable, theme-aware trailing clear action to a line edit."""
+    action = QAction(editor)
+    editor.addAction(action, QLineEdit.ActionPosition.TrailingPosition)
+    set_themed_icon(action, "close")
+    action.setToolTip("Clear")
+    action.setVisible(bool(editor.text()))
+    action.triggered.connect(editor.clear)
+    editor.textChanged.connect(lambda text: action.setVisible(bool(text)))
+    return action
 
 
 class ActionRow(QWidget):
@@ -51,6 +67,9 @@ class ActionRow(QWidget):
         checkable: bool = False,
         compact: bool = False,
         enabled: bool = True,
+        icon_name: str | None = None,
+        icon_role: IconRole = "normal",
+        icon_only: bool = False,
     ) -> QToolButton:
         """Create and append a consistently sized, accessible row action."""
         button = QToolButton(self)
@@ -61,6 +80,12 @@ class ActionRow(QWidget):
         button.setCheckable(checkable)
         button.setAutoRaise(True)
         button.setEnabled(enabled)
+        if icon_name is not None:
+            if icon_only:
+                make_icon_only(button, icon_name, tooltip, role=icon_role)
+                compact = True
+            else:
+                set_themed_icon(button, icon_name, role=icon_role)
         if compact:
             button.setFixedWidth(28)
         else:
@@ -249,12 +274,12 @@ def set_expand_button_state(
     button: QPushButton, feature: str, *, expanded: bool
 ) -> None:
     """Apply consistent text and help for a detachable panel control."""
-    button.setText("Collapse" if expanded else "Expand")
-    button.setToolTip(
+    tooltip = (
         f"Return {feature} to the dashboard"
         if expanded
         else f"Open {feature} in a large separate window"
     )
+    make_icon_only(button, "collapse" if expanded else "expand", tooltip)
 
 
 def interactive_zoom_factor(steps: float) -> float:

@@ -394,6 +394,21 @@ QToolButton#removeSeriesAction {{
 QToolButton#removeSeriesAction:hover {{
     background: {scheme.danger}; color: {scheme.danger_border}; border-color: {scheme.danger};
 }}
+QPushButton[iconOnly="true"] {{
+    min-width: 30px; max-width: 30px; min-height: 30px; padding: 4px;
+}}
+QToolButton[iconOnly="true"] {{
+    min-width: 28px; min-height: 28px; padding: 3px;
+}}
+QToolButton[buttonLike="true"] {{
+    background: {scheme.button}; border: 1px solid {scheme.button_border};
+    border-radius: 5px; color: {scheme.accent_text}; font-weight: 600;
+    padding: 7px 10px;
+}}
+QToolButton[buttonLike="true"]:hover {{ background: {scheme.button_hover}; }}
+QToolButton[buttonLike="true"]:disabled {{
+    color: {scheme.muted}; background: {scheme.panel}; border-color: {scheme.border};
+}}
 QLineEdit, QComboBox {{
     background: {scheme.input}; border: 1px solid {scheme.border}; border-radius: 5px;
     padding: 8px 9px; selection-background-color: {scheme.selection};

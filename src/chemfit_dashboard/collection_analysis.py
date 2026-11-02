@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.source import ContextDocument, NodePath
 from chemfit_dashboard.ui_components import muted_label
 
@@ -243,6 +244,7 @@ class CollectionAnalysisPanel(QWidget):
         self.summary_label.setWordWrap(True)
         heading.addWidget(self.summary_label, 1)
         self.refresh_button = QPushButton("Refresh")
+        make_icon_only(self.refresh_button, "refresh", "Refresh collection analysis")
         self.refresh_button.clicked.connect(
             lambda _checked=False: self.refresh_requested.emit()
         )
@@ -291,9 +293,13 @@ class CollectionAnalysisPanel(QWidget):
         failure_heading.addWidget(failure_label)
         failure_heading.addStretch()
         self.previous_button = QPushButton("Previous")
+        make_icon_only(
+            self.previous_button, "chevron_left", "Select the previous failure"
+        )
         self.previous_button.clicked.connect(lambda: self._move_failure(-1))
         failure_heading.addWidget(self.previous_button)
         self.next_button = QPushButton("Next")
+        make_icon_only(self.next_button, "chevron_right", "Select the next failure")
         self.next_button.clicked.connect(lambda: self._move_failure(1))
         failure_heading.addWidget(self.next_button)
         layout.addLayout(failure_heading)
@@ -332,8 +338,7 @@ class CollectionAnalysisPanel(QWidget):
         self.summary_label.setText(
             f"Analyzing {count:,} evaluation{'s' if count != 1 else ''} in the background…"
         )
-        self.refresh_button.setText("Refresh")
-        self.refresh_button.setEnabled(False)
+        self._set_refresh_action("Refresh collection analysis", enabled=False)
 
     def show_deferred(self, count: int) -> None:
         """Offer explicit analysis for collections too large to scan automatically."""
@@ -344,13 +349,12 @@ class CollectionAnalysisPanel(QWidget):
         self.issue_label.clear()
         self.numeric_table.setRowCount(0)
         self.failure_tree.clear()
-        self.refresh_button.setText("Analyze")
-        self.refresh_button.setEnabled(True)
+        self._set_refresh_action("Analyze the collection now", enabled=True)
 
     def show_error(self, message: str) -> None:
         """Clear stale results and present an analysis failure."""
         self.summary_label.setText(message)
-        self.refresh_button.setEnabled(True)
+        self._set_refresh_action("Retry collection analysis", enabled=True)
 
     def clear(self) -> None:
         """Restore the unloaded collection state without retaining old results."""
@@ -365,13 +369,11 @@ class CollectionAnalysisPanel(QWidget):
         self._current_occurrence = -1
         self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
-        self.refresh_button.setText("Refresh")
-        self.refresh_button.setEnabled(True)
+        self._set_refresh_action("Refresh collection analysis", enabled=True)
 
     def set_summary(self, summary: CollectionSummary) -> None:
         """Render one immutable analysis result on the GUI thread."""
-        self.refresh_button.setText("Refresh")
-        self.refresh_button.setEnabled(True)
+        self._set_refresh_action("Refresh collection analysis", enabled=True)
         self.summary_label.setText(
             f"{summary.total_records:,} evaluations · "
             f"{summary.successful_records:,} successful · "
@@ -379,6 +381,7 @@ class CollectionAnalysisPanel(QWidget):
             f"{summary.partial_records:,} partial · "
             f"{summary.node_count:,} context nodes"
         )
+
         issue_parts = []
         if summary.unreadable_records:
             issue_parts.append(f"{summary.unreadable_records:,} unreadable")
@@ -476,6 +479,12 @@ class CollectionAnalysisPanel(QWidget):
         if not available:
             empty = QTreeWidgetItem(["No primary failures found", "", ""])
             self.failure_tree.addTopLevelItem(empty)
+
+    def _set_refresh_action(self, tooltip: str, *, enabled: bool) -> None:
+        """Update the compact analysis action without restoring visible text."""
+        self.refresh_button.setToolTip(tooltip)
+        self.refresh_button.setAccessibleName(tooltip)
+        self.refresh_button.setEnabled(enabled)
 
     def _failure_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         occurrence = item.data(0, Qt.ItemDataRole.UserRole)

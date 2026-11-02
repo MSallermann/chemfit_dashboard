@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from chemfit_dashboard.collection_plot import NumberSelector
 from chemfit_dashboard.extraction import FieldSelector
+from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import JsonValueModel
 from chemfit_dashboard.source import NodeDetails
 from chemfit_dashboard.ui_components import muted_label
@@ -274,7 +275,7 @@ class Inspector(QWidget):
         number_label.setObjectName("actionGroupLabel")
         action_layout.addWidget(number_label, 0, 0)
         self.plot_selection = muted_label("No number selected")
-        action_layout.addWidget(self.plot_selection, 0, 1, 1, 4)
+        action_layout.addWidget(self.plot_selection, 0, 1, 1, 5)
         self.plot_button = QPushButton("Plot")
         self.plot_button.setProperty("primaryAction", "true")
         self.plot_button.setEnabled(False)
@@ -284,20 +285,32 @@ class Inspector(QWidget):
         self.plot_add_button.setEnabled(False)
         self.plot_add_button.clicked.connect(self._request_plot_add)
         action_layout.addWidget(self.plot_add_button, 1, 2)
+        sort_label = QLabel("Sort:")
+        action_layout.addWidget(sort_label, 1, 3)
         self.order_button = QPushButton("Sort ↑")
+        make_icon_only(
+            self.order_button,
+            "sort_up",
+            "Sort the collection by this value in ascending order",
+        )
         self.order_button.setEnabled(False)
         self.order_button.clicked.connect(self._request_order)
-        action_layout.addWidget(self.order_button, 1, 3)
+        action_layout.addWidget(self.order_button, 1, 4)
         self.order_descending_button = QPushButton("Sort ↓")
+        make_icon_only(
+            self.order_descending_button,
+            "sort_down",
+            "Sort the collection by this value in descending order",
+        )
         self.order_descending_button.setEnabled(False)
         self.order_descending_button.clicked.connect(self._request_order_descending)
-        action_layout.addWidget(self.order_descending_button, 1, 4)
+        action_layout.addWidget(self.order_descending_button, 1, 5)
 
         extraction_label = QLabel("EXTRACTION")
         extraction_label.setObjectName("actionGroupLabel")
         action_layout.addWidget(extraction_label, 2, 0)
         self.field_selection = muted_label("No field selected")
-        action_layout.addWidget(self.field_selection, 2, 1, 1, 4)
+        action_layout.addWidget(self.field_selection, 2, 1, 1, 5)
         self.extract_button = QPushButton("+ Field")
         self.extract_button.setProperty("extractAction", "true")
         self.extract_button.setEnabled(False)
@@ -313,7 +326,7 @@ class Inspector(QWidget):
             self._request_component_extraction
         )
         action_layout.addWidget(self.extract_component_button, 3, 2)
-        action_layout.setColumnStretch(5, 1)
+        action_layout.setColumnStretch(6, 1)
         layout.addWidget(actions)
 
         self.tabs = QTabWidget()

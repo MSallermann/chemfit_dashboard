@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -75,6 +76,7 @@ from chemfit_dashboard.chart_style import (
     finish_cartesian_chart,
     series_color,
 )
+from chemfit_dashboard.icons import make_icon_only, set_themed_icon
 from chemfit_dashboard.semantic import (
     ComponentResolution,
     NodeTrail,
@@ -323,20 +325,31 @@ class CollectionPlotPanel(QWidget):
         layout.addWidget(self.series_list)
         series_controls = QHBoxLayout()
         self.clear_button = QPushButton("Clear plot")
+        make_icon_only(
+            self.clear_button, "trash", "Clear every plotted series", role="danger"
+        )
         self.clear_button.setEnabled(False)
         self.clear_button.clicked.connect(
             lambda _checked=False: self.clear_series_requested.emit()
         )
         series_controls.addWidget(self.clear_button)
         series_controls.addStretch()
-        self.export_csv_button = QPushButton("Export CSV")
-        self.export_csv_button.setEnabled(False)
-        self.export_csv_button.clicked.connect(self._choose_csv_export)
-        series_controls.addWidget(self.export_csv_button)
-        self.export_image_button = QPushButton("Export image")
-        self.export_image_button.setEnabled(False)
-        self.export_image_button.clicked.connect(self._choose_image_export)
-        series_controls.addWidget(self.export_image_button)
+        self.export_button = QToolButton()
+        self.export_button.setText("Export")
+        self.export_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.export_button.setProperty("buttonLike", "true")
+        self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        set_themed_icon(self.export_button, "save")
+        export_menu = QMenu(self.export_button)
+        export_csv = export_menu.addAction("Data as CSV…")
+        export_csv.triggered.connect(self._choose_csv_export)
+        export_image = export_menu.addAction("Image…")
+        export_image.triggered.connect(self._choose_image_export)
+        self.export_button.setMenu(export_menu)
+        self.export_button.setEnabled(False)
+        series_controls.addWidget(self.export_button)
         layout.addLayout(series_controls)
 
         view_controls = QHBoxLayout()
@@ -378,8 +391,7 @@ class CollectionPlotPanel(QWidget):
         self.log_y.toggled.connect(self._log_y_toggled)
         view_controls.addWidget(self.log_y)
         self.reset_zoom_button = QPushButton("Reset zoom")
-        self.reset_zoom_button.setText("Fit data")
-        self.reset_zoom_button.setToolTip("Restore the full data range")
+        make_icon_only(self.reset_zoom_button, "fit", "Restore the full data range")
         self.reset_zoom_button.clicked.connect(self._reset_zoom)
         view_controls.addWidget(self.reset_zoom_button)
         self.expand_button = expand_button("Plot")
@@ -455,8 +467,7 @@ class CollectionPlotPanel(QWidget):
         self.series_list.setVisible(bool(data))
         enabled = bool(data)
         self.clear_button.setEnabled(enabled)
-        self.export_csv_button.setEnabled(enabled)
-        self.export_image_button.setEnabled(enabled)
+        self.export_button.setEnabled(enabled)
         self._render_series()
 
     def _render_series(self) -> None:  # noqa: PLR0912, PLR0915
@@ -628,8 +639,7 @@ class CollectionPlotPanel(QWidget):
         self.series_list.clear()
         self.series_list.hide()
         self.clear_button.setEnabled(False)
-        self.export_csv_button.setEnabled(False)
-        self.export_image_button.setEnabled(False)
+        self.export_button.setEnabled(False)
         self.selection_label.setText("Currently plotting: no value selected")
         self.status.setText("Select a numeric field in the inspector to plot it.")
         self.cursor_coordinates.setText("Cursor: —")
@@ -819,6 +829,9 @@ class CollectionPlotPanel(QWidget):
             "\u00d7",
             f"Remove {series.selector.label} from the plot",
             compact=True,
+            icon_name="trash",
+            icon_role="danger",
+            icon_only=True,
         )
         remove.clicked.connect(
             lambda _checked=False, selector=series.selector: (

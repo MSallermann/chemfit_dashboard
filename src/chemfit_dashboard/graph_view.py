@@ -40,6 +40,7 @@ from shiboken6 import isValid
 from chemfit_dashboard.appearance import ColorScheme, active_color_scheme
 from chemfit_dashboard.data_flow import DataFlowGraph, DataFlowNode, build_data_flow
 from chemfit_dashboard.graph_layout import GraphLayout, data_flow_layout
+from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
 from chemfit_dashboard.traversal import CancellationToken
 from chemfit_dashboard.ui_components import (
@@ -659,14 +660,18 @@ class DataFlowPanel(QWidget):
         layout = panel_layout(self)
         controls = QHBoxLayout()
         self.back_button = QPushButton("Back")
+        make_icon_only(self.back_button, "back", "Return to the parent flow level")
         self.back_button.setEnabled(False)
         self.breadcrumbs = QHBoxLayout()
         self.breadcrumbs.setSpacing(3)
         controls.addWidget(self.back_button)
         controls.addLayout(self.breadcrumbs, 1)
         self.fit_button = QPushButton("Fit View")
+        make_icon_only(self.fit_button, "fit", "Fit the complete graph in the view")
         self.zoom_out_button = QPushButton("-")
+        make_icon_only(self.zoom_out_button, "zoom_out", "Zoom out")
         self.zoom_in_button = QPushButton("+")
+        make_icon_only(self.zoom_in_button, "zoom_in", "Zoom in")
         self.expand_button = expand_button("Data Flow")
         controls.addWidget(self.fit_button)
         controls.addWidget(self.zoom_out_button)
