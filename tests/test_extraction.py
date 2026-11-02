@@ -667,23 +667,21 @@ def test_extraction_preview_header_selects_column_and_sort_shortcut_toggles():
     panel = DataExtractionPanel()
     energy = FieldSelector((), "fields", ("energy",), "energy")
     panel.add_selector(energy)
-    panel.set_preview(
-        (
-            ExtractionRow(
-                0,
-                "record-1",
-                "step_1.json",
-                (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
-            ),
-            ExtractionRow(
-                1,
-                "record-2",
-                "step_2.json",
-                (ExtractionValue(2.5, ExtractionStatus.AVAILABLE),),
-            ),
+    rows = (
+        ExtractionRow(
+            0,
+            "record-1",
+            "step_1.json",
+            (ExtractionValue(3.5, ExtractionStatus.AVAILABLE),),
         ),
-        2,
+        ExtractionRow(
+            1,
+            "record-2",
+            "step_2.json",
+            (ExtractionValue(2.5, ExtractionStatus.AVAILABLE),),
+        ),
     )
+    panel.set_preview(rows, 2)
     requested_sorts = []
     panel.sort_requested.connect(
         lambda request, descending: requested_sorts.append((request, descending))
@@ -700,8 +698,13 @@ def test_extraction_preview_header_selects_column_and_sort_shortcut_toggles():
 
     panel._preview_sort_shortcut.activated.emit()  # noqa: SLF001
     panel._preview_sort_shortcut.activated.emit()  # noqa: SLF001
+    # The application resets this model after applying the requested order.
+    panel.set_preview(tuple(reversed(rows)), 2)
 
     assert requested_sorts == [((energy, None), False), ((energy, None), True)]
+    selected = panel.preview.selectionModel().selectedIndexes()
+    assert {index.column() for index in selected} == {3}
+    assert panel.preview.currentIndex().column() == 3
     assert not header.isSortIndicatorShown()
     assert panel.preview_header.sort_marker_section == 3
     assert panel.preview_header.sort_marker_order == Qt.SortOrder.DescendingOrder

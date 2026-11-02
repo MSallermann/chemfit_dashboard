@@ -1199,6 +1199,11 @@ class DataExtractionPanel(QWidget):
         if reason is not None:
             self.status_message.emit(reason)
             return
+        # Rebuilding the preview after collection reordering resets Qt's item
+        # selection. Carry the sorted column through that reset so its header
+        # remains highlighted and subsequent S/R/Backspace shortcuts still
+        # target the same column.
+        self._preview_state.pending_selection_column = column
         self._preview_state.sort_column = column
         self._preview_state.sort_descending = descending
         order = (
