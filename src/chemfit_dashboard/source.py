@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 from abc import ABC, abstractmethod
 from collections import OrderedDict
