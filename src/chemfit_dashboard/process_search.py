@@ -96,14 +96,13 @@ class _WorkerState:
 _worker_state = _WorkerState()
 
 
-def _worker_source_instance(component_label_key: str) -> JsonFileSource:
-    """Return the bounded source cache owned by one persistent worker process."""
+def _worker_source_instance() -> JsonFileSource:
+    """Return the bounded source cache owned by one worker process."""
     if _worker_state.source is None:
         _worker_state.source = JsonFileSource(
             cache_capacity=WORKER_DOCUMENT_CACHE_ENTRIES,
             cache_memory_budget=WORKER_DOCUMENT_CACHE_BYTES,
         )
-    _worker_state.source.set_component_label_metadata_key(component_label_key)
     return _worker_state.source
 
 
@@ -124,7 +123,10 @@ def _worker_index(
         _worker_state.indexes.move_to_end(key)
         return cached
 
-    index = ContextSearchIndex(source.configure_document(source.load(record)))
+    document = source.load(record)
+    document.set_component_label_metadata_key(component_label_key)
+    index = ContextSearchIndex(document)
+
     _worker_state.indexes[key] = index
     _worker_state.indexes.move_to_end(key)
     _worker_state.index_entries += len(index.entries)
@@ -166,7 +168,7 @@ def search_record_batch(
     component_label_key: str,
 ) -> SearchBatchResult:
     """Search one chunk in a process without importing or touching Qt."""
-    source = _worker_source_instance(component_label_key)
+    source = _worker_source_instance()
     hits = TopKSearchHits(MAX_RESULTS)
     failed_records = 0
     for record in records:
