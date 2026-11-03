@@ -1,9 +1,9 @@
 """
 Minimal Qt thread-pool adapter for non-GUI callables.
 
-``TaskRunner`` executes a callable on Qt's global pool and always delivers its
-success or traceback callback on the owning GUI thread. Running tasks require
-their own cooperative cancellation token.
+``TaskRunner`` executes callables on Qt's global thread pool and delivers
+completion callbacks to the GUI thread. Queued tasks can be cancelled before
+execution; running tasks are not interrupted.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import traceback
 from collections.abc import Hashable
 from dataclasses import dataclass, field
+from threading import Event
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
@@ -18,6 +19,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
+
 
 GenerationKey = TypeVar("GenerationKey", bound=Hashable)
 
@@ -27,10 +29,9 @@ class GenerationTracker(Generic[GenerationKey]):
     """
     Issue freshness tokens for independent families of asynchronous work.
 
-    Cancelling a worker is cooperative and may arrive too late. Callers capture
-    the token returned by :meth:`advance` and accept a callback only while
-    :meth:`is_current` remains true. Keeping this policy here avoids parallel
-    ``*_generation`` counters whose relationship is otherwise undocumented.
+    Cancelling a worker may arrive too late. Callers capture the token
+    returned by :meth:`advance` and accept a callback only while
+    :meth:`is_current` remains true.
     """
 
     _values: dict[GenerationKey, int] = field(default_factory=dict)
@@ -43,8 +44,7 @@ class GenerationTracker(Generic[GenerationKey]):
 
     def current(self, key: GenerationKey) -> int:
         """Return the current token without invalidating existing work."""
-        # Reading observes the request family so ``invalidate_all`` also covers
-        # work whose first token is the implicit zero generation.
+        # Observe the key so invalidate_all() includes this request family.
         return self._values.setdefault(key, 0)
 
     def is_current(self, key: GenerationKey, token: int) -> bool:
@@ -62,23 +62,32 @@ class GenerationTracker(Generic[GenerationKey]):
 
 
 class _TaskSignals(QObject):
-    """Marshal worker completion back to the owning Qt thread."""
+    """Deliver worker completion notifications to the GUI thread."""
 
     succeeded = Signal(object)
     failed = Signal(str)
+    cancelled = Signal()
 
 
 class _Task(QRunnable):
-    """Execute one callable and convert failures to printable tracebacks."""
+    """Execute a callable unless cancelled before it starts."""
 
     def __init__(self, function: Callable[[], Any]):
-        """Store one function for execution on a worker thread."""
         super().__init__()
         self.function = function
         self.signals = _TaskSignals()
+        self._cancelled = Event()
+
+    def cancel(self) -> None:
+        """Prevent execution if the task has not started."""
+        self._cancelled.set()
 
     @Slot()
     def run(self) -> None:
+        if self._cancelled.is_set():
+            self.signals.cancelled.emit()
+            return
+
         try:
             result = self.function()
         except Exception:
@@ -88,17 +97,23 @@ class _Task(QRunnable):
 
 
 class TaskRunner(QObject):
-    """Run source operations on Qt's global worker pool."""
+    """Submit background tasks to Qt's shared thread pool."""
 
     def __init__(self, parent: QObject | None = None):
-        """Use Qt's shared pool and retain tasks until their signals arrive."""
+        """Initialize the runner and track tasks until completion."""
         super().__init__(parent)
         self._pool = QThreadPool.globalInstance()
         self._active: set[_Task] = set()
 
     def cancel_pending(self) -> None:
-        """Discard queued work; running tasks must stop cooperatively."""
-        self._pool.clear()
+        """
+        Cancel tasks that have not started executing.
+
+        Running tasks are not interrupted. Cancelled tasks remain in the
+        thread-pool queue until a worker picks them up and skips execution.
+        """
+        for task in tuple(self._active):
+            task.cancel()
 
     def submit(
         self,
@@ -106,6 +121,7 @@ class TaskRunner(QObject):
         on_success: Callable[[Any], None],
         on_error: Callable[[str], None],
     ) -> None:
+        """Submit a callable and register its completion callbacks."""
         task = _Task(function)
         self._active.add(task)
 
@@ -117,6 +133,11 @@ class TaskRunner(QObject):
             self._active.discard(task)
             on_error(details)
 
+        def cancelled() -> None:
+            self._active.discard(task)
+
         task.signals.succeeded.connect(succeeded)
         task.signals.failed.connect(failed)
+        task.signals.cancelled.connect(cancelled)
+
         self._pool.start(task)
