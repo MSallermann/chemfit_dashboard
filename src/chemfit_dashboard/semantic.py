@@ -11,8 +11,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from chemfit_dashboard.context_document import NodePath
-from chemfit_dashboard.source import ContextDocument, ContextSourceError
+from chemfit_dashboard.context_document import (
+    ContextDocument,
+    ContextDocumentError,
+    NodePath,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +72,7 @@ def resolve_component_selection(
     try:
         if component_trail_for_path(document, preferred_path) == trail:
             return ComponentResolution(path=preferred_path, complete=True)
-    except ContextSourceError:
+    except ContextDocumentError:
         pass
 
     parent_path: NodePath = ()

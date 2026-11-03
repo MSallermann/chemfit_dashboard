@@ -101,6 +101,7 @@ from chemfit_dashboard.collection_plot import (
 from chemfit_dashboard.context_document import (
     DEFAULT_COMPONENT_LABEL_METADATA_KEY,
     ContextDocument,
+    ContextDocumentError,
     NodePath,
 )
 from chemfit_dashboard.context_search import (
@@ -2010,7 +2011,7 @@ class MainWindow(QMainWindow):
                 self._navigation.sticky_trail = component_trail_for_path(
                     document, self._navigation.sticky_path
                 )
-            except ContextSourceError:
+            except ContextDocumentError:
                 self._navigation.sticky_path = ()
         resolution = resolve_component_selection(
             document,
