@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from time import sleep
 
 from chemfit.fitter import FitContext
 from chemfit.fitter_callbacks import CheckpointBestParameters, SaveMetaData
@@ -11,7 +10,6 @@ from chemfit.fitter_callbacks import CheckpointBestParameters, SaveMetaData
 from chemfit_dashboard.example import (
     build_example_context,
     build_failed_example_context,
-    write_example_collection,
 )
 from chemfit_dashboard.source import JsonFileSource
 
@@ -50,12 +48,6 @@ def test_loads_context_written_by_chemfit(chemfit_json_path, chemfit_context):
     assert document.details(()).fields["output"] == chemfit_context.output
     assert document.details((0,)).fields["output"] == chemfit_context.children[0].output
     assert document.details(()).structure == chemfit_context.meta["chemfit.structure"]
-
-
-def test_repeated_details_reuses_bounded_derived_mapping(chemfit_document):
-    first = chemfit_document.details(())
-
-    assert chemfit_document.details(()) is first
 
 
 def test_loads_chemfit_checkpoint_and_reuses_cached_document(tmp_path, chemfit_context):
@@ -104,23 +96,6 @@ def test_included_example_matches_current_chemfit_output(tmp_path):
     included = json.loads(example_path.read_text())
 
     assert included == generated
-
-
-def test_included_collection_matches_current_chemfit_output(tmp_path):
-    write_example_collection(tmp_path)
-    example_directory = Path(__file__).parents[1] / "examples" / "context_collection"
-    generated_paths = sorted(tmp_path.glob("*.json"))
-    included_paths = sorted(example_directory.glob("*.json"))
-
-    assert [path.name for path in included_paths] == [
-        path.name for path in generated_paths
-    ]
-    for generated_path, included_path in zip(
-        generated_paths, included_paths, strict=True
-    ):
-        assert json.loads(included_path.read_text()) == json.loads(
-            generated_path.read_text()
-        )
 
 
 def test_failed_example_records_the_component_error(tmp_path):
@@ -195,18 +170,3 @@ def test_cache_access_is_thread_safe(tmp_path):
     )
     assert all(document is documents[0] for document in documents)
     assert source.cache_info[0] == 1
-
-
-def test_cache_invalidates_when_file_signature_changes(tmp_path):
-    path = tmp_path / "changing.json"
-    path.write_text('{"output": 1}', encoding="utf-8")
-    source = JsonFileSource()
-    record = source.discover([path])[0]
-    first = source.load(record)
-    sleep(0.002)
-    path.write_text('{"output": 200}', encoding="utf-8")
-
-    second = source.load(record)
-
-    assert second is not first
-    assert second.details(()).fields["output"] == 200

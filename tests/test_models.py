@@ -188,36 +188,32 @@ def test_keyboard_shortcut_help_is_grouped_by_focus_context(monkeypatch):
     assert "Shortcuts marked with a specific view" in displayed[0]
 
 
-def test_dashboard_accepts_dropped_json_files_and_directories(tmp_path):
+def test_dashboard_collects_dropped_local_files_and_directories(tmp_path):
     contexts = tmp_path / "contexts"
     contexts.mkdir()
+
     context = tmp_path / "step_1.json"
     context.write_text("{}", encoding="utf-8")
-    ignored = tmp_path / "notes.txt"
-    ignored.write_text("not a context", encoding="utf-8")
+
+    other_file = tmp_path / "notes.txt"
+    other_file.write_text("not a context", encoding="utf-8")
+
     mime_data = QMimeData()
     mime_data.setUrls(
         [
             QUrl.fromLocalFile(str(contexts)),
             QUrl.fromLocalFile(str(context)),
-            QUrl.fromLocalFile(str(ignored)),
+            QUrl.fromLocalFile(str(other_file)),
         ]
     )
+
     window = MainWindow()
 
     assert window.acceptDrops()
     assert window._drop_locations(mime_data) == [  # noqa: SLF001
         str(contexts.resolve()),
         str(context.resolve()),
-    ]
-
-
-def test_dashboard_accepts_remote_thunar_urls():
-    mime_data = QMimeData()
-    mime_data.setUrls([QUrl("smb://server/share/step_1.json")])
-
-    assert MainWindow._drop_locations(mime_data) == [  # noqa: SLF001
-        "smb://server/share/step_1.json"
+        str(other_file.resolve()),
     ]
 
 

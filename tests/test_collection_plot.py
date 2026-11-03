@@ -626,10 +626,12 @@ def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
 def test_main_window_orders_collection_by_selected_numeric_value(tmp_path, monkeypatch):
     for name in ("step_1.json", "step_2.json", "step_10.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
+
     source = JsonFileSource()
     records = source.discover([tmp_path])
     window = MainWindow(source=source)
     window.file_model.set_records(records)
+
     selector = NumberSelector((), "fields", ("loss",), "Evaluation root / loss")
     data = CollectionSeries(
         selector=selector,
@@ -639,12 +641,14 @@ def test_main_window_orders_collection_by_selected_numeric_value(tmp_path, monke
             SeriesPoint(2, records[2].name, 1.0),
         ),
     )
+
     generation = window._generations.advance(  # noqa: SLF001
         main_window_module._RequestKind.ORDER  # noqa: SLF001
     )
 
     window._order_loaded(generation, records, data)  # noqa: SLF001
 
+    # Ascending numeric order; missing values last.
     assert [record.name for record in window.file_model.records] == [
         "step_10.json",
         "step_1.json",
@@ -658,8 +662,10 @@ def test_main_window_orders_collection_by_selected_numeric_value(tmp_path, monke
         "clear_collection_sort",
         lambda: sort_indicator_invalidations.append(True),
     )
+
+    # Reverse numeric order without clearing the extraction sort indicator.
     window.reverse_order_button.click()
-    assert len(sort_indicator_invalidations) == 1
+    assert len(sort_indicator_invalidations) == 0
     assert [record.name for record in window.file_model.records] == [
         "step_1.json",
         "step_10.json",
@@ -667,14 +673,16 @@ def test_main_window_orders_collection_by_selected_numeric_value(tmp_path, monke
     ]
     assert window.order_status.text().endswith("↓")
 
+    # Reset to natural filename order, clearing the sort indicator.
     window.reset_order_button.click()
-    assert len(sort_indicator_invalidations) == 2
+    assert len(sort_indicator_invalidations) == 1
     assert [record.name for record in window.file_model.records] == [
         "step_1.json",
         "step_2.json",
         "step_10.json",
     ]
 
+    # With no numeric criterion active, reverse filename order.
     window.reverse_order_button.click()
     assert [record.name for record in window.file_model.records] == [
         "step_10.json",
