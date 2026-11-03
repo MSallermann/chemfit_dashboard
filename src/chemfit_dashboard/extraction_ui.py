@@ -315,9 +315,11 @@ class ExtractionPreviewModel(QAbstractTableModel):
         nested = _nested_preview_value(extracted.value, column.nested_path)
         return ExtractionValue(
             None if nested is _PREVIEW_MISSING else nested,
-            ExtractionStatus.MISSING_FIELD
-            if nested is _PREVIEW_MISSING
-            else extracted.status,
+            (
+                ExtractionStatus.MISSING_FIELD
+                if nested is _PREVIEW_MISSING
+                else extracted.status
+            ),
         )
 
 
@@ -599,6 +601,19 @@ class DataExtractionPanel(QWidget):
         """Remove the header marker after collection order changes elsewhere."""
         self._preview_state.clear_sort()
         self.preview_header.clear_sort_marker()
+
+    def set_collection_sort_direction(self, descending: bool) -> None:
+        """Change sort direction without losing the selected column."""
+        column = self._preview_state.sort_column
+        if column is None:
+            return
+
+        self._preview_state.sort_descending = descending
+
+        order = (
+            Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder
+        )
+        self.preview_header.set_sort_marker(column, order)
 
     def _rebuild_selection_table(self, selected_row: int) -> None:
         self.selections.blockSignals(True)
@@ -1282,11 +1297,15 @@ class DataExtractionPanel(QWidget):
         csv_rows = [tuple(self.preview_model.headers()[column] for column in columns)]
         csv_rows.extend(
             tuple(
-                _clipboard_text(
-                    self.preview_model.copy_value(self.preview_model.index(row, column))
+                (
+                    _clipboard_text(
+                        self.preview_model.copy_value(
+                            self.preview_model.index(row, column)
+                        )
+                    )
+                    if (row, column) in selected
+                    else ""
                 )
-                if (row, column) in selected
-                else ""
                 for column in columns
             )
             for row in rows

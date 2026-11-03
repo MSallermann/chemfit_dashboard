@@ -93,6 +93,7 @@ class EvaluationListModel(QAbstractItemModel):
         self._records: list[RecordRef] = []
         self._record_order: dict[str, int] | None = None
         self._items_by_record_id: dict[str, _EvaluationItem] = {}
+        self._folders_by_path: dict[Path, _EvaluationItem] = {}
         # Invisible sentinel: Qt passes an invalid QModelIndex for top-level rows.
         self._root = _EvaluationItem("", None, None, None)
 
@@ -153,6 +154,17 @@ class EvaluationListModel(QAbstractItemModel):
             return QColor(active_color_scheme().muted)
         return None
 
+    @property
+    def folder_paths(self) -> tuple[Path, ...]:
+        """Return directory paths without traversing evaluation records."""
+        return tuple(self._folders_by_path)
+
+    def index_for_folder_path(self, path: Path) -> QModelIndex:
+        item = self._folders_by_path.get(path)
+        return (
+            self.createIndex(item.row(), 0, item) if item is not None else QModelIndex()
+        )
+
     def set_records(self, records: list[RecordRef]) -> None:
         """
         Merge newly discovered records by ID and rebuild the folder tree.
@@ -166,6 +178,7 @@ class EvaluationListModel(QAbstractItemModel):
         self.beginResetModel()
         self._records = ordered
         self._items_by_record_id.clear()
+        self._folders_by_path.clear()
         self._root = _EvaluationItem("", None, None, None)
         self._build_tree()
         self.endResetModel()
@@ -176,6 +189,7 @@ class EvaluationListModel(QAbstractItemModel):
         self._records = []
         self._record_order = None
         self._items_by_record_id.clear()
+        self._folders_by_path.clear()
         self._root = _EvaluationItem("", None, None, None)
         self.endResetModel()
 
@@ -217,6 +231,7 @@ class EvaluationListModel(QAbstractItemModel):
         self.beginResetModel()
         self._records = self._ordered_records(self._records)
         self._items_by_record_id.clear()
+        self._folders_by_path.clear()
         self._root = _EvaluationItem("", None, None, None)
         self._build_tree()
         self.endResetModel()
@@ -260,6 +275,7 @@ class EvaluationListModel(QAbstractItemModel):
         visible_root = _EvaluationItem(common_name, common_path, None, self._root)
         self._root.children = [visible_root]
         folders = {common_path: visible_root}
+        self._folders_by_path = folders
 
         for record in self._records:
             relative = record.path.relative_to(common_path)

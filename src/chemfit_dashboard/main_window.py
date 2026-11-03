@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QItemSelection,
     QPoint,
     QSettings,
+    QSignalBlocker,
     QSortFilterProxyModel,
     Qt,
     QThreadPool,
@@ -160,7 +161,7 @@ from chemfit_dashboard.ui_components import (
 from chemfit_dashboard.workers import GenerationTracker, TaskRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +391,7 @@ class MainWindow(QMainWindow):
         self._pending_navigation = _PendingNavigation()
         self._navigation = _NavigationState()
         self._collection_order = _CollectionOrderState()
+        self._pending_order_direction: bool | None = None
         self._plot_selection = _PlotSelectionState()
         self._current_document: ContextDocument | None = None
         self._tab_before_search: QWidget | None = None
@@ -1808,6 +1810,8 @@ class MainWindow(QMainWindow):
         if callable(clear_source_cache):
             clear_source_cache()
 
+        self._pending_order_direction = None
+
         self.search.clear()
         self.field_search.clear()
         self.file_model.clear_records()
@@ -2704,6 +2708,7 @@ class MainWindow(QMainWindow):
             return
         self.extraction.clear_collection_sort()
         generation = self._generations.advance(_RequestKind.ORDER)
+        self._pending_order_direction = descending
         operation = self._begin_determinate_operation(
             "order", "loading sort values", len(records)
         )
@@ -2733,124 +2738,88 @@ class MainWindow(QMainWindow):
         *,
         descending: bool = False,
     ) -> None:
+        """Apply a completed numeric sort to the evaluation collection."""
+
+        # Ignore results from superseded sorting requests.
         if not self._generations.is_current(_RequestKind.ORDER, generation):
             return
+
         self._finish_operation("order")
-        selected_id = self._selected_record_id()
+
+        # The user may have changed the direction while the background
+        # worker was extracting values. Use the latest requested direction.
+        if self._pending_order_direction is not None:
+            descending = self._pending_order_direction
+        self._pending_order_direction = None
+
+        # Sort numeric values in ascending order, breaking ties by their
+        # original collection positions for deterministic ordering.
         sorted_points = sorted(
-            data.points, key=lambda point: (point.value, point.index)
+            data.points,
+            key=lambda point: (point.value, point.index),
         )
-        present_indices = {point.index for point in sorted_points}
+
+        # Store the canonical ascending order using stable record IDs.
+        # This allows subsequent direction changes without re-extraction.
         self._collection_order.present = tuple(
             records[point.index].id for point in sorted_points
         )
+
+        # Missing values remain at the end in both sorting directions.
+        present_indices = {point.index for point in sorted_points}
         self._collection_order.missing = tuple(
             records[index].id
             for index in range(len(records))
             if index not in present_indices
         )
+
+        # Remember the active criterion and direction so the sidebar's
+        # sort buttons can operate on the existing numeric ordering.
         self._collection_order.label = data.selector.label
-        self._collection_order.descending = False
-        self._collection_order.filename_reversed = False
-        self.file_model.set_record_order(
-            (*self._collection_order.present, *self._collection_order.missing)
+        self._collection_order.descending = descending
+
+        # Reverse only the available numeric values, not the missing tail.
+        present = (
+            tuple(reversed(self._collection_order.present))
+            if descending
+            else self._collection_order.present
         )
-        self._restore_record_selection(selected_id)
+
+        # Preserve expanded folders and the selected evaluation while
+        # resetting the Qt model.
+        self._apply_record_order((*present, *self._collection_order.missing))
+
+        # Plots and extraction previews depend on collection order.
+        # Refresh each exactly once, after applying the final order.
         self._refresh_active_plot()
         self._refresh_extraction_preview(self.extraction.selectors)
-        self.order_status.setText(f"Order: {data.selector.label} ↑")
+
+        arrow = "↓" if descending else "↑"
+        direction = "Descending" if descending else "Ascending"
+
+        self.order_status.setText(f"Order: {data.selector.label} {arrow}")
         self.order_status.setToolTip(
-            f"Ascending numeric order by {data.selector.label}; missing values last"
+            f"{direction} numeric order by {data.selector.label}; missing values last"
         )
+
         self.reset_order_button.setEnabled(True)
         self.ascending_order_button.setEnabled(len(records) > 1)
         self.descending_order_button.setEnabled(len(records) > 1)
+
         missing = data.missing_count
         suffix = f"; {missing:,} missing placed last" if missing else ""
+
         self.statusBar().showMessage(
-            f"Ordered {len(data.points):,} contexts by selected number{suffix}", 5000
+            f"Ordered {len(data.points):,} contexts by selected number{suffix}",
+            5000,
         )
-        if descending:
-            self._set_collection_order(descending=True)
-
-    # def _order_loaded(
-    #     self,
-    #     generation: int,
-    #     records: list[RecordRef],
-    #     data: CollectionSeries,
-    #     *,
-    #     descending: bool = False,
-    # ) -> None:
-    #     """Callback that runs after the background worker has finished extracting the numeric values used to sort the collection."""
-
-    #     # The generation check prevents an outdated sorting result from overriding a newer request.
-    #     # Then it finishes the progress indicator and remembers which evaluation is currently selected.
-    #     if not self._generations.is_current(_RequestKind.ORDER, generation):
-    #         return
-    #     self._finish_operation("order")
-
-    #     # Sort the available numeric values
-    #     sorted_points = sorted(
-    #         data.points, key=lambda point: (point.value, point.index)
-    #     )
-
-    #     # Separate available and missing values
-    #     # This creates two sequences
-    #     # They're stored separately because missing values should always appear last, even when the sorting direction is reversed.
-    #     # The method stores record IDs rather than record objects, so the ordering can be reapplied to the model.
-    #     present_indices = {point.index for point in sorted_points}
-    #     self._collection_order.present = tuple(
-    #         records[point.index].id for point in sorted_points
-    #     )
-
-    #     # Missing values must remain last in BOTH sort directions.
-    #     self._collection_order.missing = tuple(
-    #         records[index].id
-    #         for index in range(len(records))
-    #         if index not in present_indices
-    #     )
-
-    #     # Apply the requested direction in a single model reset.
-    #     present = (
-    #         tuple(reversed(self._collection_order.present))
-    #         if descending
-    #         else self._collection_order.present
-    #     )
-    #     self._collection_order.filename_reversed = False
-    #     self.file_model.set_record_order((*present, *self._collection_order.missing))
-
-    #     # Synchronize the other views
-    #     # Reordering resets the Qt model, so the selected evaluation needs to be restored.
-    #     # The plot and extraction preview also display evaluations in collection order, so they need to be updated.
-    #     # The method then updates the sort labels, buttons, tooltips, and status message.
-    #     selected_id = self._selected_record_id()
-    #     self._restore_record_selection(selected_id)
-    #     self._refresh_active_plot()
-    #     self._refresh_extraction_preview(self.extraction.selectors)
-
-    #     arrow = "↓" if descending else "↑"
-    #     direction = "Descending" if descending else "Ascending"
-    #     self.order_status.setText(f"Order: {data.selector.label} {arrow}")
-    #     self.order_status.setToolTip(
-    #         f"{direction} numeric order by {data.selector.label}; "
-    #         "missing values last"
-    #     )
-
-    #     self.reset_order_button.setEnabled(True)
-    #     self.ascending_order_button.setEnabled(len(records) > 1)
-    #     self.descending_order_button.setEnabled(len(records) > 1)
-
-    #     missing = data.missing_count
-    #     suffix = f"; {missing:,} missing placed last" if missing else ""
-    #     self.statusBar().showMessage(
-    #         f"Ordered {len(data.points):,} contexts by selected number{suffix}", 5000
-    #     )
 
     def _order_failed(self, generation: int, details: str) -> None:
         if not self._generations.is_current(_RequestKind.ORDER, generation):
             return
         self._finish_operation("order")
         self.extraction.clear_collection_sort()
+        self._pending_order_direction = None
         logger.error("Could not order context collection\n%s", details)
         self.order_status.setText("Order: filename")
         self.statusBar().showMessage("Could not order the context collection.", 5000)
@@ -2869,6 +2838,7 @@ class MainWindow(QMainWindow):
             self._show_status("No context collection is loaded.", 3000)
             return
         generation = self._generations.advance(_RequestKind.ORDER)
+        self._pending_order_direction = descending
         operation = self._begin_determinate_operation(
             "order",
             f"sorting by extraction column {selector.column}",
@@ -2935,20 +2905,37 @@ class MainWindow(QMainWindow):
         missing: tuple[str, ...],
         descending: bool,
     ) -> None:
+        # Discard results from superseded sorting requests.
         if not self._generations.is_current(_RequestKind.ORDER, generation):
             return
+
         self._finish_operation("order")
-        selected_id = self._selected_record_id()
+
+        # The user may have changed direction while extraction was running.
+        if self._pending_order_direction is not None:
+            descending = self._pending_order_direction
+        self._pending_order_direction = None
+
+        # Store canonical ascending order. Reversing later should not
+        # require extracting the values again.
         self._collection_order.present = present
         self._collection_order.missing = missing
         self._collection_order.label = label
-        self._collection_order.filename_reversed = False
-        ordered_present = tuple(reversed(present)) if descending else present
-        self.file_model.set_record_order((*ordered_present, *missing))
         self._collection_order.descending = descending
-        self._restore_record_selection(selected_id)
+
+        # Reverse only available values; missing values always stay last.
+        ordered_present = tuple(reversed(present)) if descending else present
+
+        # Preserve expanded folders and selection through the model reset.
+        self._apply_record_order((*ordered_present, *missing))
+
+        # Keep the extraction preview's sort marker synchronized.
+        self.extraction.set_collection_sort_direction(descending)
+
+        # Both views depend on collection order.
         self._refresh_active_plot()
         self._refresh_extraction_preview(self.extraction.selectors)
+
         arrow = "↓" if descending else "↑"
         self.order_status.setText(f"Order: {label} {arrow}")
         self.order_status.setToolTip(
@@ -2958,73 +2945,129 @@ class MainWindow(QMainWindow):
         self._show_status(f"Sorted collection by extraction column {label}", 4000)
 
     def _reset_collection_order(self) -> None:
+        """Restore natural filename order and clear the active sort."""
+        # Cancel any running sort and discard its eventual result.
         self._cancel_operation("order")
         self._generations.invalidate(_RequestKind.ORDER)
-        selected_id = self._selected_record_id()
+        self._pending_order_direction = None
+
+        # Clear the numeric ordering state and extraction sort indicator.
         self.extraction.clear_collection_sort()
         self._clear_numeric_order()
-        self._collection_order.filename_reversed = False
-        self.file_model.set_record_order(None)
-        self._restore_record_selection(selected_id)
+
+        # Restore filename ordering while preserving expanded folders
+        # and the currently selected evaluation.
+        self._apply_record_order(None)
+
+        # Plot and extraction data depend on collection order.
         self._refresh_active_plot()
         self._refresh_extraction_preview(self.extraction.selectors)
+
         self.order_status.setText("Order: filename")
         self.order_status.setToolTip("Natural alphanumeric filename order")
         self.reset_order_button.setEnabled(False)
         self.statusBar().showMessage("Restored filename order", 3000)
 
+    def _apply_record_order(self, record_ids: Iterable[str] | None) -> None:
+        """Reorder records while preserving folder expansion and selection."""
+        selected_id = self._selected_record_id()
+
+        # Save only expanded directory nodes, not individual evaluations.
+        # This avoids a traversal over the entire collection.
+        expanded_folders = []
+        for path in self.file_model.folder_paths:
+            source_index = self.file_model.index_for_folder_path(path)
+            proxy_index = self.file_proxy.mapFromSource(source_index)
+
+            if proxy_index.isValid() and self.file_list.isExpanded(proxy_index):
+                expanded_folders.append(path)
+
+        # A model reset invalidates Qt selection indexes. Block selection
+        # signals so restoration doesn't trigger a redundant document load.
+        blocker = QSignalBlocker(self.file_list.selectionModel())
+        try:
+            self.file_model.set_record_order(record_ids)
+
+            for path in expanded_folders:
+                source_index = self.file_model.index_for_folder_path(path)
+                proxy_index = self.file_proxy.mapFromSource(source_index)
+
+                if proxy_index.isValid():
+                    self.file_list.expand(proxy_index)
+
+            self._restore_record_selection(selected_id)
+        finally:
+            blocker.unblock()
+
     def _set_collection_order(self, *, descending: bool) -> None:
         if len(self.file_model.records) < 2:
             return
-        # A sidebar order action supersedes a still-running Inspector or
-        # extraction sort just as it supersedes the visible header marker.
-        self._cancel_operation("order")
-        self._generations.invalidate(_RequestKind.ORDER)
-        self.extraction.clear_collection_sort()
-        selected_id = self._selected_record_id()
+
+        # If sorting values is still in progress, change the requested
+        # direction rather than cancelling the sort and using filenames.
+        if self._pending_order_direction is not None:
+            self._pending_order_direction = descending
+            return
+
         self._collection_order.descending = descending
+
         if self._collection_order.label is not None:
+            # Preserve the extraction column's sort indicator.
+            self.extraction.set_collection_sort_direction(descending)
+
+            # Reverse only available values. Missing values remain last.
             present = (
                 tuple(reversed(self._collection_order.present))
                 if descending
                 else self._collection_order.present
             )
+
             known_ids = {*present, *self._collection_order.missing}
             newly_added = tuple(
                 record.id
                 for record in self.file_model.filename_ordered_records
                 if record.id not in known_ids
             )
-            self.file_model.set_record_order(
+
+            self._apply_record_order(
                 (*present, *self._collection_order.missing, *newly_added)
             )
+
             arrow = "↓" if descending else "↑"
             direction = "Descending" if descending else "Ascending"
+
             self.order_status.setText(f"Order: {self._collection_order.label} {arrow}")
             self.order_status.setToolTip(
                 f"{direction} numeric order by {self._collection_order.label}; "
                 "missing values last"
             )
+
         else:
-            self._collection_order.filename_reversed = descending
+            # No numeric criterion is active: sort by filename.
+            self.extraction.clear_collection_sort()
+
             if descending:
                 filename_records = self.file_model.filename_ordered_records
-                self.file_model.set_record_order(
+                self._apply_record_order(
                     record.id for record in reversed(filename_records)
                 )
+
                 self.order_status.setText("Order: filename ↓")
                 self.order_status.setToolTip(
                     "Reverse natural alphanumeric filename order"
                 )
                 self.reset_order_button.setEnabled(True)
+
             else:
-                self.file_model.set_record_order(None)
+                self._apply_record_order(None)
                 self.order_status.setText("Order: filename")
                 self.order_status.setToolTip("Natural alphanumeric filename order")
                 self.reset_order_button.setEnabled(False)
-        self._restore_record_selection(selected_id)
+
+        # Refresh downstream views once, after the final order is installed.
         self._refresh_active_plot()
         self._refresh_extraction_preview(self.extraction.selectors)
+
         direction = "descending" if descending else "ascending"
         self.statusBar().showMessage(f"Sorted collection in {direction} order", 3000)
 
