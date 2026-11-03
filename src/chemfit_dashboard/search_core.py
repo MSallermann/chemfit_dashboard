@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from rapidfuzz.fuzz import ratio
 
-from chemfit_dashboard.source import ContextDocument, NodePath
+from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.source import ContextDocument
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable

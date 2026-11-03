@@ -76,6 +76,7 @@ from chemfit_dashboard.chart_style import (
     finish_cartesian_chart,
     series_color,
 )
+from chemfit_dashboard.context_document import NodePath
 from chemfit_dashboard.icons import make_icon_only, set_themed_icon
 from chemfit_dashboard.semantic import (
     ComponentResolution,
@@ -85,7 +86,7 @@ from chemfit_dashboard.semantic import (
     resolve_component_path,
     resolve_component_selection,
 )
-from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
+from chemfit_dashboard.source import ContextDocument, ContextSourceError
 from chemfit_dashboard.ui_components import (
     ActionRow,
     expand_button,

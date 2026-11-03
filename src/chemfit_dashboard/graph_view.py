@@ -38,10 +38,11 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from chemfit_dashboard.appearance import ColorScheme, active_color_scheme
+from chemfit_dashboard.context_document import NodePath
 from chemfit_dashboard.data_flow import DataFlowGraph, DataFlowNode, build_data_flow
 from chemfit_dashboard.graph_layout import GraphLayout, data_flow_layout
 from chemfit_dashboard.icons import make_icon_only
-from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
+from chemfit_dashboard.source import ContextDocument, ContextSourceError
 from chemfit_dashboard.traversal import CancellationToken
 from chemfit_dashboard.ui_components import (
     expand_button,

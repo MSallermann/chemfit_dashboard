@@ -27,9 +27,6 @@ from chemfit_dashboard.context_document import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-NodePath = tuple[int, ...]
-DEFAULT_COMPONENT_LABEL_METADATA_KEY = "name"
-
 
 class ContextSourceError(Exception):
     """Error class for raised by context sources."""
@@ -134,7 +131,6 @@ class JsonFileSource(CachedContextSource):
     def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
         paths: set[Path] = set()
         for location in locations:
-
             path = Path(location).expanduser()
             if not path.exists():
                 message = f"Path does not exist: {path}"

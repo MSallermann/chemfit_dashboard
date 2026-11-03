@@ -34,8 +34,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.context_document import NodePath
 from chemfit_dashboard.icons import make_icon_only
-from chemfit_dashboard.source import ContextDocument, NodePath
+from chemfit_dashboard.source import ContextDocument
 from chemfit_dashboard.ui_components import muted_label
 
 if TYPE_CHECKING:

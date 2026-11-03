@@ -97,6 +97,11 @@ from chemfit_dashboard.collection_plot import (
     build_collection_series_multi,
     selector_for_document,
 )
+from chemfit_dashboard.context_document import (
+    DEFAULT_COMPONENT_LABEL_METADATA_KEY,
+    ContextDocument,
+    NodePath,
+)
 from chemfit_dashboard.context_search import (
     MAX_RESULTS,
     ContextSearchPanel,
@@ -137,12 +142,9 @@ from chemfit_dashboard.semantic import (
     resolve_component_selection,
 )
 from chemfit_dashboard.source import (
-    DEFAULT_COMPONENT_LABEL_METADATA_KEY,
-    ContextDocument,
     ContextSource,
     ContextSourceError,
     JsonFileSource,
-    NodePath,
     RecordRef,
 )
 from chemfit_dashboard.traversal import (
@@ -398,7 +400,6 @@ class MainWindow(QMainWindow):
             DEFAULT_COMPONENT_LABEL_METADATA_KEY,
         )
         self._component_label_metadata_key = str(saved_label_key).strip()
-        self.source.set_component_label_metadata_key(self._component_label_metadata_key)
         self._restore_appearance_settings()
 
         self.setWindowTitle("ChemFit Context Inspector")
@@ -1370,9 +1371,11 @@ class MainWindow(QMainWindow):
         )
         self._apply_application_stylesheet()
         self._show_status(
-            "Interface style: Lightweight"
-            if profile == "lightweight"
-            else "Interface style: Classic",
+            (
+                "Interface style: Lightweight"
+                if profile == "lightweight"
+                else "Interface style: Classic"
+            ),
             3000,
         )
 
@@ -1478,7 +1481,6 @@ class MainWindow(QMainWindow):
         if key == self._component_label_metadata_key:
             return
         self._component_label_metadata_key = key
-        self.source.set_component_label_metadata_key(key)
         self._settings.setValue(COMPONENT_LABEL_METADATA_KEY_SETTING, key)
         self._settings.sync()
         self.search_indexes.clear()
@@ -1981,7 +1983,8 @@ class MainWindow(QMainWindow):
         )
 
     def _load_document(self, record: RecordRef) -> ContextDocument:
-        document = self.source.configure_document(self.source.load(record))
+        document = self.source.load(record)
+        document.set_component_label_metadata_key(self._component_label_metadata_key)
         # Warm this collection-wide metadata scan off the GUI thread.
         _ = document.component_label_metadata_keys
         return document
@@ -2469,7 +2472,10 @@ class MainWindow(QMainWindow):
                         current_document
                         if current_document is not None
                         and current_document.record.id == record.id
-                        else self.source.configure_document(self.source.load(record))
+                        else self.source.load(record)
+                    )
+                    document.set_component_label_metadata_key(
+                        self._component_label_metadata_key
                     )
                     index = self._cached_search_index(
                         document,

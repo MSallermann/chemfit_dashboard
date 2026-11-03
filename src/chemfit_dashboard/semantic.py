@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
+from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.source import ContextDocument, ContextSourceError
 
 
 @dataclass(frozen=True, slots=True)

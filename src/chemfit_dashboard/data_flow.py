@@ -11,7 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from chemfit_dashboard.source import ContextDocument, ContextSourceError, NodePath
+from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.source import ContextDocument, ContextSourceError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
