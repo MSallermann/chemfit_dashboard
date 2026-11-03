@@ -5,8 +5,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from chemfit import EvaluateContext, component, pipeline
 from chemfit.fitter_callbacks import SaveMetaData
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
+from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.source import JsonFileSource
 
 
@@ -42,3 +44,16 @@ def chemfit_document(chemfit_json_path):
     source = JsonFileSource()
     record = source.discover([chemfit_json_path])[0]
     return source.load(record)
+
+
+@pytest.fixture(autouse=True)
+def cleanup_windows(qapp):
+    yield
+
+    for widget in QApplication.topLevelWidgets():
+        if isinstance(widget, MainWindow):
+            widget.close()
+            widget.deleteLater()
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
