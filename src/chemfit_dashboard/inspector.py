@@ -1,14 +1,16 @@
 """
-Detail views and actions for the selected context node.
+Inspector widgets for one selected evaluation context.
 
-``Inspector`` presents fields, metadata, structure, and raw JSON, and emits
-semantic plot, sort, and extraction requests. Lazy JSON models avoid eagerly
-materializing large nested values in the GUI thread.
+``JsonView`` displays arbitrary JSON through a lazy Qt item model.
+``StructureView`` adds a table for ChemFit's declared component structure.
+``Inspector`` combines these views and emits requests to the main window;
+plotting, sorting and extraction are handled elsewhere.
 """
 
 from __future__ import annotations
 
 import json
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
@@ -30,10 +32,10 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.collection_plot import NumberSelector
+from chemfit_dashboard.context_document import NodeDetails
 from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import JsonValueModel
-from chemfit_dashboard.source import NodeDetails
 from chemfit_dashboard.ui_components import muted_label
 
 if TYPE_CHECKING:
@@ -43,7 +45,14 @@ MAX_STRUCTURE_TABLE_ROWS = 500
 
 
 class JsonView(QTreeView):
-    """Lazy JSON tree with value selection and clipboard navigation actions."""
+    """
+    Display a JSON value and report which nested field the user selects.
+
+    The underlying ``JsonValueModel`` creates Qt items on demand. The signals
+    carry (path, value) tuples; ``numeric_selected`` emits ``None`` for any
+    selection that is not a number. ``section`` identifies the value's origin
+    (fields, metadata, structure or raw) when copying its path.
+    """
 
     numeric_selected = Signal(object)
     value_selected = Signal(object)
@@ -66,6 +75,7 @@ class JsonView(QTreeView):
         self.customContextMenuRequested.connect(self._show_context_menu)
 
     def set_value(self, value: Any) -> None:
+        """Replace the displayed value and expand its top-level fields."""
         self._json_model.set_value(value)
         self.expandToDepth(0)
 
@@ -80,6 +90,7 @@ class JsonView(QTreeView):
         return True
 
     def _current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
+        """Translate Qt selection changes into field and numeric selections."""
         value = self._json_model.value(current)
         path = self._json_model.value_path(current)
         self.value_selected.emit((path, value) if current.isValid() else None)
@@ -89,6 +100,7 @@ class JsonView(QTreeView):
             self.numeric_selected.emit(None)
 
     def copy_current_value(self, *, as_json: bool = False) -> None:
+        """Copy the selected value as text or pretty-printed JSON."""
         index = self.currentIndex()
         if not index.isValid():
             return
@@ -104,6 +116,7 @@ class JsonView(QTreeView):
         )
 
     def copy_current_path(self) -> None:
+        """Copy a section-prefixed field path for use elsewhere in the app."""
         index = self.currentIndex()
         if not index.isValid():
             return
@@ -138,7 +151,13 @@ class JsonView(QTreeView):
 
 
 class StructureView(QWidget):
-    """Compact table presentation of a node's ChemFit structure declaration."""
+    """
+    Show declared components in a table alongside the full raw structure.
+
+    The table is deliberately capped at ``MAX_STRUCTURE_TABLE_ROWS``. The
+    ``JsonView`` below it always exposes the complete declaration, including
+    unfamiliar metadata fields.
+    """
 
     def __init__(self, parent: QWidget | None = None):
         """Initialize the structured metadata and fallback views."""
@@ -169,6 +188,7 @@ class StructureView(QWidget):
         layout.addWidget(self.raw, 1)
 
     def set_structure(self, structure: Mapping[str, Any] | None) -> None:
+        """Update the structure table and its generic JSON fallback."""
         self.table_model.removeRows(0, self.table_model.rowCount())
         self.raw.set_value(structure or {})
         if not structure:
@@ -240,13 +260,28 @@ class Inspector(QWidget):
     component_extraction_requested = Signal(object)
     status_message = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
-        """Initialize the tabbed context inspector."""
+    def __init__(self, parent: QWidget | None = None):
+        """Build the inspector and connect its selection and action signals."""
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 18)
         layout.setSpacing(12)
 
+        self._setup_header(layout)
+        self._setup_actions(layout)
+        self._setup_tabs(layout)
+
+        # Only the active tab is populated when the selection changes. The
+        # others remain untouched until the user opens them.
+        self._details: NodeDetails | None = None
+        self._populated_tabs: set[QWidget] = set()
+        self._component_label = ""
+        self._number_selector: NumberSelector | None = None
+        self._field_selector: FieldSelector | None = None
+        self._connect_view_signals()
+
+    def _setup_header(self, layout: QVBoxLayout) -> None:
+        """Create the component title and summary above the inspector tabs."""
         self.eyebrow = QLabel("SELECT A CONTEXT")
         self.eyebrow.setObjectName("eyebrow")
         layout.addWidget(self.eyebrow)
@@ -264,6 +299,8 @@ class Inspector(QWidget):
         divider.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(divider)
 
+    def _setup_actions(self, layout: QVBoxLayout) -> None:  # noqa: PLR0915
+        """Create the controls that act on a selected numeric value or field."""
         actions = QFrame()
         actions.setObjectName("inspectorActions")
         action_layout = QGridLayout(actions)
@@ -271,20 +308,24 @@ class Inspector(QWidget):
         action_layout.setHorizontalSpacing(8)
         action_layout.setVerticalSpacing(7)
 
+        # Numeric selections can be plotted or used to order the collection.
         number_label = QLabel("NUMBER")
         number_label.setObjectName("actionGroupLabel")
         action_layout.addWidget(number_label, 0, 0)
         self.plot_selection = muted_label("No number selected")
         action_layout.addWidget(self.plot_selection, 0, 1, 1, 5)
+
         self.plot_button = QPushButton("Plot")
         self.plot_button.setProperty("primaryAction", "true")
         self.plot_button.setEnabled(False)
         self.plot_button.clicked.connect(self._request_plot)
         action_layout.addWidget(self.plot_button, 1, 1)
+
         self.plot_add_button = QPushButton("+ Series")
         self.plot_add_button.setEnabled(False)
         self.plot_add_button.clicked.connect(self._request_plot_add)
         action_layout.addWidget(self.plot_add_button, 1, 2)
+
         sort_label = QLabel("Sort:")
         action_layout.addWidget(sort_label, 1, 3)
         self.order_button = QPushButton("Sort ↑")
@@ -296,6 +337,7 @@ class Inspector(QWidget):
         self.order_button.setEnabled(False)
         self.order_button.clicked.connect(self._request_order)
         action_layout.addWidget(self.order_button, 1, 4)
+
         self.order_descending_button = QPushButton("Sort ↓")
         make_icon_only(
             self.order_descending_button,
@@ -306,16 +348,19 @@ class Inspector(QWidget):
         self.order_descending_button.clicked.connect(self._request_order_descending)
         action_layout.addWidget(self.order_descending_button, 1, 5)
 
+        # Field selections can be exported individually or by component.
         extraction_label = QLabel("EXTRACTION")
         extraction_label.setObjectName("actionGroupLabel")
         action_layout.addWidget(extraction_label, 2, 0)
         self.field_selection = muted_label("No field selected")
         action_layout.addWidget(self.field_selection, 2, 1, 1, 5)
+
         self.extract_button = QPushButton("+ Field")
         self.extract_button.setProperty("extractAction", "true")
         self.extract_button.setEnabled(False)
         self.extract_button.clicked.connect(self._request_extraction)
         action_layout.addWidget(self.extract_button, 3, 1)
+
         self.extract_component_button = QPushButton("+ Component")
         self.extract_component_button.setProperty("extractAction", "true")
         self.extract_component_button.setEnabled(False)
@@ -329,6 +374,8 @@ class Inspector(QWidget):
         action_layout.setColumnStretch(6, 1)
         layout.addWidget(actions)
 
+    def _setup_tabs(self, layout: QVBoxLayout) -> None:
+        """Create the four views of a context node's serialized data."""
         self.tabs = QTabWidget()
         self.summary = JsonView("fields")
         self.metadata = JsonView("metadata")
@@ -339,40 +386,31 @@ class Inspector(QWidget):
         self.tabs.addTab(self.structure, "Structure")
         self.tabs.addTab(self.raw, "Raw fields")
         layout.addWidget(self.tabs, 1)
-        self._details: NodeDetails | None = None
-        self._populated_tabs: set[QWidget] = set()
-        self._component_label = ""
-        self._number_selector: NumberSelector | None = None
-        self._field_selector: FieldSelector | None = None
-        self.summary.numeric_selected.connect(
-            lambda selection: self._numeric_selected("fields", selection)
+
+    def _connect_view_signals(self) -> None:
+        """
+        Route value selections to the relevant controls and action signals.
+
+        A section identifies where a selected JSON path came from. It becomes
+        part of ``NumberSelector`` or ``FieldSelector`` so the main window can
+        apply the operation to other evaluations in the collection.
+        """
+        views = (
+            ("fields", self.summary),
+            ("metadata", self.metadata),
+            ("structure", self.structure.raw),
+            ("raw", self.raw),
         )
-        self.metadata.numeric_selected.connect(
-            lambda selection: self._numeric_selected("metadata", selection)
-        )
-        self.structure.raw.numeric_selected.connect(
-            lambda selection: self._numeric_selected("structure", selection)
-        )
-        self.raw.numeric_selected.connect(
-            lambda selection: self._numeric_selected("raw", selection)
-        )
-        for view in (self.summary, self.metadata, self.structure.raw, self.raw):
+        for section, view in views:
+            view.numeric_selected.connect(partial(self._numeric_selected, section))
+            view.value_selected.connect(partial(self._value_selected, section))
             view.copy_completed.connect(self.status_message.emit)
-        self.summary.value_selected.connect(
-            lambda selection: self._value_selected("fields", selection)
-        )
-        self.metadata.value_selected.connect(
-            lambda selection: self._value_selected("metadata", selection)
-        )
-        self.structure.raw.value_selected.connect(
-            lambda selection: self._value_selected("structure", selection)
-        )
-        self.raw.value_selected.connect(
-            lambda selection: self._value_selected("raw", selection)
-        )
+
+        # Defer tab contents until a tab is first shown for this selection.
         self.tabs.currentChanged.connect(lambda _index: self._populate_current_tab())
 
     def clear(self) -> None:
+        """Reset the inspector when no context is selected."""
         self._details = None
         self._component_label = ""
         self._set_number_selector(None)
@@ -398,6 +436,7 @@ class Inspector(QWidget):
     def set_details(
         self, details: NodeDetails, component_label: str | None = None
     ) -> None:
+        """Show a new node; defer inactive tabs until they are opened."""
         self._details = details
         self._component_label = component_label or details.info.label
         self._set_number_selector(None)
@@ -415,6 +454,7 @@ class Inspector(QWidget):
         self._populate_current_tab()
 
     def _populate_current_tab(self) -> None:
+        """Populate the selected tab once for the current context node."""
         details = self._details
         current = self.tabs.currentWidget()
         if details is None or current is None or current in self._populated_tabs:
@@ -445,6 +485,7 @@ class Inspector(QWidget):
         return view.focus_path(path)
 
     def _numeric_selected(self, section: str, selection: object) -> None:
+        """Turn a JSON number selection into a collection-wide selector."""
         if self._details is None or not isinstance(selection, tuple):
             self._set_number_selector(None)
             return
@@ -468,6 +509,7 @@ class Inspector(QWidget):
         )
 
     def _set_number_selector(self, selector: NumberSelector | None) -> None:
+        """Keep the numeric action buttons in sync with the selection."""
         self._number_selector = selector
         self.plot_button.setEnabled(selector is not None)
         self.plot_add_button.setEnabled(selector is not None)
@@ -494,6 +536,7 @@ class Inspector(QWidget):
         self.plot_selection.setToolTip(selector.label if selector is not None else "")
 
     def _value_selected(self, section: str, selection: object) -> None:
+        """Turn a JSON field selection into an extraction selector."""
         if self._details is None or not isinstance(selection, tuple):
             self._set_field_selector(None)
             return
@@ -512,6 +555,7 @@ class Inspector(QWidget):
         )
 
     def _set_field_selector(self, selector: FieldSelector | None) -> None:
+        """Keep the extraction controls in sync with the selected field."""
         self._field_selector = selector
         self.extract_button.setEnabled(selector is not None)
         self.extract_button.setToolTip(
@@ -528,6 +572,7 @@ class Inspector(QWidget):
             selector.path_label if selector is not None else ""
         )
 
+    # The buttons only emit requests; MainWindow performs the operations.
     def _request_plot(self) -> None:
         if self._number_selector is not None:
             self.plot_requested.emit(self._number_selector)
@@ -560,6 +605,7 @@ class Inspector(QWidget):
 
 
 def _format_sources(value: Any) -> str:
+    """Format structural input/output sources for the compact table."""
     if not isinstance(value, list):
         return "—"
     formatted = []
@@ -574,12 +620,14 @@ def _format_sources(value: Any) -> str:
 
 
 def _format_dependencies(value: Any) -> str:
+    """Format structural dependency indices for the compact table."""
     if not isinstance(value, list):
         return "—"
     return ", ".join(map(str, value)) if value else "none"
 
 
 def _format_value_path(path: tuple[str | int, ...]) -> str:
+    """Render a nested JSON field path, e.g. ``output.values[2]``."""
     result = ""
     for segment in path:
         if isinstance(segment, int):
@@ -590,6 +638,7 @@ def _format_value_path(path: tuple[str | int, ...]) -> str:
 
 
 def _clipboard_value(value: Any) -> str:
+    """Render a JSON-compatible value for ordinary clipboard copying."""
     if isinstance(value, str):
         return value
     if value is None:
