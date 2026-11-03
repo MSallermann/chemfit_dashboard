@@ -1,9 +1,21 @@
 """
-Qt item models for evaluations, context nodes, and arbitrary JSON values.
+Qt models connecting dashboard data to Qt tree views.
 
-The evaluation model owns collection display order. Context and JSON models
-fetch children in batches from already indexed documents so expanding a large
-tree does not construct every Qt item at once.
+A QTreeView asks its model for rows, columns, parent/child indexes, and data
+for specific display roles; it does not navigate ContextDocument directly.
+A QModelIndex refers to one cell and carries a private ``_...Item`` instance
+as its ``internalPointer()``. That item links to its parent and materialized
+children, while RecordRef, NodeInfo, and JSON values remain the actual data.
+
+Every model uses an invisible ``_root`` item. Qt represents this root with an
+*invalid* QModelIndex; valid indexes refer to visible cells, with tree
+relationships conventionally expressed through column 0.
+
+- EvaluationListModel eagerly builds the folder/record hierarchy and controls
+  its display order.
+- ContextTreeModel materializes context items in batches from an already
+  indexed ContextDocument.
+- JsonValueModel lazily exposes a nested dict/list for the inspector.
 """
 
 from __future__ import annotations
@@ -25,7 +37,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from chemfit_dashboard.appearance import active_color_scheme
-from chemfit_dashboard.source import (
+from chemfit_dashboard.context_document import (
     ContextDocument,
     NodeInfo,
     RecordRef,
@@ -44,6 +56,13 @@ FOREGROUND_ROLE = Qt.ItemDataRole.ForegroundRole.value
 
 @dataclass(slots=True)
 class _EvaluationItem:
+    """
+    One Qt tree item: either a folder (``record=None``) or an evaluation.
+
+    ``row_index`` is its position among its parent's displayed children;
+    Qt needs this to reconstruct the parent's QModelIndex.
+    """
+
     name: str
     path: Path | None
     record: RecordRef | None
@@ -59,10 +78,11 @@ class _EvaluationItem:
 
 class EvaluationListModel(QAbstractItemModel):
     """
-    Hierarchical folder model containing discovered context files.
+    Hierarchical, eagerly built folder tree of discovered evaluations.
 
-    This model is the authority for collection display order. Reordering resets
-    the tree while stable record IDs let MainWindow restore selection.
+    Folder entries are display-only; leaf items hold RecordRef objects. The
+    model controls collection display order. Reordering resets the Qt model,
+    while stable record IDs let MainWindow restore selection.
     """
 
     RecordRole = Qt.ItemDataRole.UserRole.value + 1
@@ -73,6 +93,7 @@ class EvaluationListModel(QAbstractItemModel):
         self._records: list[RecordRef] = []
         self._record_order: dict[str, int] | None = None
         self._items_by_record_id: dict[str, _EvaluationItem] = {}
+        # Invisible sentinel: Qt passes an invalid QModelIndex for top-level rows.
         self._root = _EvaluationItem("", None, None, None)
 
     def columnCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
@@ -80,6 +101,7 @@ class EvaluationListModel(QAbstractItemModel):
         return 1
 
     def rowCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
+        """Count rows beneath ``parent`` (only column 0 owns children)."""
         if parent.isValid() and parent.column() > 0:
             return 0
         return len(self._item(parent).children)
@@ -90,12 +112,15 @@ class EvaluationListModel(QAbstractItemModel):
         column: int,
         parent: ModelIndex = EMPTY_INDEX,
     ) -> QModelIndex:
+        # createIndex stores the item in the QModelIndex's internalPointer().
+        # data() and parent() recover it without searching the tree.
         parent_item = self._item(parent)
         if not 0 <= row < len(parent_item.children):
             return QModelIndex()
         return self.createIndex(row, column, parent_item.children[row])
 
     def parent(self, index: ModelIndex) -> QModelIndex:  # type: ignore[override]
+        """Return a child's parent index; top-level items have no Qt parent."""
         if not index.isValid():
             return QModelIndex()
         parent_item = cast("_EvaluationItem", index.internalPointer()).parent
@@ -107,6 +132,12 @@ class EvaluationListModel(QAbstractItemModel):
         return bool(self._item(parent).children)
 
     def data(self, index: ModelIndex, role: int = DISPLAY_ROLE):  # noqa: PLR0911
+        """
+        Answer Qt's role-specific requests for a folder or evaluation row.
+
+        ``RecordRole`` exposes RecordRef to application code without depending
+        on the displayed name or filename.
+        """
         if not index.isValid():
             return None
         item = cast("_EvaluationItem", index.internalPointer())
@@ -123,6 +154,12 @@ class EvaluationListModel(QAbstractItemModel):
         return None
 
     def set_records(self, records: list[RecordRef]) -> None:
+        """
+        Merge newly discovered records by ID and rebuild the folder tree.
+
+        This *adds to* existing records rather than replacing them. A model
+        reset notifies Qt that existing indexes are invalid.
+        """
         merged = {record.id: record for record in self._records}
         merged.update({record.id: record for record in records})
         ordered = self._ordered_records(merged.values())
@@ -148,6 +185,7 @@ class EvaluationListModel(QAbstractItemModel):
         return cast("_EvaluationItem", index.internalPointer()).record
 
     def first_record_index(self) -> QModelIndex:
+        """Find the first evaluation leaf, skipping folder-only items."""
         pending = list(reversed(self._root.children))
         while pending:
             item = pending.pop()
@@ -165,7 +203,12 @@ class EvaluationListModel(QAbstractItemModel):
         return tuple(sorted(self._records, key=_record_filename_key))
 
     def set_record_order(self, record_ids: Iterable[str] | None) -> None:
-        """Apply a custom record order or restore natural filename ordering."""
+        """
+        Put listed IDs first in the given order; sort unlisted IDs naturally.
+
+        Passing None restores natural filename ordering. A reset is required
+        because the folder items' rows, and thus their indexes, may change.
+        """
         self._record_order = (
             {record_id: rank for rank, record_id in enumerate(record_ids)}
             if record_ids is not None
@@ -185,20 +228,29 @@ class EvaluationListModel(QAbstractItemModel):
         )
 
     def _ordered_records(self, records: Iterable[RecordRef]) -> list[RecordRef]:
+        """Sort records by custom rank (if set), then by natural filename."""
         if self._record_order is None:
             return sorted(records, key=_record_filename_key)
         order = self._record_order
         return sorted(
             records,
             key=lambda record: (
-                0,
-                order[record.id],
-            )
-            if record.id in order
-            else (1, _record_filename_key(record)),
+                (
+                    0,
+                    order[record.id],
+                )
+                if record.id in order
+                else (1, _record_filename_key(record))
+            ),
         )
 
     def _build_tree(self) -> None:
+        """
+        Group records beneath their common directory and index leaves by ID.
+
+        One _EvaluationItem is shared per directory; each child's ``row_index``
+        is assigned after sorting so parent() can construct correct Qt indexes.
+        """
         if not self._records:
             return
         common_path = Path(
@@ -253,6 +305,14 @@ class EvaluationListModel(QAbstractItemModel):
 
 @dataclass(slots=True)
 class _ContextItem:
+    """
+    Qt-facing wrapper for a NodeInfo from ContextDocument.
+
+    ``children`` contains only items materialized so far, not all children
+    known to ContextDocument. Parent pointers and row indexes serve Qt's
+    index/parent protocol; the document remains the source of node data.
+    """
+
     info: NodeInfo | None
     parent: _ContextItem | None
     children: list[_ContextItem] = field(default_factory=list)
@@ -267,10 +327,12 @@ class _ContextItem:
 
 class ContextTreeModel(QAbstractItemModel):
     """
-    Lazy Qt model backed by a pre-indexed ``ContextDocument``.
+    Lazy Qt adapter for one pre-indexed ``ContextDocument``.
 
-    Only visible branches become Qt items; each fetch adds a bounded child batch.
-    The document remains the owner of node data and path lookup.
+    When a document is set, the invisible model root has one visible child:
+    the document root context. NodeInfo.child_count gives the complete child count, while ``_ContextItem``
+    holds only the children fetched into Qt (at most FETCH_BATCH_SIZE per call).
+    The document owns the actual hierarchy and its path lookup.
     """
 
     columns = ("Component", "Status", "Output")
@@ -288,9 +350,11 @@ class ContextTreeModel(QAbstractItemModel):
         return self._document
 
     def set_document(self, document: ContextDocument | None) -> None:
+        """Switch evaluations and invalidate the previous Qt item hierarchy."""
         self.beginResetModel()
         self._document = document
         self._root = _ContextItem(info=None, parent=None, fetched=True)
+        # Unlike JsonValueModel, the context's own root is a visible row.
         if document is not None:
             self._root.children.append(
                 _ContextItem(info=document.root, parent=self._root)
@@ -302,6 +366,7 @@ class ContextTreeModel(QAbstractItemModel):
         return len(self.columns)
 
     def rowCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
+        """Count rows beneath ``parent`` (only column 0 owns children)."""
         if parent.isValid() and parent.column() > 0:
             return 0
         return len(self._item(parent).children)
@@ -312,12 +377,14 @@ class ContextTreeModel(QAbstractItemModel):
         column: int,
         parent: ModelIndex = EMPTY_INDEX,
     ) -> QModelIndex:
+        """Wrap an already fetched child in a QModelIndex with its item pointer."""
         parent_item = self._item(parent)
         if not 0 <= row < len(parent_item.children):
             return QModelIndex()
         return self.createIndex(row, column, parent_item.children[row])
 
     def parent(self, index: ModelIndex) -> QModelIndex:  # type: ignore[override]
+        """Recover the wrapper's parent, using an invalid index at the top."""
         if not index.isValid():
             return QModelIndex()
         item = cast("_ContextItem", index.internalPointer())
@@ -327,6 +394,12 @@ class ContextTreeModel(QAbstractItemModel):
         return self.createIndex(parent_item.row(), 0, parent_item)
 
     def data(self, index: ModelIndex, role: int = DISPLAY_ROLE):  # noqa: PLR0911
+        """
+        Return cell text, tooltip, colors, or NodeInfo for the requested role.
+
+        Qt asks for each role separately. The custom NodeRole lets other GUI
+        code retrieve the underlying NodeInfo directly from a selected index.
+        """
         if not index.isValid():
             return None
         item = cast("_ContextItem", index.internalPointer())
@@ -361,18 +434,26 @@ class ContextTreeModel(QAbstractItemModel):
         return None
 
     def hasChildren(self, parent: ModelIndex = EMPTY_INDEX) -> bool:  # noqa: N802
+        """Tell Qt an item is expandable even before its children are fetched."""
         if not parent.isValid():
             return bool(self._root.children)
         item = self._item(parent)
         return bool(item.info and item.info.child_count)
 
     def canFetchMore(self, parent: ModelIndex) -> bool:  # noqa: N802
+        """Compare the document's child count with items created for Qt."""
         if not parent.isValid():
             return False
         item = self._item(parent)
         return bool(item.info and item.info.child_count > len(item.children))
 
     def fetchMore(self, parent: ModelIndex) -> None:  # noqa: N802
+        """
+        Materialize one bounded child batch for Qt, without reindexing data.
+
+        beginInsertRows()/endInsertRows() tell attached views exactly which
+        rows became available; mutating ``item.children`` alone is not enough.
+        """
         if self._document is None or not self.canFetchMore(parent):
             return
         item = self._item(parent)
@@ -398,7 +479,13 @@ class ContextTreeModel(QAbstractItemModel):
         return cast("_ContextItem", index.internalPointer()).info
 
     def index_for_path(self, path: tuple[int, ...]) -> QModelIndex:
-        """Fetch ancestors as needed and return the index for a context path."""
+        """
+        Find a context node by path, fetching its ancestor branches as needed.
+
+        Children are stored in path order. Fetch batches until the desired
+        prefix is in range, then bisect the materialized siblings. This also
+        supports jumping to nodes that the user has not expanded manually.
+        """
         current = self.index(0, 0, QModelIndex())
         if not current.isValid() or not path:
             return current
@@ -427,6 +514,7 @@ class ContextTreeModel(QAbstractItemModel):
         return current
 
     def _item(self, index: ModelIndex) -> _ContextItem:
+        """Map Qt's invalid root index or a valid internal pointer to an item."""
         if not index.isValid():
             return self._root
         return cast("_ContextItem", index.internalPointer())
@@ -434,6 +522,13 @@ class ContextTreeModel(QAbstractItemModel):
 
 @dataclass(slots=True)
 class _JsonItem:
+    """
+    One materialized entry in a nested dict/list inspector tree.
+
+    ``path`` stores mapping keys and list indexes for selection restoration.
+    A child retains its raw value; the model formats that value for display.
+    """
+
     key: str
     value: Any
     parent: _JsonItem | None
@@ -447,11 +542,12 @@ class _JsonItem:
 
 class JsonValueModel(QAbstractItemModel):
     """
-    Generic, lazily expanded mapping/list viewer.
+    Generic, lazily expanded dict/list viewer for the raw-value inspector.
 
-    The model retains the current value and materializes mapping/list children
-    in batches, allowing the inspector to show large payloads without an eager
-    Qt-item tree.
+    Unlike ContextTreeModel, this model has no ContextDocument or NodeInfo.
+    Its invisible root holds the inspected JSON value; the visible rows are
+    that value's keys or list elements. The top-level entries start with one
+    batch; deeper entries are created on demand as branches are expanded.
     """
 
     columns = ("Field", "Value", "Type")
@@ -460,10 +556,12 @@ class JsonValueModel(QAbstractItemModel):
     def __init__(self, value: Any = None, parent: QObject | None = None):
         """Initialize the model with one JSON-compatible value."""
         super().__init__(parent)
+        # The root value itself is not a displayed row; its entries are.
         self._root = _JsonItem("", value, None, ())
         self._populate_batch(self._root)
 
     def set_value(self, value: Any) -> None:
+        """Replace the inspected value and invalidate old QModelIndexes."""
         self.beginResetModel()
         self._root = _JsonItem("", value, None, ())
         self._populate_batch(self._root)
@@ -474,6 +572,7 @@ class JsonValueModel(QAbstractItemModel):
         return len(self.columns)
 
     def rowCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
+        """Count rows beneath ``parent`` (only column 0 owns children)."""
         if parent.isValid() and parent.column() > 0:
             return 0
         return len(self._item(parent).children)
@@ -484,12 +583,14 @@ class JsonValueModel(QAbstractItemModel):
         column: int,
         parent: ModelIndex = EMPTY_INDEX,
     ) -> QModelIndex:
+        """Wrap an already fetched child in a QModelIndex with its item pointer."""
         parent_item = self._item(parent)
         if not 0 <= row < len(parent_item.children):
             return QModelIndex()
         return self.createIndex(row, column, parent_item.children[row])
 
     def parent(self, index: ModelIndex) -> QModelIndex:  # type: ignore[override]
+        """Return the parent JSON entry, or an invalid index for root entries."""
         if not index.isValid():
             return QModelIndex()
         parent_item = cast("_JsonItem", index.internalPointer()).parent
@@ -498,6 +599,7 @@ class JsonValueModel(QAbstractItemModel):
         return self.createIndex(parent_item.row(), 0, parent_item)
 
     def data(self, index: ModelIndex, role: int = DISPLAY_ROLE):
+        """Show an entry's key/index, abbreviated value, and Python/JSON type."""
         if not index.isValid() or role != DISPLAY_ROLE:
             return None
         item = cast("_JsonItem", index.internalPointer())
@@ -518,16 +620,19 @@ class JsonValueModel(QAbstractItemModel):
         return None
 
     def hasChildren(self, parent: ModelIndex = EMPTY_INDEX) -> bool:  # noqa: N802
+        """Report expandable containers, including ones not yet materialized."""
         item = self._item(parent)
         return isinstance(item.value, (dict, list)) and bool(item.value)
 
     def canFetchMore(self, parent: ModelIndex) -> bool:  # noqa: N802
+        """Check whether the container has more entries than Qt items."""
         item = self._item(parent)
         return isinstance(item.value, (dict, list)) and len(item.children) < len(
             item.value
         )
 
     def fetchMore(self, parent: ModelIndex) -> None:  # noqa: N802
+        """Append one batch and notify Qt around the insertion."""
         if not self.canFetchMore(parent):
             return
         item = self._item(parent)
@@ -548,7 +653,12 @@ class JsonValueModel(QAbstractItemModel):
         return self._item(index).path if index.isValid() else ()
 
     def index_for_value_path(self, path: tuple[str | int, ...]) -> QModelIndex:
-        """Fetch nested values as needed and locate an exact JSON path."""
+        """
+        Locate a nested key/index, fetching unseen entries along the path.
+
+        Each level scans the currently materialized siblings, fetching more
+        batches until the requested entry is found or the level is exhausted.
+        """
         parent = QModelIndex()
         prefix: tuple[str | int, ...] = ()
         for segment in path:
@@ -569,6 +679,12 @@ class JsonValueModel(QAbstractItemModel):
         return parent
 
     def _populate_batch(self, item: _JsonItem) -> None:
+        """
+        Create the next batch of wrappers from a dict or list value.
+
+        Called both during reset (for the invisible root) and from fetchMore()
+        (inside Qt's row-insertion notifications for expanded items).
+        """
         start = len(item.children)
         stop = (
             min(start + self.FETCH_BATCH_SIZE, len(item.value))
@@ -576,6 +692,7 @@ class JsonValueModel(QAbstractItemModel):
             else start
         )
         if isinstance(item.value, dict):
+            # Slice the iterator rather than copying a potentially huge mapping.
             entries = islice(item.value.items(), start, stop)
             item.children.extend(
                 _JsonItem(str(key), value, item, (*item.path, str(key)), row_index=row)
@@ -594,6 +711,7 @@ class JsonValueModel(QAbstractItemModel):
             )
 
     def _item(self, index: ModelIndex) -> _JsonItem:
+        """Recover the entry pointer, or the invisible root for an invalid index."""
         if not index.isValid():
             return self._root
         return cast("_JsonItem", index.internalPointer())
