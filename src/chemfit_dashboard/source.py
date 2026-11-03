@@ -129,13 +129,14 @@ class JsonFileSource(CachedContextSource):
     """
 
     def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
+        """Discover JSON evaluations from local files and directories."""
         paths: set[Path] = set()
+
         for location in locations:
             path = Path(location).expanduser()
-            if not path.exists():
-                message = f"Path does not exist: {path}"
-                raise ContextSourceError(message)
+
             if path.is_dir():
+                # Scan only the immediate directory, not its subdirectories.
                 paths.update(
                     candidate
                     for candidate in path.glob("*.json")
@@ -143,8 +144,12 @@ class JsonFileSource(CachedContextSource):
                 )
             elif path.is_file():
                 paths.add(path)
+            else:
+                msg = f"Invalid or missing path: {path}"
+                raise ContextSourceError(msg)
 
         records: list[RecordRef] = []
+
         for path in sorted(
             paths,
             key=lambda item: (
@@ -156,6 +161,7 @@ class JsonFileSource(CachedContextSource):
             resolved = path.resolve()
             stat = resolved.stat()
             digest = hashlib.blake2s(str(resolved).encode(), digest_size=8).hexdigest()
+
             records.append(
                 RecordRef(
                     id=digest,
@@ -166,6 +172,7 @@ class JsonFileSource(CachedContextSource):
                     modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
                 )
             )
+
         return records
 
     def _load(self, record: RecordRef) -> ContextDocument:

@@ -1613,26 +1613,15 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _drop_locations(mime_data) -> list[str]:  # noqa: ANN001
+        """Collect local paths; validation happens during background discovery."""
         if not mime_data.hasUrls():
             return []
-        locations: list[str] = []
-        for url in mime_data.urls():
-            if not isinstance(url, QUrl):
-                continue
-            if url.isLocalFile():
-                path = Path(url.toLocalFile()).expanduser()
-                if path.is_dir() or (
-                    path.is_file() and path.suffix.casefold() == ".json"
-                ):
-                    resolved = str(path.resolve())
-                    if resolved not in locations:
-                        locations.append(resolved)
-                continue
-            if url.isValid() and url.scheme() not in {"", "file"}:
-                remote = url.toString()
-                if remote not in locations:
-                    locations.append(remote)
-        return locations
+
+        return list(
+            dict.fromkeys(
+                url.toLocalFile() for url in mime_data.urls() if url.isLocalFile()
+            )
+        )
 
     def _clipboard_copied(self, message: str) -> None:
         # Popup menus finish tearing down after their selected action returns.
@@ -1851,12 +1840,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Discover locations off-thread and replace or extend the collection."""
         locations = [
-            (
-                str(location)
-                if isinstance(location, str) and "://" in location
-                else str(Path(location).expanduser().resolve())
-            )
-            for location in locations
+            str(Path(location).expanduser().resolve()) for location in locations
         ]
         if self._session.enabled:
             for location in locations:
@@ -1977,17 +1961,10 @@ class MainWindow(QMainWindow):
             display_delay_ms=DOCUMENT_ACTIVITY_DELAY_MS,
         )
         self.tasks.submit(
-            lambda: self._load_document(record),
+            lambda: self.source.load(record),
             lambda document: self._document_loaded(generation, document),
             lambda details: self._load_failed(generation, record, details),
         )
-
-    def _load_document(self, record: RecordRef) -> ContextDocument:
-        document = self.source.load(record)
-        document.set_component_label_metadata_key(self._component_label_metadata_key)
-        # Warm this collection-wide metadata scan off the GUI thread.
-        _ = document.component_label_metadata_keys
-        return document
 
     def _document_loaded(  # noqa: PLR0912, PLR0915
         self, generation: int, document: ContextDocument
