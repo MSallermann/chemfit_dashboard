@@ -1970,10 +1970,12 @@ class MainWindow(QMainWindow):
         self, generation: int, document: ContextDocument
     ) -> None:
         """Install a loaded document only if it is still the selected request."""
+
         if not self._generations.is_current(_RequestKind.LOAD, generation):
             # A previous record load completed after another selection. The
             # source cache may keep its useful document, but the UI must not.
             return
+
         self._finish_operation("document")
         document.set_component_label_metadata_key(self._component_label_metadata_key)
         self._current_document = document
@@ -2770,6 +2772,79 @@ class MainWindow(QMainWindow):
         )
         if descending:
             self._set_collection_order(descending=True)
+
+    # def _order_loaded(
+    #     self,
+    #     generation: int,
+    #     records: list[RecordRef],
+    #     data: CollectionSeries,
+    #     *,
+    #     descending: bool = False,
+    # ) -> None:
+    #     """Callback that runs after the background worker has finished extracting the numeric values used to sort the collection."""
+
+    #     # The generation check prevents an outdated sorting result from overriding a newer request.
+    #     # Then it finishes the progress indicator and remembers which evaluation is currently selected.
+    #     if not self._generations.is_current(_RequestKind.ORDER, generation):
+    #         return
+    #     self._finish_operation("order")
+
+    #     # Sort the available numeric values
+    #     sorted_points = sorted(
+    #         data.points, key=lambda point: (point.value, point.index)
+    #     )
+
+    #     # Separate available and missing values
+    #     # This creates two sequences
+    #     # They're stored separately because missing values should always appear last, even when the sorting direction is reversed.
+    #     # The method stores record IDs rather than record objects, so the ordering can be reapplied to the model.
+    #     present_indices = {point.index for point in sorted_points}
+    #     self._collection_order.present = tuple(
+    #         records[point.index].id for point in sorted_points
+    #     )
+
+    #     # Missing values must remain last in BOTH sort directions.
+    #     self._collection_order.missing = tuple(
+    #         records[index].id
+    #         for index in range(len(records))
+    #         if index not in present_indices
+    #     )
+
+    #     # Apply the requested direction in a single model reset.
+    #     present = (
+    #         tuple(reversed(self._collection_order.present))
+    #         if descending
+    #         else self._collection_order.present
+    #     )
+    #     self._collection_order.filename_reversed = False
+    #     self.file_model.set_record_order((*present, *self._collection_order.missing))
+
+    #     # Synchronize the other views
+    #     # Reordering resets the Qt model, so the selected evaluation needs to be restored.
+    #     # The plot and extraction preview also display evaluations in collection order, so they need to be updated.
+    #     # The method then updates the sort labels, buttons, tooltips, and status message.
+    #     selected_id = self._selected_record_id()
+    #     self._restore_record_selection(selected_id)
+    #     self._refresh_active_plot()
+    #     self._refresh_extraction_preview(self.extraction.selectors)
+
+    #     arrow = "↓" if descending else "↑"
+    #     direction = "Descending" if descending else "Ascending"
+    #     self.order_status.setText(f"Order: {data.selector.label} {arrow}")
+    #     self.order_status.setToolTip(
+    #         f"{direction} numeric order by {data.selector.label}; "
+    #         "missing values last"
+    #     )
+
+    #     self.reset_order_button.setEnabled(True)
+    #     self.ascending_order_button.setEnabled(len(records) > 1)
+    #     self.descending_order_button.setEnabled(len(records) > 1)
+
+    #     missing = data.missing_count
+    #     suffix = f"; {missing:,} missing placed last" if missing else ""
+    #     self.statusBar().showMessage(
+    #         f"Ordered {len(data.points):,} contexts by selected number{suffix}", 5000
+    #     )
 
     def _order_failed(self, generation: int, details: str) -> None:
         if not self._generations.is_current(_RequestKind.ORDER, generation):
