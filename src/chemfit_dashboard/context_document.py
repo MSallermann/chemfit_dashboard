@@ -99,7 +99,7 @@ class RecordRef:
 
 class ContextDocument:
     """
-    Represents one parsed JSON recerd.
+    Represents one parsed JSON record.
 
     The document owns decoded JSON, structural node/child indexes and the mutable presentation
     label key. It does not own its source cache and remains valid after eviction.
@@ -132,6 +132,10 @@ class ContextDocument:
     @property
     def nodes(self) -> tuple[NodeInfo, ...]:
         return tuple(node.info for node in self._nodes.values())
+
+    def has_path(self, path: NodePath) -> bool:
+        """Return whether a context path exists in this document."""
+        return path in self._nodes
 
     def children(self, path: NodePath) -> tuple[NodeInfo, ...]:
         return tuple(self._nodes[child].info for child in self._children.get(path, ()))

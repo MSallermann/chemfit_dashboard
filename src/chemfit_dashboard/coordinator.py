@@ -1,3 +1,4 @@
+import traceback
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,28 +62,10 @@ class DashboardState(QObject):
     collection_changed = Signal(object)
 
     # ------------------------------------------------------------------
-    # Collection ordering
-    # ------------------------------------------------------------------
-
-    # Emitted when a new ordering of the collection is requested.
-    # Sorting by evaluation quantities may require asynchronously extracting
-    # values from multiple documents.
-    # The existing ordering remains active until the request completes.
-    # Payload: SortSpec describing the requested ordering and direction.
-    collection_order_requested = Signal(RecordSelectionRequest)
-
-    # Emitted when a new collection ordering has been committed.
-    # This includes sorting by a quantity, changing the sort direction,
-    # or restoring the default filename ordering.
-    # Collection membership is unaffected.
-    # Listeners retrieve the updated ordering from the collection state.
-    collection_order_changed = Signal()
-
-    # ------------------------------------------------------------------
     # Record selection
     # ------------------------------------------------------------------
 
-    # Emitted when selecting a different recrod is requested.
+    # Emitted when selecting a different record is requested.
     # Requests may originate from the evaluation list, collection plots,
     # search results, extraction previews, or navigation history.
     # Loading the corresponding document may require asynchronous I/O.
@@ -113,6 +96,17 @@ class DashboardState(QObject):
     # Selection may be restored automatically when switching evaluations.
     # Payload: NodePath | None, where None indicates no selected context.
     selected_context_changed = Signal(object)
+
+    # ------------------------------------------------------------------
+    # Collection ordering
+    # ------------------------------------------------------------------
+
+    # Emitted when a new collection ordering has been committed.
+    # This includes sorting by a quantity, changing the sort direction,
+    # or restoring the default filename ordering.
+    # Collection membership is unaffected.
+    # Listeners retrieve the updated ordering from the collection state.
+    collection_order_changed = Signal()
 
     # Emitted when an asynchronous operation fails.
     # Payload: operation name and formatted traceback.
@@ -147,6 +141,7 @@ class DashboardState(QObject):
         self, locations: Iterable[str | Path], *, append: bool = False
     ) -> None:
         """Asynchronously discover records and replace or extend the collection."""
+
         request = CollectionLoadRequest(
             locations=tuple(str(path) for path in locations),
             append=append,
@@ -166,18 +161,20 @@ class DashboardState(QObject):
         def on_error(details: str) -> None:
             self.operation_failed.emit("Collection loading", details)
 
+        self.collection_load_requested.emit(request)
         self._task_runner.submit_latest(
             "collection",
             task,
             on_success,
             on_error,
         )
-        self.collection_load_requested.emit(request)
 
     def select_record(self, record: RecordRef | None):
+        """Asynchronously load a record from the configured source."""
+
         request = RecordSelectionRequest(ref=record)
 
-        # The requested document is already loaded.
+        # Reuse the loaded document and invalidate any pending selection.
         if (
             record is not None
             and self._selected_document is not None
@@ -186,13 +183,12 @@ class DashboardState(QObject):
             self._task_runner.invalidate("record")
             return
 
-        # Deselect synchronously and invalidate outstanding loads.
+        # Deselect synchronously
         if record is None:
             self._task_runner.invalidate("record")
             self._selected_document = None
             self._selected_context = None
 
-            self.selected_record_change_requested.emit(request)
             self.selected_record_changed.emit(None)
             self.selected_context_changed.emit(None)
             return
@@ -211,10 +207,44 @@ class DashboardState(QObject):
         def on_error(details: str) -> None:
             self.operation_failed.emit("Record selection", details)
 
+        self.selected_record_change_requested.emit(request)
+
         self._task_runner.submit_latest(
             "record",
             task,
             on_success,
             on_error,
         )
-        self.selected_record_change_requested.emit(request)
+
+    def select_context(self, path: NodePath | None) -> None:
+        """Select a context within the current evaluation."""
+
+        if path == self._selected_context:
+            return
+
+        # if an actual path is supplied, a document must be selected
+        # and it must contain the path
+        if path is not None:
+            if self._selected_document is None:
+                msg = "No document loaded"
+                raise ValueError(msg)
+            if not self._selected_document.has_path(path):
+                msg = f"Unknown context path: {path}"
+                raise ValueError(msg)
+
+        self._selected_context = path
+        self.selected_context_changed.emit(path)
+
+    def order_records(self, order: Sequence[str]):
+        """Set the order of records."""
+
+        if self._collection is None:
+            return
+
+        try:
+            self._collection.set_order(order)
+        except Exception:
+            self.operation_failed.emit("Evaluation ordering", traceback.format_exc())
+            return
+
+        self.collection_order_changed.emit()
