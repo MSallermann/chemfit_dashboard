@@ -104,6 +104,7 @@ class TaskRunner(QObject):
         super().__init__(parent)
         self._pool = QThreadPool.globalInstance()
         self._active: set[_Task] = set()
+        self._generations: GenerationTracker = GenerationTracker()
 
     def cancel_pending(self) -> None:
         """
@@ -127,7 +128,10 @@ class TaskRunner(QObject):
 
         def succeeded(result: Any) -> None:
             self._active.discard(task)
-            on_success(result)
+            try:
+                on_success(result)
+            except Exception:
+                on_error(traceback.format_exc())
 
         def failed(details: str) -> None:
             self._active.discard(task)
@@ -141,3 +145,36 @@ class TaskRunner(QObject):
         task.signals.cancelled.connect(cancelled)
 
         self._pool.start(task)
+
+    def submit_latest(
+        self,
+        key: str,
+        function: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        on_error: Callable[[str], None],
+    ) -> None:
+        """
+        Submit a task, superseding previous tasks with the same key.
+
+        Only callbacks belonging to the most recently submitted task for
+        a given key are invoked. Results and errors from older tasks are
+        silently discarded.
+
+        Different keys are independent and may execute concurrently.
+        Running tasks are not interrupted.
+        """
+        generation = self._generations.advance(key)
+
+        def succeeded(result: Any) -> None:
+            if self._generations.is_current(key, generation):
+                on_success(result)
+
+        def failed(details: str) -> None:
+            if self._generations.is_current(key, generation):
+                on_error(details)
+
+        self.submit(function, succeeded, failed)
+
+    def invalidate(self, key: str) -> None:
+        """Discard callbacks from outstanding tasks associated with key."""
+        self._generations.invalidate(key)
