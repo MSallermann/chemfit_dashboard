@@ -99,7 +99,7 @@ from chemfit_dashboard.ui_components import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from chemfit_dashboard.source import RecordRef
+    from chemfit_dashboard.source import ContextRef
 
 JsonPath = tuple[str | int, ...]
 RASTER_EXPORT_DPI = 300
@@ -209,7 +209,7 @@ class _RenderedPointLookup:
         self.selectors_by_coordinate[coordinate].append(selector)
 
 
-def ordered_records(records: Iterable[RecordRef]) -> list[RecordRef]:
+def ordered_records(records: Iterable[ContextRef]) -> list[ContextRef]:
     """Sort ChemFit collection records by step and context number."""
     return sorted(records, key=_record_sort_key)
 
@@ -233,7 +233,7 @@ def selector_for_document(
 
 def build_collection_series(
     selector: NumberSelector,
-    records_and_documents: Iterable[tuple[RecordRef, ContextDocument | None]],
+    records_and_documents: Iterable[tuple[ContextRef, ContextDocument | None]],
 ) -> CollectionSeries:
     """Resolve one selected numeric leaf across a context collection."""
     labels: list[str] = []
@@ -252,7 +252,7 @@ def build_collection_series(
 
 def build_collection_series_multi(
     selectors: Iterable[NumberSelector],
-    records_and_documents: Iterable[tuple[RecordRef, ContextDocument | None]],
+    records_and_documents: Iterable[tuple[ContextRef, ContextDocument | None]],
 ) -> tuple[CollectionSeries, ...]:
     """Resolve several plot series during one collection traversal."""
     selected = tuple(selectors)
@@ -1386,7 +1386,7 @@ def _is_plottable_number(value: Any) -> bool:
     )
 
 
-def _record_sort_key(record: RecordRef) -> tuple[str, float, float, str]:
+def _record_sort_key(record: ContextRef) -> tuple[str, float, float, str]:
     match = re.fullmatch(r"step_(\d+)_ctx_(\d+)\.json", record.name)
     if match is None:
         return (str(record.path.parent).casefold(), math.inf, math.inf, record.name)

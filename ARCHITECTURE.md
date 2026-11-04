@@ -4,7 +4,7 @@
 
 The dashboard is a Qt desktop application around one central data boundary:
 `ContextDocument`. A source discovers serialized evaluations as lightweight
-`RecordRef` objects, then loads and indexes a document only when a feature needs
+`ContextRef` objects, then loads and indexes a document only when a feature needs
 it. Feature modules consume documents directly or convert them into small,
 immutable result objects before updating Qt widgets.
 
@@ -18,7 +18,7 @@ presentation state and communicate with `MainWindow` through Qt signals.
 file / folder / remote URI
           |
           v
- JsonFileSource.discover -> RecordRef -> EvaluationListModel
+ JsonFileSource.discover -> ContextRef -> EvaluationListModel
           |                                  |
           |                           evaluation selected
           v                                  v
@@ -83,7 +83,7 @@ file / folder / remote URI
 1. `MainWindow.add_locations` submits `ContextSource.discover` to `TaskRunner`.
    Discovery is deliberately non-recursive: a directory contributes only its
    immediate JSON files.
-2. `EvaluationListModel` receives `RecordRef` objects and builds the folder/file
+2. `EvaluationListModel` receives `ContextRef` objects and builds the folder/file
    tree. The model also owns the visible collection order.
 3. Selecting a record increments the document-load generation, clears the old
    views, and submits `JsonFileSource.load` to a worker thread.

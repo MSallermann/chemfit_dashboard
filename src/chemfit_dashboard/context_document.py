@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Mapping
+    from datetime import datetime
+    from pathlib import Path
 
 
 def alphanumeric_key(value: str) -> tuple[tuple[int, int | str], ...]:
@@ -82,7 +82,7 @@ class _NodeRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class RecordRef:
+class ContextRef:
     """Stable identity and file metadata for one discoverable evaluation."""
 
     id: str  # unique id
@@ -107,7 +107,7 @@ class ContextDocument:
 
     def __init__(
         self,
-        record: RecordRef,
+        record: ContextRef,
         raw: Any,
         *,
         component_label_metadata_key: str = DEFAULT_COMPONENT_LABEL_METADATA_KEY,

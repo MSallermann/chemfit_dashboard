@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from chemfit_dashboard.context_document import (
     ContextDocument,
-    RecordRef,
+    ContextRef,
     alphanumeric_key,
 )
 
@@ -36,11 +36,11 @@ class ContextSource(ABC):
     """Source-neutral interface consumed by the Qt application."""
 
     @abstractmethod
-    def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
+    def discover(self, locations: Iterable[str | Path]) -> list[ContextRef]:
         """Return context records available at the supplied locations."""
 
     @abstractmethod
-    def load(self, record: RecordRef) -> ContextDocument:
+    def load(self, record: ContextRef) -> ContextDocument:
         """Parse and index one context record."""
 
 
@@ -81,10 +81,10 @@ class CachedContextSource(ContextSource):
             self._cache_bytes = 0
 
     @abstractmethod
-    def _load(self, record: RecordRef) -> ContextDocument:
-        """Load a ContextDocument from a RecordRef."""
+    def _load(self, record: ContextRef) -> ContextDocument:
+        """Load a ContextDocument from a ContextRef."""
 
-    def load(self, record: RecordRef) -> ContextDocument:
+    def load(self, record: ContextRef) -> ContextDocument:
         with self._lock:
             cached = self._cache.get(record.id)
             if cached is not None:
@@ -128,7 +128,7 @@ class JsonFileSource(CachedContextSource):
     and indexed on demand, with caching provided by the base class.
     """
 
-    def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
+    def discover(self, locations: Iterable[str | Path]) -> list[ContextRef]:
         """Discover JSON evaluations from local files and directories."""
         paths: set[Path] = set()
 
@@ -148,7 +148,7 @@ class JsonFileSource(CachedContextSource):
                 msg = f"Invalid or missing path: {path}"
                 raise ContextSourceError(msg)
 
-        records: list[RecordRef] = []
+        records: list[ContextRef] = []
 
         for path in sorted(
             paths,
@@ -163,7 +163,7 @@ class JsonFileSource(CachedContextSource):
             digest = hashlib.blake2s(str(resolved).encode(), digest_size=8).hexdigest()
 
             records.append(
-                RecordRef(
+                ContextRef(
                     id=digest,
                     position_in_file=1,
                     name=resolved.name,
@@ -175,7 +175,7 @@ class JsonFileSource(CachedContextSource):
 
         return records
 
-    def _load(self, record: RecordRef) -> ContextDocument:
+    def _load(self, record: ContextRef) -> ContextDocument:
         """Read and parse a JSON evaluation into a ContextDocument."""
 
         try:

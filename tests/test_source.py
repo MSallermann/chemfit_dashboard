@@ -60,7 +60,7 @@ def test_loads_chemfit_checkpoint_and_reuses_cached_document(tmp_path, chemfit_c
     best.loss = chemfit_context.output
     context = FitContext()
     context.opt_context = best
-    CheckpointBestParameters(path)(12, [context])
+    CheckpointBestParameters(path, use_legacy_format=True)(12, [context])
 
     source = JsonFileSource()
     record = source.discover([path])[0]

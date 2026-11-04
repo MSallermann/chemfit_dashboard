@@ -17,7 +17,7 @@ from chemfit_dashboard.source import ContextSourceError
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
 
-    from chemfit_dashboard.source import ContextDocument, ContextSource, RecordRef
+    from chemfit_dashboard.source import ContextDocument, ContextRef, ContextSource
 
 
 class OperationCancelled(RuntimeError):
@@ -47,17 +47,17 @@ class CancellationToken:
 class TraversalItem:
     """One collection record with either its document or a load error."""
 
-    record: RecordRef
+    record: ContextRef
     document: ContextDocument | None
     error: str | None = None
 
 
 def iter_collection(
     source: ContextSource,
-    records: Iterable[RecordRef],
+    records: Iterable[ContextRef],
     *,
     cancellation: CancellationToken | None = None,
-    progress: Callable[[int, RecordRef], None] | None = None,
+    progress: Callable[[int, ContextRef], None] | None = None,
 ) -> Iterator[TraversalItem]:
     """Load collection documents one at a time and release them after yielding."""
     next_yield = time.monotonic() + 0.01
