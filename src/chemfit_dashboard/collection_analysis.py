@@ -42,7 +42,7 @@ from chemfit_dashboard.ui_components import muted_label
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
-    from chemfit_dashboard.source import ContextRef
+    from chemfit_dashboard.source import RecordRef
 
 MAX_FAILURE_TREE_ITEMS = 1_000
 
@@ -115,7 +115,7 @@ class CollectionSummary:
 
 
 def analyze_collection(  # noqa: PLR0912
-    records_and_documents: Iterable[tuple[ContextRef, ContextDocument | None]],
+    records_and_documents: Iterable[tuple[RecordRef, ContextDocument | None]],
 ) -> CollectionSummary:
     """Summarize numeric root fields and primary failures in a collection."""
     numeric_values: dict[str, list[float]] = {}

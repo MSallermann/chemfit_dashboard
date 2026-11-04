@@ -144,10 +144,10 @@ from chemfit_dashboard.semantic import (
     resolve_component_selection,
 )
 from chemfit_dashboard.source import (
-    ContextRef,
     ContextSource,
     ContextSourceError,
     JsonFileSource,
+    RecordRef,
 )
 from chemfit_dashboard.traversal import (
     CancellationToken,
@@ -1280,9 +1280,9 @@ class MainWindow(QMainWindow):
 
     def _collection_documents(
         self,
-        records: Sequence[ContextRef],
+        records: Sequence[RecordRef],
         operation: _DeterminateOperation,
-    ) -> Iterator[tuple[ContextRef, ContextDocument | None]]:
+    ) -> Iterator[tuple[RecordRef, ContextDocument | None]]:
         """Traverse collection documents with the shared operation contract."""
         for item in iter_collection(
             self.source,
@@ -1652,7 +1652,7 @@ class MainWindow(QMainWindow):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(record.path.parent)))
 
-    def _set_evaluation_path(self, record: ContextRef | None) -> None:
+    def _set_evaluation_path(self, record: RecordRef | None) -> None:
         path = str(record.path) if record is not None else ""
         self.evaluation_path.setText(path)
         enabled = record is not None
@@ -1879,7 +1879,7 @@ class MainWindow(QMainWindow):
 
     def _records_discovered(
         self,
-        records: list[ContextRef],
+        records: list[RecordRef],
         collection_generation: int | None = None,
         *,
         append: bool = False,
@@ -2076,7 +2076,7 @@ class MainWindow(QMainWindow):
             self._pending_navigation.plot = None
             self._focus_plot_selection(pending_plot[1])
 
-    def _load_failed(self, generation: int, record: ContextRef, details: str) -> None:
+    def _load_failed(self, generation: int, record: RecordRef, details: str) -> None:
         if not self._generations.is_current(_RequestKind.LOAD, generation):
             return
         self._finish_operation("document")
@@ -2718,7 +2718,7 @@ class MainWindow(QMainWindow):
             f"Ordering {len(records):,} contexts by {selector.label}…"
         )
 
-        def load_order_values() -> tuple[list[ContextRef], CollectionSeries]:
+        def load_order_values() -> tuple[list[RecordRef], CollectionSeries]:
             return records, build_collection_series(
                 selector, self._collection_documents(records, operation)
             )
@@ -2734,7 +2734,7 @@ class MainWindow(QMainWindow):
     def _order_loaded(
         self,
         generation: int,
-        records: list[ContextRef],
+        records: list[RecordRef],
         data: CollectionSeries,
         *,
         descending: bool = False,
@@ -3225,7 +3225,7 @@ class MainWindow(QMainWindow):
         record = self._selected_record()
         return record.id if record is not None else None
 
-    def _selected_record(self) -> ContextRef | None:
+    def _selected_record(self) -> RecordRef | None:
         proxy_index = self.file_list.currentIndex()
         if not proxy_index.isValid():
             return None

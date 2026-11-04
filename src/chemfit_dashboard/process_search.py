@@ -29,7 +29,7 @@ from chemfit_dashboard.search_core import (
     SearchMode,
     TopKSearchHits,
 )
-from chemfit_dashboard.source import ContextRef, ContextSourceError, JsonFileSource
+from chemfit_dashboard.source import ContextSourceError, JsonFileSource, RecordRef
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -108,7 +108,7 @@ def _worker_source_instance() -> JsonFileSource:
 
 def _worker_index(
     source: JsonFileSource,
-    record: ContextRef,
+    record: RecordRef,
     component_label_key: str,
 ) -> ContextSearchIndex:
     """Load or build one stat-aware index in the worker-local bounded cache."""
@@ -141,7 +141,7 @@ def _worker_index(
 
 def _search_record(
     source: JsonFileSource,
-    record: ContextRef,
+    record: RecordRef,
     options: SearchOptions,
     component_label_key: str,
 ) -> tuple[list[SearchHit], bool]:
@@ -163,7 +163,7 @@ def _search_record(
 
 
 def search_record_batch(
-    records: tuple[ContextRef, ...],
+    records: tuple[RecordRef, ...],
     options: SearchOptions,
     component_label_key: str,
 ) -> SearchBatchResult:
@@ -192,8 +192,8 @@ def search_chunk_size(record_count: int, worker_count: int) -> int:
 
 
 def _record_chunks(
-    records: Sequence[ContextRef], worker_count: int
-) -> tuple[tuple[ContextRef, ...], ...]:
+    records: Sequence[RecordRef], worker_count: int
+) -> tuple[tuple[RecordRef, ...], ...]:
     size = search_chunk_size(len(records), worker_count)
     return tuple(
         tuple(records[start : start + size]) for start in range(0, len(records), size)
@@ -202,7 +202,7 @@ def _record_chunks(
 
 def search_collection(
     executor: Executor,
-    records: Sequence[ContextRef],
+    records: Sequence[RecordRef],
     options: SearchOptions,
     *,
     component_label_key: str,
@@ -304,7 +304,7 @@ class CollectionSearchExecutor:
 
     def search(
         self,
-        records: Sequence[ContextRef],
+        records: Sequence[RecordRef],
         options: SearchOptions,
         *,
         component_label_key: str,

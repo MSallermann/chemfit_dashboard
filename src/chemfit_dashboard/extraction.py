@@ -34,7 +34,7 @@ _pydictnest_get_path = getattr(pydictnest, "get_path", None)
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
-    from chemfit_dashboard.source import ContextRef, ContextSource
+    from chemfit_dashboard.source import ContextSource, RecordRef
 
 JsonPath = tuple[str | int, ...]
 CONFIG_VERSION = 2
@@ -163,11 +163,11 @@ def selector_for_document(
 
 def extract_fields(
     source: ContextSource,
-    records: Iterable[ContextRef],
+    records: Iterable[RecordRef],
     selectors: Sequence[FieldSelector],
     *,
     cancellation: CancellationToken | None = None,
-    progress: Callable[[int, ContextRef], None] | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
 ) -> Iterator[ExtractionRow]:
     """Incrementally extract arbitrary values from a collection."""
     selected = tuple(selectors)
@@ -242,11 +242,11 @@ def extract_value(
 def export_jsonl(
     path: str | Path,
     source: ContextSource,
-    records: Iterable[ContextRef],
+    records: Iterable[RecordRef],
     config: ExtractionConfig,
     *,
     cancellation: CancellationToken | None = None,
-    progress: Callable[[int, ContextRef], None] | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
     max_expanded_rows: int = MAX_EXPANDED_ROWS,
 ) -> int:
     """Stream one complete extraction row per evaluation to JSON Lines."""
@@ -285,11 +285,11 @@ def export_jsonl(
 def export_csv(
     path: str | Path,
     source: ContextSource,
-    records: Iterable[ContextRef],
+    records: Iterable[RecordRef],
     config: ExtractionConfig,
     *,
     cancellation: CancellationToken | None = None,
-    progress: Callable[[int, ContextRef], None] | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
     max_flattened_columns: int = MAX_FLATTENED_COLUMNS,
     max_expanded_rows: int = MAX_EXPANDED_ROWS,
 ) -> int:
@@ -306,7 +306,7 @@ def export_csv(
     )
     completed_offset = len(record_list) if flat_paths else 0
 
-    def export_progress(completed: int, record: ContextRef) -> None:
+    def export_progress(completed: int, record: RecordRef) -> None:
         if progress is not None:
             progress(completed_offset + completed, record)
 
@@ -419,11 +419,11 @@ def _get_json_path(root: Any, path: JsonPath, default: Any) -> Any:
 
 def _collect_flat_paths(
     source: ContextSource,
-    records: Sequence[ContextRef],
+    records: Sequence[RecordRef],
     selectors: Sequence[FieldSelector],
     *,
     cancellation: CancellationToken | None,
-    progress: Callable[[int, ContextRef], None] | None,
+    progress: Callable[[int, RecordRef], None] | None,
     maximum: int,
 ) -> dict[int, tuple[JsonPath, ...]]:
     requested = {

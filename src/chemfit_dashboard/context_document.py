@@ -82,7 +82,7 @@ class _NodeRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class ContextRef:
+class RecordRef:
     """Stable identity and file metadata for one discoverable evaluation."""
 
     id: str  # unique id
@@ -107,7 +107,7 @@ class ContextDocument:
 
     def __init__(
         self,
-        record: ContextRef,
+        record: RecordRef,
         raw: Any,
         *,
         component_label_metadata_key: str = DEFAULT_COMPONENT_LABEL_METADATA_KEY,

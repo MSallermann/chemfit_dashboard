@@ -5,7 +5,7 @@ A QTreeView asks its model for rows, columns, parent/child indexes, and data
 for specific display roles; it does not navigate ContextDocument directly.
 A QModelIndex refers to one cell and carries a private ``_...Item`` instance
 as its ``internalPointer()``. That item links to its parent and materialized
-children, while ContextRef, NodeInfo, and JSON values remain the actual data.
+children, while RecordRef, NodeInfo, and JSON values remain the actual data.
 
 Every model uses an invisible ``_root`` item. Qt represents this root with an
 *invalid* QModelIndex; valid indexes refer to visible cells, with tree
@@ -39,8 +39,8 @@ from PySide6.QtGui import QColor
 from chemfit_dashboard.appearance import active_color_scheme
 from chemfit_dashboard.context_document import (
     ContextDocument,
-    ContextRef,
     NodeInfo,
+    RecordRef,
     alphanumeric_key,
 )
 
@@ -65,7 +65,7 @@ class _EvaluationItem:
 
     name: str
     path: Path | None
-    record: ContextRef | None
+    record: RecordRef | None
     parent: _EvaluationItem | None
     children: list[_EvaluationItem] = field(default_factory=list)
     row_index: int = 0
@@ -80,7 +80,7 @@ class EvaluationListModel(QAbstractItemModel):
     """
     Hierarchical, eagerly built folder tree of discovered evaluations.
 
-    Folder entries are display-only; leaf items hold ContextRef objects. The
+    Folder entries are display-only; leaf items hold RecordRef objects. The
     model controls collection display order. Reordering resets the Qt model,
     while stable record IDs let MainWindow restore selection.
     """
@@ -90,7 +90,7 @@ class EvaluationListModel(QAbstractItemModel):
     def __init__(self, parent: QObject | None = None):
         """Initialize an empty evaluation folder tree."""
         super().__init__(parent)
-        self._records: list[ContextRef] = []
+        self._records: list[RecordRef] = []
         self._record_order: dict[str, int] | None = None
         self._items_by_record_id: dict[str, _EvaluationItem] = {}
         self._folders_by_path: dict[Path, _EvaluationItem] = {}
@@ -136,7 +136,7 @@ class EvaluationListModel(QAbstractItemModel):
         """
         Answer Qt's role-specific requests for a folder or evaluation row.
 
-        ``RecordRole`` exposes ContextRef to application code without depending
+        ``RecordRole`` exposes RecordRef to application code without depending
         on the displayed name or filename.
         """
         if not index.isValid():
@@ -165,7 +165,7 @@ class EvaluationListModel(QAbstractItemModel):
             self.createIndex(item.row(), 0, item) if item is not None else QModelIndex()
         )
 
-    def set_records(self, records: list[ContextRef]) -> None:
+    def set_records(self, records: list[RecordRef]) -> None:
         """
         Merge newly discovered records by ID and rebuild the folder tree.
 
@@ -193,7 +193,7 @@ class EvaluationListModel(QAbstractItemModel):
         self._root = _EvaluationItem("", None, None, None)
         self.endResetModel()
 
-    def record(self, index: ModelIndex) -> ContextRef | None:
+    def record(self, index: ModelIndex) -> RecordRef | None:
         if not index.isValid():
             return None
         return cast("_EvaluationItem", index.internalPointer()).record
@@ -209,11 +209,11 @@ class EvaluationListModel(QAbstractItemModel):
         return QModelIndex()
 
     @property
-    def records(self) -> tuple[ContextRef, ...]:
+    def records(self) -> tuple[RecordRef, ...]:
         return tuple(self._records)
 
     @property
-    def filename_ordered_records(self) -> tuple[ContextRef, ...]:
+    def filename_ordered_records(self) -> tuple[RecordRef, ...]:
         return tuple(sorted(self._records, key=_record_filename_key))
 
     def set_record_order(self, record_ids: Iterable[str] | None) -> None:
@@ -242,7 +242,7 @@ class EvaluationListModel(QAbstractItemModel):
             self.createIndex(item.row(), 0, item) if item is not None else QModelIndex()
         )
 
-    def _ordered_records(self, records: Iterable[ContextRef]) -> list[ContextRef]:
+    def _ordered_records(self, records: Iterable[RecordRef]) -> list[RecordRef]:
         """Sort records by custom rank (if set), then by natural filename."""
         if self._record_order is None:
             return sorted(records, key=_record_filename_key)
@@ -733,7 +733,7 @@ class JsonValueModel(QAbstractItemModel):
         return cast("_JsonItem", index.internalPointer())
 
 
-def _record_filename_key(record: ContextRef):
+def _record_filename_key(record: RecordRef):
     return (
         alphanumeric_key(record.name),
         str(record.path.parent).casefold(),
