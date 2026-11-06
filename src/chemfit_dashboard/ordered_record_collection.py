@@ -119,7 +119,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         self._order += tuple(added)
         self._natural_order = natural_order
 
-    def set_order(self, ids: Sequence[str]) -> None:
+    def set_order(self, ids: Sequence[str]) -> bool:
         """
         Replace the active ordering without modifying collection membership.
 
@@ -141,6 +141,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
 
         DashboardState is responsible for emitting collection_order_changed
         after a new ordering has been successfully committed.
+
         """
         new_order = tuple(ids)
 
@@ -153,6 +154,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
             raise ValueError(msg)
 
         self._order = new_order
+        return True
 
     def reset_order(self) -> None:
         """
@@ -173,6 +175,10 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         if the active ordering actually changes.
         """
         self._order = self._natural_order
+
+    def invert_order(self) -> None:
+        """Inverts the current order."""
+        self.set_order(self._order[::-1])
 
     @property
     def natural_order(self) -> tuple[str, ...]:

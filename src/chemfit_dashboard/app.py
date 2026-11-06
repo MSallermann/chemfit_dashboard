@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from chemfit_dashboard.appearance import application_settings
 from chemfit_dashboard.main_window import MainWindow
 
 if TYPE_CHECKING:
@@ -30,11 +29,9 @@ def run(paths: Sequence[str | Path] | None = None) -> int:
     )
     application.setApplicationName("ChemFit Context Inspector")
     application.setOrganizationName("ChemFit")
-    window = MainWindow(
-        initial_paths=list(paths or []),
-        settings=application_settings(),
-        restore_session=True,
-    )
+    window = MainWindow()
+    if paths:
+        window.coordinator.load_collection(paths)
     window.show()
     interrupted = False
 

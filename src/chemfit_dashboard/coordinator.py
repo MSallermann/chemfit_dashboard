@@ -1,3 +1,4 @@
+import logging
 import traceback
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from chemfit_dashboard.ordered_record_collection import OrderedRecordCollection
 from chemfit_dashboard.source import ContextSource
 from chemfit_dashboard.workers import GenerationTracker, TaskRunner
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class CollectionLoadRequest:
@@ -29,7 +32,7 @@ class RecordSelectionRequest:
     ref: RecordRef | None
 
 
-class DashboardState(QObject):
+class DashboardCoordinator(QObject):
     """
     Central observable state of the ChemFit Dashboard.
 
@@ -123,7 +126,7 @@ class DashboardState(QObject):
         self._generations = GenerationTracker()
 
     @property
-    def collection(self) -> Sequence[RecordRef]:
+    def collection(self) -> OrderedRecordCollection:
         """The evaluation collection in its current order."""
         return self._collection
 
@@ -160,6 +163,7 @@ class DashboardState(QObject):
 
         def on_error(details: str) -> None:
             self.operation_failed.emit("Collection loading", details)
+            logger.exception(details)
 
         self.collection_load_requested.emit(request)
         self._task_runner.submit_latest(
@@ -206,6 +210,7 @@ class DashboardState(QObject):
 
         def on_error(details: str) -> None:
             self.operation_failed.emit("Record selection", details)
+            logger.exception(details)
 
         self.selected_record_change_requested.emit(request)
 
@@ -243,8 +248,9 @@ class DashboardState(QObject):
 
         try:
             self._collection.set_order(order)
-        except Exception:
+        except Exception as e:
             self.operation_failed.emit("Evaluation ordering", traceback.format_exc())
+            logger.exception(e)
             return
 
         self.collection_order_changed.emit()

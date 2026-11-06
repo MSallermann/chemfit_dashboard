@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -28,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    logging.basicConfig(filename="dashboard.log")
+
     arguments = build_parser().parse_args(argv)
     try:
         from chemfit_dashboard.app import run

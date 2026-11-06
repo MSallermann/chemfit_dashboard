@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
-    from pathlib import Path
 
 
 def alphanumeric_key(value: str) -> tuple[tuple[int, int | str], ...]:
@@ -111,6 +111,8 @@ class ContextDocument:
         raw: Any,
         *,
         component_label_metadata_key: str = DEFAULT_COMPONENT_LABEL_METADATA_KEY,
+        name: str | None = None,
+        path: Path | None = None,
     ):
         """Index the parsed context hierarchy without changing its values."""
         self.record = record
@@ -119,6 +121,9 @@ class ContextDocument:
         self._nodes: dict[NodePath, _NodeRecord] = {}
         self._children: dict[NodePath, tuple[NodePath, ...]] = {}
         self._component_label_metadata_keys: tuple[str, ...] | None = None
+        self._path = path
+        self._name = name
+
         self._build_index()
 
     @property
@@ -128,6 +133,14 @@ class ContextDocument:
     @property
     def node_count(self) -> int:
         return len(self._nodes)
+
+    @property
+    def name(self) -> str:
+        return self._name if self._name is not None else ""
+
+    @property
+    def path(self) -> Path | None:
+        return self._path
 
     @property
     def nodes(self) -> tuple[NodeInfo, ...]:

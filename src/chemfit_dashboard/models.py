@@ -25,7 +25,7 @@ from bisect import bisect_left
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -43,9 +43,10 @@ from chemfit_dashboard.context_document import (
     RecordRef,
     alphanumeric_key,
 )
+from chemfit_dashboard.coordinator import DashboardCoordinator
 
-if TYPE_CHECKING:
-    from collections.abc import Iterable
+# if TYPE_CHECKING:
+#     from collections.abc import Iterable
 
 ModelIndex = QModelIndex | QPersistentModelIndex
 EMPTY_INDEX = QModelIndex()
@@ -80,22 +81,28 @@ class EvaluationListModel(QAbstractItemModel):
     """
     Hierarchical, eagerly built folder tree of discovered evaluations.
 
-    Folder entries are display-only; leaf items hold RecordRef objects. The
-    model controls collection display order. Reordering resets the Qt model,
+    Folder entries are display-only; leaf items hold RecordRef objects.
+    Reordering resets the Qt model,
     while stable record IDs let MainWindow restore selection.
     """
 
     RecordRole = Qt.ItemDataRole.UserRole.value + 1
 
-    def __init__(self, parent: QObject | None = None):
+    def __init__(
+        self, parent: QObject | None = None, *, coordinator: DashboardCoordinator
+    ):
         """Initialize an empty evaluation folder tree."""
         super().__init__(parent)
-        self._records: list[RecordRef] = []
-        self._record_order: dict[str, int] | None = None
+        self.coordinator = coordinator
+
+        self.coordinator.collection_changed.connect(self._rebuild_tree)
+        self.coordinator.collection_order_changed.connect(self._rebuild_tree)
+
+        self._root = _EvaluationItem("", None, None, None)
         self._items_by_record_id: dict[str, _EvaluationItem] = {}
         self._folders_by_path: dict[Path, _EvaluationItem] = {}
-        # Invisible sentinel: Qt passes an invalid QModelIndex for top-level rows.
-        self._root = _EvaluationItem("", None, None, None)
+
+        self._rebuild_tree()
 
     def columnCount(self, parent: ModelIndex = EMPTY_INDEX) -> int:  # noqa: N802
         del parent
@@ -113,11 +120,13 @@ class EvaluationListModel(QAbstractItemModel):
         column: int,
         parent: ModelIndex = EMPTY_INDEX,
     ) -> QModelIndex:
-        # createIndex stores the item in the QModelIndex's internalPointer().
-        # data() and parent() recover it without searching the tree.
+        if column != 0 or (parent.isValid() and parent.column() != 0):
+            return QModelIndex()
+
         parent_item = self._item(parent)
         if not 0 <= row < len(parent_item.children):
             return QModelIndex()
+
         return self.createIndex(row, column, parent_item.children[row])
 
     def parent(self, index: ModelIndex) -> QModelIndex:  # type: ignore[override]
@@ -131,6 +140,15 @@ class EvaluationListModel(QAbstractItemModel):
 
     def hasChildren(self, parent: ModelIndex = EMPTY_INDEX) -> bool:  # noqa: N802
         return bool(self._item(parent).children)
+
+    def index_for_record_id(self, record_id: str) -> QModelIndex:
+        """Return the model index for a record, or an invalid index if absent."""
+        item = self._items_by_record_id.get(record_id)
+
+        if item is None:
+            return QModelIndex()
+
+        return self.createIndex(item.row(), 0, item)
 
     def data(self, index: ModelIndex, role: int = DISPLAY_ROLE):  # noqa: PLR0911
         """
@@ -154,169 +172,87 @@ class EvaluationListModel(QAbstractItemModel):
             return QColor(active_color_scheme().muted)
         return None
 
-    @property
-    def folder_paths(self) -> tuple[Path, ...]:
-        """Return directory paths without traversing evaluation records."""
-        return tuple(self._folders_by_path)
-
-    def index_for_folder_path(self, path: Path) -> QModelIndex:
-        item = self._folders_by_path.get(path)
-        return (
-            self.createIndex(item.row(), 0, item) if item is not None else QModelIndex()
-        )
-
-    def set_records(self, records: list[RecordRef]) -> None:
-        """
-        Merge newly discovered records by ID and rebuild the folder tree.
-
-        This *adds to* existing records rather than replacing them. A model
-        reset notifies Qt that existing indexes are invalid.
-        """
-        merged = {record.id: record for record in self._records}
-        merged.update({record.id: record for record in records})
-        ordered = self._ordered_records(merged.values())
+    def _rebuild_tree(self, *_args: object) -> None:
         self.beginResetModel()
-        self._records = ordered
-        self._items_by_record_id.clear()
-        self._folders_by_path.clear()
-        self._root = _EvaluationItem("", None, None, None)
-        self._build_tree()
-        self.endResetModel()
-
-    def clear_records(self) -> None:
-        """Remove every record and restore the empty model state."""
-        self.beginResetModel()
-        self._records = []
-        self._record_order = None
-        self._items_by_record_id.clear()
-        self._folders_by_path.clear()
-        self._root = _EvaluationItem("", None, None, None)
-        self.endResetModel()
-
-    def record(self, index: ModelIndex) -> RecordRef | None:
-        if not index.isValid():
-            return None
-        return cast("_EvaluationItem", index.internalPointer()).record
-
-    def first_record_index(self) -> QModelIndex:
-        """Find the first evaluation leaf, skipping folder-only items."""
-        pending = list(reversed(self._root.children))
-        while pending:
-            item = pending.pop()
-            if item.record is not None:
-                return self.createIndex(item.row(), 0, item)
-            pending.extend(reversed(item.children))
-        return QModelIndex()
-
-    @property
-    def records(self) -> tuple[RecordRef, ...]:
-        return tuple(self._records)
-
-    @property
-    def filename_ordered_records(self) -> tuple[RecordRef, ...]:
-        return tuple(sorted(self._records, key=_record_filename_key))
-
-    def set_record_order(self, record_ids: Iterable[str] | None) -> None:
-        """
-        Put listed IDs first in the given order; sort unlisted IDs naturally.
-
-        Passing None restores natural filename ordering. A reset is required
-        because the folder items' rows, and thus their indexes, may change.
-        """
-        self._record_order = (
-            {record_id: rank for rank, record_id in enumerate(record_ids)}
-            if record_ids is not None
-            else None
-        )
-        self.beginResetModel()
-        self._records = self._ordered_records(self._records)
-        self._items_by_record_id.clear()
-        self._folders_by_path.clear()
-        self._root = _EvaluationItem("", None, None, None)
-        self._build_tree()
-        self.endResetModel()
-
-    def index_for_record_id(self, record_id: str) -> QModelIndex:
-        item = self._items_by_record_id.get(record_id)
-        return (
-            self.createIndex(item.row(), 0, item) if item is not None else QModelIndex()
-        )
-
-    def _ordered_records(self, records: Iterable[RecordRef]) -> list[RecordRef]:
-        """Sort records by custom rank (if set), then by natural filename."""
-        if self._record_order is None:
-            return sorted(records, key=_record_filename_key)
-        order = self._record_order
-        return sorted(
-            records,
-            key=lambda record: (
-                (
-                    0,
-                    order[record.id],
-                )
-                if record.id in order
-                else (1, _record_filename_key(record))
-            ),
-        )
-
-    def _build_tree(self) -> None:
-        """
-        Group records beneath their common directory and index leaves by ID.
-
-        One _EvaluationItem is shared per directory; each child's ``row_index``
-        is assigned after sorting so parent() can construct correct Qt indexes.
-        """
-        if not self._records:
-            return
-        common_path = Path(
-            os.path.commonpath([str(record.path.parent) for record in self._records])
-        )
-        common_name = common_path.name or str(common_path)
-        visible_root = _EvaluationItem(common_name, common_path, None, self._root)
-        self._root.children = [visible_root]
-        folders = {common_path: visible_root}
-        self._folders_by_path = folders
-
-        for record in self._records:
-            relative = record.path.relative_to(common_path)
-            parent_item = visible_root
-            folder_path = common_path
-            for folder_name in relative.parts[:-1]:
-                folder_path /= folder_name
-                folder_item = folders.get(folder_path)
-                if folder_item is None:
-                    folder_item = _EvaluationItem(
-                        folder_name, folder_path, None, parent_item
-                    )
-                    parent_item.children.append(folder_item)
-                    folders[folder_path] = folder_item
-                parent_item = folder_item
-            record_item = _EvaluationItem(
-                record.name,
-                record.path,
-                record,
-                parent_item,
-            )
-            parent_item.children.append(record_item)
-            self._items_by_record_id[record.id] = record_item
-
-        for folder in folders.values():
-            folder.children.sort(key=self._evaluation_item_sort_key)
-            for row, child in enumerate(folder.children):
-                child.row_index = row
-
-    def _evaluation_item_sort_key(self, item: _EvaluationItem):
-        if item.record is None:
-            return (0, 0, alphanumeric_key(item.name), item.name.casefold())
-        if self._record_order is not None and item.record.id in self._record_order:
-            rank = self._record_order[item.record.id]
-            return (1, 0, (), rank)
-        return (1, 1, alphanumeric_key(item.name), item.name.casefold())
+        try:
+            self._root = _EvaluationItem("", None, None, None)
+            self._items_by_record_id.clear()
+            self._folders_by_path.clear()
+            self._build_tree()
+        finally:
+            self.endResetModel()
 
     def _item(self, index: ModelIndex) -> _EvaluationItem:
         if not index.isValid():
             return self._root
         return cast("_EvaluationItem", index.internalPointer())
+
+    def _build_tree(self) -> None:
+        """Build the folder hierarchy from the coordinator's ordered collection."""
+
+        records = self.coordinator.collection
+        if not records:
+            return
+
+        # Find the common parent directory.
+        common_path = Path(
+            os.path.commonpath([str(record.path.parent) for record in records])
+        )
+
+        # Create the visible root folder.
+        root = _EvaluationItem(
+            common_path.name or str(common_path),
+            common_path,
+            None,
+            self._root,
+        )
+        self._root.children.append(root)
+        self._folders_by_path[common_path] = root
+
+        # Insert records in coordinator order.
+        for record in records:
+            relative = record.path.relative_to(common_path)
+            parent = root
+            folder_path = common_path
+
+            # Create intermediate folders as necessary.
+            for folder_name in relative.parts[:-1]:
+                folder_path = folder_path / folder_name
+
+                folder = self._folders_by_path.get(folder_path)
+                if folder is None:
+                    folder = _EvaluationItem(
+                        folder_name,
+                        folder_path,
+                        None,
+                        parent,
+                    )
+                    parent.children.append(folder)
+                    self._folders_by_path[folder_path] = folder
+
+                parent = folder
+
+            # Create the evaluation leaf.
+            item = _EvaluationItem(
+                record.name,
+                record.path,
+                record,
+                parent,
+            )
+            parent.children.append(item)
+            self._items_by_record_id[record.id] = item
+
+        # Sort folders by name, but retain the coordinator's
+        # ordering of evaluation leaves within each folder.
+        for folder in self._folders_by_path.values():
+            folder.children.sort(
+                key=lambda item: (
+                    (0, alphanumeric_key(item.name)) if item.record is None else (1,)
+                )
+            )
+
+            for row, child in enumerate(folder.children):
+                child.row_index = row
 
 
 @dataclass(slots=True)
