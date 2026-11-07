@@ -257,7 +257,6 @@ class EvaluationPanel(QWidget):
         # Initialize GUI
         ##############################################
         self.on_collection_changed()
-        self.on_collection_order_changed()
 
     def open_files(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -297,13 +296,15 @@ class EvaluationPanel(QWidget):
         self.invert_order_button.setEnabled(len(self.coordinator.collection) > 1)
         self.reset_order_button.setEnabled(len(self.coordinator.collection) > 1)
 
+        self._focus_selected_record()
+
     def on_selected_record_changed(self):
         selected_document = self.coordinator.selected_document
         if selected_document is not None:
             path = selected_document.path
             self.evaluation_path.setText(str(path))
         else:
-            self.evaluation_path.setText("None")
+            self.evaluation_path.clear()
 
     def open_directory(self):
         path = QFileDialog.getExistingDirectory(self, "Open context directory")

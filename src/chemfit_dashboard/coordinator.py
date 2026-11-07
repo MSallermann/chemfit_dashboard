@@ -158,6 +158,8 @@ class DashboardCoordinator(QObject):
                 self._collection.extend(records)
             else:
                 self._collection.replace(records)
+                # Clear the selection
+                self.select_record(None)
 
             self.collection_changed.emit(tuple(self.collection))
 
