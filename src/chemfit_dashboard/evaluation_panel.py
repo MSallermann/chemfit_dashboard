@@ -31,7 +31,7 @@ from chemfit_dashboard.ui_components import ActionRow, add_clear_action, muted_l
 
 
 class EvaluationPanel(QWidget):
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         coordinator: DashboardCoordinator,
         parent: QWidget | None = None,
@@ -152,11 +152,6 @@ class EvaluationPanel(QWidget):
 
         layout.addWidget(self.evaluation_stack, 1)
 
-        self.file_model.modelReset.connect(self._update_evaluation_empty_state)
-        self.file_model.rowsInserted.connect(self._update_evaluation_empty_state)
-        self.file_model.rowsRemoved.connect(self._update_evaluation_empty_state)
-        self._update_evaluation_empty_state()
-
         ##############################################
         # Row of action buttons under the record list
         ##############################################
@@ -168,7 +163,6 @@ class EvaluationPanel(QWidget):
         self.evaluation_path.setReadOnly(True)
         self.evaluation_path.setPlaceholderText("No evaluation selected")
         self.evaluation_path.setToolTip("Full path of the selected evaluation")
-        self.coordinator.selected_record_changed.connect(self._update_evaluation_path)
 
         path_row.add_widget(self.evaluation_path, 1)
 
@@ -213,8 +207,8 @@ class EvaluationPanel(QWidget):
 
         # Label for ordering
         self.order_status = muted_label(
-            f"Order: {self.coordinator.collection.order_label}", word_wrap=True
-        )
+            "", word_wrap=True
+        )  # text gets set in `on_order_changed`
         layout.addWidget(self.order_status)
 
         # Controls for orderings
@@ -226,7 +220,7 @@ class EvaluationPanel(QWidget):
             "sort_up",
             "Sort the collection in reverse order",
         )
-        self.invert_order_button.setEnabled(True)
+        self.invert_order_button.setEnabled(False)
         self.invert_order_button.clicked.connect(
             lambda: self.coordinator.invert_order_records()
         )
@@ -255,6 +249,15 @@ class EvaluationPanel(QWidget):
         self.coordinator.collection_order_changed.connect(
             self.on_collection_order_changed
         )
+        self.coordinator.selected_record_changed.connect(
+            self.on_selected_record_changed
+        )
+
+        ##############################################
+        # Initialize GUI
+        ##############################################
+        self.on_collection_changed()
+        self.on_collection_order_changed()
 
     def open_files(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -268,34 +271,44 @@ class EvaluationPanel(QWidget):
             self.coordinator.load_collection([path])
 
     def on_collection_changed(self):
-        self.file_model._rebuild_tree()
+        n_records = len(self.coordinator.collection)
 
-        if self.coordinator.collection is not None:
-            n_records = len(self.coordinator.collection)
-            self.record_count.setText(f"{n_records} records loaded.")
-        else:
-            self.record_count.setText("No records loaded.")
+        self.record_count.setText(
+            f"{n_records} records loaded" if n_records else "No records loaded"
+        )
+
+        self.evaluation_stack.setCurrentWidget(
+            self.file_list if n_records else self.evaluation_empty_state
+        )
+
+        self.on_collection_order_changed()
 
     def on_collection_order_changed(self):
-        self.file_model._rebuild_tree()
+        ascending = self.coordinator.collection.ascending
+
+        label = f"Order: {self.coordinator.collection.order_label}"
+        if ascending is not None:
+            if ascending:
+                label += " ↑"
+            else:
+                label += " ↓"
+
+        self.order_status.setText(label)
+        self.invert_order_button.setEnabled(len(self.coordinator.collection) > 1)
+        self.reset_order_button.setEnabled(len(self.coordinator.collection) > 1)
+
+    def on_selected_record_changed(self):
+        selected_document = self.coordinator.selected_document
+        if selected_document is not None:
+            path = selected_document.path
+            self.evaluation_path.setText(str(path))
+        else:
+            self.evaluation_path.setText("None")
 
     def open_directory(self):
         path = QFileDialog.getExistingDirectory(self, "Open context directory")
         if path:
             self.coordinator.load_collection([path])
-
-    def _update_evaluation_path(self, *args):
-        document = self.coordinator.selected_document
-        self.evaluation_path.setText(str(document.path) if document is not None else "")
-
-    def _update_evaluation_empty_state(self, *_args: object) -> None:
-        """Show opening instructions in the evaluation list when it has no records."""
-        target = (
-            self.file_list
-            if len(self.coordinator.collection) > 0
-            else self.evaluation_empty_state
-        )
-        self.evaluation_stack.setCurrentWidget(target)
 
     def _show_evaluation_context_menu(self, position) -> None:  # noqa: ANN001
         proxy_index = self.file_list.indexAt(position)
@@ -338,7 +351,7 @@ class EvaluationPanel(QWidget):
         self.coordinator.select_record(record)
 
     def _copy_current_evaluation(self) -> None:
-        record = self.coordinatopen_file_explorer_buttonor.selected_document
+        record = self.coordinator.selected_document
         if record is not None:
             QApplication.clipboard().setText(record.name)
 
