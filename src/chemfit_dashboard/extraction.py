@@ -18,14 +18,17 @@ from typing import TYPE_CHECKING, Any
 
 import pydictnest
 
-from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.context_document import (
+    ContextDocument,
+    ContextDocumentError,
+    NodePath,
+)
 from chemfit_dashboard.semantic import (
     NodeTrail,
     NodeTrailSegment,
     component_trail_for_path,
     resolve_component_selection,
 )
-from chemfit_dashboard.source import ContextDocument, ContextSourceError
 from chemfit_dashboard.traversal import CancellationToken, iter_collection
 
 get_nested = pydictnest.get_nested
@@ -200,7 +203,7 @@ def extract_value(
     if selector.node_trail is None:
         try:
             details = document.details(selector.node_path)
-        except ContextSourceError:
+        except ContextDocumentError:
             return ExtractionValue(None, ExtractionStatus.MISSING_COMPONENT)
     else:
         resolution = resolve_component_selection(
