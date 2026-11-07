@@ -23,15 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
 from chemfit_dashboard.source import ContextSource, JsonFileSource
 
 
 class MainWindow(QMainWindow):
-    """
-    todo.
-    """
+    """todo."""
 
     operation_progress = Signal(str, int, int)
 
@@ -104,14 +103,30 @@ class MainWindow(QMainWindow):
         self.evaluation_panel = EvaluationPanel(
             coordinator=self.coordinator, parent=self
         )
+
+        #########################
+        # Context hierarchy
+        #########################
+
+        self.context_tree_panel = ContextTreePanel(
+            coordinator=self.coordinator, parent=self
+        )
+
+        #########################
+        # Main workspace
+        #########################
+
         self.main_workspace = QSplitter(Qt.Orientation.Horizontal)
         self.main_workspace.setObjectName("mainWorkspace")
         self.main_workspace.setChildrenCollapsible(False)
+
         self.main_workspace.addWidget(self.evaluation_panel)
-        # self.main_workspace.addWidget(self.workspace_tabs)
+        self.main_workspace.addWidget(self.context_tree_panel)
+
         self.main_workspace.setStretchFactor(0, 0)
         self.main_workspace.setStretchFactor(1, 1)
         self.main_workspace.setSizes([275, 1185])
+
         outer.addWidget(self.main_workspace, 1)
 
         # set central widget

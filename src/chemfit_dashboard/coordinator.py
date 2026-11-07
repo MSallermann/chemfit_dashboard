@@ -122,6 +122,7 @@ class DashboardCoordinator(QObject):
         self._collection: OrderedRecordCollection = OrderedRecordCollection()
         self._selected_document: ContextDocument | None = None
         self._selected_context: NodePath | None = None
+        self._preferred_context_path: NodePath = ()
         self._task_runner = TaskRunner()
         self._generations = GenerationTracker()
 
@@ -194,6 +195,7 @@ class DashboardCoordinator(QObject):
             self._task_runner.invalidate("record")
             self._selected_document = None
             self._selected_context = None
+            self._preferred_context_path = ()
 
             self.selected_record_changed.emit(None)
             self.selected_context_changed.emit(None)
@@ -204,11 +206,17 @@ class DashboardCoordinator(QObject):
             return self._source.load(record)
 
         def on_success(document: ContextDocument) -> None:
-            self._selected_document = document
-            self._selected_context = ()  # selects the root context
+            path = self._preferred_context_path
 
-            self.selected_record_changed.emit(self.selected_document)
-            self.selected_context_changed.emit(())
+            # Fall back to the closest available ancestor.
+            while not document.has_path(path):
+                path = path[:-1]
+
+            self._selected_document = document
+            self._selected_context = path
+
+            self.selected_record_changed.emit(document)
+            self.selected_context_changed.emit(path)
 
         def on_error(details: str) -> None:
             self.operation_failed.emit("Record selection", details)
@@ -226,9 +234,6 @@ class DashboardCoordinator(QObject):
     def select_context(self, path: NodePath | None) -> None:
         """Select a context within the current evaluation."""
 
-        if path == self._selected_context:
-            return
-
         # if an actual path is supplied, a document must be selected
         # and it must contain the path
         if path is not None:
@@ -238,6 +243,11 @@ class DashboardCoordinator(QObject):
             if not self._selected_document.has_path(path):
                 msg = f"Unknown context path: {path}"
                 raise ValueError(msg)
+
+        self._preferred_context_path = path if path is not None else ()
+
+        if path == self._selected_context:
+            return
 
         self._selected_context = path
         self.selected_context_changed.emit(path)
