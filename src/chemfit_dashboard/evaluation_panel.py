@@ -25,11 +25,9 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.coordinator import DashboardCoordinator
-from chemfit_dashboard.icons import (
-    make_icon_only,
-)
+from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import EvaluationListModel
-from chemfit_dashboard.ui_components import ActionRow, add_clear_action
+from chemfit_dashboard.ui_components import ActionRow, add_clear_action, muted_label
 
 
 class EvaluationPanel(QWidget):
@@ -81,7 +79,6 @@ class EvaluationPanel(QWidget):
         ##############################################
         # Data model
         self.file_model = EvaluationListModel(self, coordinator=self.coordinator)
-        self.coordinator.collection_order_changed.connect(self.file_model._rebuild_tree)
 
         # Proxy for filtering
         self.file_proxy = QSortFilterProxyModel(self)
@@ -165,7 +162,7 @@ class EvaluationPanel(QWidget):
         ##############################################
         path_row = ActionRow()
 
-        # Widget that contains the currently selected evaluation path
+        # The currently selected evaluation path
         self.evaluation_path = QLineEdit()
         self.evaluation_path.setObjectName("evaluationPath")
         self.evaluation_path.setReadOnly(True)
@@ -175,6 +172,7 @@ class EvaluationPanel(QWidget):
 
         path_row.add_widget(self.evaluation_path, 1)
 
+        # Copy the path
         self.copy_evaluation_path_button = path_row.add_action(
             "copyEvaluationPathAction",
             "Copy path",
@@ -185,6 +183,8 @@ class EvaluationPanel(QWidget):
         self.copy_evaluation_path_button.clicked.connect(
             self._copy_current_evaluation_path
         )
+
+        # Open in file explorer
         self.open_file_explorer_button = path_row.add_action(
             "openInFileExplorerAction",
             "Open folder",
@@ -195,6 +195,8 @@ class EvaluationPanel(QWidget):
         self.open_file_explorer_button.clicked.connect(
             self._open_current_evaluation_folder
         )
+
+        # Focus selected record
         self.focus_selected_button = path_row.add_action(
             "focusSelectedEvaluationAction",
             "Focus selected",
@@ -204,13 +206,18 @@ class EvaluationPanel(QWidget):
         )
         self.focus_selected_button.clicked.connect(self._focus_selected_record)
         layout.addWidget(path_row)
-        # self._set_evaluation_path(None)
 
-        # self.file_count = muted_label("No files loaded")
-        # layout.addWidget(self.file_count)
-        # self.order_status = muted_label("Order: filename", word_wrap=True)
-        # self.order_status.setToolTip("Natural alphanumeric filename order")
-        # layout.addWidget(self.order_status)
+        # Label for record count
+        self.record_count = muted_label("No records loaded")
+        layout.addWidget(self.record_count)
+
+        # Label for ordering
+        self.order_status = muted_label(
+            f"Order: {self.coordinator.collection.order_label}", word_wrap=True
+        )
+        layout.addWidget(self.order_status)
+
+        # Controls for orderings
         order_controls = QHBoxLayout()
         order_controls.setSpacing(6)
         self.invert_order_button = QPushButton("Invert order")
@@ -219,10 +226,11 @@ class EvaluationPanel(QWidget):
             "sort_up",
             "Sort the collection in reverse order",
         )
-        self.invert_order_button.setEnabled(False)
+        self.invert_order_button.setEnabled(True)
         self.invert_order_button.clicked.connect(
-            lambda: self.coordinator.collection.invert_order()
+            lambda: self.coordinator.invert_order_records()
         )
+        self.invert_order_button.setToolTip("Invert the order of records")
         order_controls.addWidget(self.invert_order_button)
 
         self.reset_order_button = QPushButton("Filename order")
@@ -233,11 +241,20 @@ class EvaluationPanel(QWidget):
         )
         self.reset_order_button.setEnabled(False)
         self.reset_order_button.clicked.connect(
-            lambda: self.coordinator.collection.reset_order()
+            lambda: self.coordinator.reset_order_records()
         )
         order_controls.addWidget(self.reset_order_button)
         order_controls.addStretch()
         layout.addLayout(order_controls)
+
+        ##############################################
+        # Connect signals
+        ##############################################
+
+        self.coordinator.collection_changed.connect(self.on_collection_changed)
+        self.coordinator.collection_order_changed.connect(
+            self.on_collection_order_changed
+        )
 
     def open_files(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -249,6 +266,18 @@ class EvaluationPanel(QWidget):
 
         if path:
             self.coordinator.load_collection([path])
+
+    def on_collection_changed(self):
+        self.file_model._rebuild_tree()
+
+        if self.coordinator.collection is not None:
+            n_records = len(self.coordinator.collection)
+            self.record_count.setText(f"{n_records} records loaded.")
+        else:
+            self.record_count.setText("No records loaded.")
+
+    def on_collection_order_changed(self):
+        self.file_model._rebuild_tree()
 
     def open_directory(self):
         path = QFileDialog.getExistingDirectory(self, "Open context directory")
@@ -309,7 +338,7 @@ class EvaluationPanel(QWidget):
         self.coordinator.select_record(record)
 
     def _copy_current_evaluation(self) -> None:
-        record = self.coordinator.selected_document
+        record = self.coordinatopen_file_explorer_buttonor.selected_document
         if record is not None:
             QApplication.clipboard().setText(record.name)
 

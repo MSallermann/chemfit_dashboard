@@ -35,10 +35,13 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         # Default order, typically natural alphanumeric filename order.
         # Independent of any user-selected sorting criterion.
         self._natural_order: tuple[str, ...] = ()
+        self._natural_order_label: str = "natural"
 
         # Currently active order. Iteration and indexing follow this.
         # Must contain each ID in _refs exactly once.
         self._order: tuple[str, ...] = ()
+        self._order_label: str | None = None
+        self._order_ascending: bool | None = None
 
         self._task_runner = TaskRunner()
 
@@ -71,6 +74,8 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         self._refs = new_refs
         self._natural_order = tuple(new_refs)
         self._order = self._natural_order
+        self._order_label = self._natural_order_label
+        self._order_ascending = True
 
     def extend(self, refs: Iterable[RecordRef]) -> None:
         """
@@ -119,7 +124,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         self._order += tuple(added)
         self._natural_order = natural_order
 
-    def set_order(self, ids: Sequence[str]) -> bool:
+    def set_order(self, ids: Sequence[str], label: str | None, ascending: bool) -> bool:
         """
         Replace the active ordering without modifying collection membership.
 
@@ -154,6 +159,8 @@ class OrderedRecordCollection(Sequence[RecordRef]):
             raise ValueError(msg)
 
         self._order = new_order
+        self._order_label = label
+        self._order_ascending = ascending
         return True
 
     def reset_order(self) -> None:
@@ -175,10 +182,15 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         if the active ordering actually changes.
         """
         self._order = self._natural_order
+        self._order_label = self._natural_order_label
 
     def invert_order(self) -> None:
         """Inverts the current order."""
-        self.set_order(self._order[::-1])
+        self.set_order(
+            self._order[::-1],
+            label=self._order_label,
+            ascending=not self._order_ascending,
+        )
 
     @property
     def natural_order(self) -> tuple[str, ...]:
@@ -189,6 +201,16 @@ class OrderedRecordCollection(Sequence[RecordRef]):
     def order(self) -> tuple[str, ...]:
         """Return the reference IDs in their current ordering."""
         return self._order
+
+    @property
+    def order_label(self) -> str | None:
+        """Return the label for the current ordering."""
+        return self._order_label
+
+    @property
+    def ascending(self) -> bool | None:
+        """Return if the orde is ascending."""
+        return self._order_ascending
 
     def __len__(self) -> int:
         """Return the number of references in the collection."""

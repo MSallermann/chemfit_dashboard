@@ -240,14 +240,46 @@ class DashboardCoordinator(QObject):
         self._selected_context = path
         self.selected_context_changed.emit(path)
 
-    def order_records(self, order: Sequence[str]):
+    def order_records(
+        self, order: Sequence[str], label: str | None, ascending: bool = True
+    ):
         """Set the order of records."""
 
         if self._collection is None:
             return
 
         try:
-            self._collection.set_order(order)
+            self._collection.set_order(order, label, ascending=ascending)
+        except Exception as e:
+            self.operation_failed.emit("Evaluation ordering", traceback.format_exc())
+            logger.exception(e)
+            return
+
+        self.collection_order_changed.emit()
+
+    def invert_order_records(self):
+        """Invert the order of records."""
+
+        if self._collection is None:
+            return
+
+        try:
+            self._collection.invert_order()
+        except Exception as e:
+            self.operation_failed.emit("Evaluation ordering", traceback.format_exc())
+            logger.exception(e)
+            return
+
+        self.collection_order_changed.emit()
+
+    def reset_order_records(self):
+        """Invert the order of records."""
+
+        if self._collection is None:
+            return
+
+        try:
+            self._collection.reset_order()
         except Exception as e:
             self.operation_failed.emit("Evaluation ordering", traceback.format_exc())
             logger.exception(e)
