@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from chemfit_dashboard.collection_plot import NumberSelector
 from chemfit_dashboard.context_document import NodeDetails
+from chemfit_dashboard.coordinator import DashboardCoordinator, NodePath
 from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import JsonValueModel
@@ -260,8 +261,13 @@ class Inspector(QWidget):
     component_extraction_requested = Signal(object)
     status_message = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self, *, coordinator: DashboardCoordinator, parent: QWidget | None = None
+    ):
         """Build the inspector and connect its selection and action signals."""
+
+        self.coordinator = coordinator
+
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 18)
@@ -279,6 +285,23 @@ class Inspector(QWidget):
         self._number_selector: NumberSelector | None = None
         self._field_selector: FieldSelector | None = None
         self._connect_view_signals()
+
+        # Wire up signals
+        self.coordinator.selected_context_changed.connect(
+            self.on_selected_context_changed
+        )
+
+    def on_selected_context_changed(self, path: NodePath | None) -> None:
+        document = self.coordinator.selected_document
+
+        if document is None or path is None:
+            self.clear()
+            return
+
+        self.set_details(
+            document.details(path),
+            document.component_label(path),
+        )
 
     def _setup_header(self, layout: QVBoxLayout) -> None:
         """Create the component title and summary above the inspector tabs."""
@@ -328,15 +351,15 @@ class Inspector(QWidget):
 
         sort_label = QLabel("Sort:")
         action_layout.addWidget(sort_label, 1, 3)
-        self.order_button = QPushButton("Sort ↑")
+        self.order_ascending_button = QPushButton("Sort ↑")
         make_icon_only(
-            self.order_button,
+            self.order_ascending_button,
             "sort_up",
             "Sort the collection by this value in ascending order",
         )
-        self.order_button.setEnabled(False)
-        self.order_button.clicked.connect(self._request_order)
-        action_layout.addWidget(self.order_button, 1, 4)
+        self.order_ascending_button.setEnabled(False)
+        self.order_ascending_button.clicked.connect(self._request_order_ascending)
+        action_layout.addWidget(self.order_ascending_button, 1, 4)
 
         self.order_descending_button = QPushButton("Sort ↓")
         make_icon_only(
@@ -513,7 +536,7 @@ class Inspector(QWidget):
         self._number_selector = selector
         self.plot_button.setEnabled(selector is not None)
         self.plot_add_button.setEnabled(selector is not None)
-        self.order_button.setEnabled(selector is not None)
+        self.order_ascending_button.setEnabled(selector is not None)
         self.order_descending_button.setEnabled(selector is not None)
         selected = f"\nSelected: {selector.label}" if selector is not None else ""
         self.plot_button.setToolTip(
@@ -522,7 +545,7 @@ class Inspector(QWidget):
         self.plot_add_button.setToolTip(
             f"Add this number as another series in the current plot.{selected}"
         )
-        self.order_button.setToolTip(
+        self.order_ascending_button.setToolTip(
             f"Sort contexts ascending by this number; missing values go last.{selected}"
         )
         self.order_descending_button.setToolTip(
@@ -581,7 +604,7 @@ class Inspector(QWidget):
         if self._number_selector is not None:
             self.plot_add_requested.emit(self._number_selector)
 
-    def _request_order(self) -> None:
+    def _request_order_ascending(self) -> None:
         if self._number_selector is not None:
             self.order_requested.emit(self._number_selector)
 

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
+from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.source import ContextSource, JsonFileSource
 
 
@@ -113,6 +114,14 @@ class MainWindow(QMainWindow):
         )
 
         #########################
+        # Context inspector
+        #########################
+        self.inspector = Inspector(
+            coordinator=self.coordinator,
+            parent=self,
+        )
+
+        #########################
         # Main workspace
         #########################
 
@@ -122,6 +131,7 @@ class MainWindow(QMainWindow):
 
         self.main_workspace.addWidget(self.evaluation_panel)
         self.main_workspace.addWidget(self.context_tree_panel)
+        self.main_workspace.addWidget(self.inspector)
 
         self.main_workspace.setStretchFactor(0, 0)
         self.main_workspace.setStretchFactor(1, 1)
