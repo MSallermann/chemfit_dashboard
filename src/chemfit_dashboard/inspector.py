@@ -261,7 +261,7 @@ class Inspector(QWidget):
 
     plot_requested = Signal(object)
     plot_add_requested = Signal(object)
-    order_requested = Signal(object)
+    order_ascending_requested = Signal(object)
     order_descending_requested = Signal(object)
     extraction_requested = Signal(object)
     component_extraction_requested = Signal(object)
@@ -581,12 +581,16 @@ class Inspector(QWidget):
     def _request_order_ascending(self) -> None:
         selector = self.coordinator.current_field_selector
         if selector is not None:
-            self.order_requested.emit(selector)
+            self.coordinator.sort_records_by_field(
+                field_selector=selector, ascending=True
+            )
 
     def _request_order_descending(self) -> None:
         selector = self.coordinator.current_field_selector
         if selector is not None:
-            self.order_descending_requested.emit(selector)
+            self.coordinator.sort_records_by_field(
+                field_selector=selector, ascending=False
+            )
 
     def _request_extraction(self) -> None:
         selector = self.coordinator.current_field_selector
