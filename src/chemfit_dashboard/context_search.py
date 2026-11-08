@@ -1,79 +1,160 @@
 """
-Qt presentation for context-search results.
+Coordinator-backed context search and Qt result presentation.
 
 Search indexing and ranking live in :mod:`search_core`; this module owns result
-tables, match highlighting, clipboard actions, and navigation signals. Core
-search names are re-exported for compatibility with earlier callers.
+controls, asynchronous execution, result tables, match highlighting, clipboard
+actions, and result navigation.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from html import escape
+from typing import cast
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QTreeWidget,
     QTreeWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 from rapidfuzz.fuzz import ratio
 
 from chemfit_dashboard.appearance import active_color_scheme
+from chemfit_dashboard.context_document import (
+    DEFAULT_COMPONENT_LABEL_METADATA_KEY,
+    ContextDocument,
+    RecordRef,
+)
+from chemfit_dashboard.coordinator import DashboardCoordinator
+from chemfit_dashboard.process_search import (
+    CollectionSearchExecutor,
+    CollectionSearchResult,
+    SearchOptions,
+)
 from chemfit_dashboard.search_core import (
-    MAX_RESULTS,
-    ContextSearchIndex,
+    ContextSearchCache,
     SearchHit,
     SearchMode,
-    SearchQueryError,
-    TopKSearchHits,
     _normalize,
-    clear_search_caches,
-    rank_search_hits,
 )
-from chemfit_dashboard.ui_components import muted_label, panel_layout
+from chemfit_dashboard.traversal import CancellationToken
+from chemfit_dashboard.ui_components import add_clear_action, muted_label, panel_layout
 
-__all__ = [
-    "MAX_RESULTS",
-    "ContextSearchIndex",
-    "ContextSearchPanel",
-    "SearchHit",
-    "SearchMode",
-    "SearchQueryError",
-    "TopKSearchHits",
-    "clear_search_caches",
-    "rank_search_hits",
-]
+logger = logging.getLogger(__name__)
 
 HIT_ROLE = Qt.ItemDataRole.UserRole.value
 
 
 class ContextSearchPanel(QWidget):
     """
-    Globally ranked search results with contextual hierarchy labels.
+    Search the current evaluation or collection and navigate ranked results.
 
-    The panel may search one installed index directly, but collection-wide work
-    is coordinated by MainWindow. It stores rendered ``SearchHit`` objects and
-    emits the selected hit without loading or mutating documents.
+    Search-specific state and processing live here. Shared collection and
+    selection state remain authoritative in ``DashboardCoordinator``.
     """
 
     hit_selected = Signal(object)
+    hit_previewed = Signal(object)
     copy_completed = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):
-        """Initialize an empty field-search result view."""
+    def __init__(
+        self,
+        *,
+        coordinator: DashboardCoordinator,
+        parent: QWidget | None = None,
+    ):
+        """Initialize search controls, background resources, and result view."""
         super().__init__(parent)
-        self._index: ContextSearchIndex | None = None
+        self.coordinator = coordinator
+        self._index_cache = ContextSearchCache(capacity=32)
+        self._collection_search = CollectionSearchExecutor()
+        self._cancellation: CancellationToken | None = None
+        self._pending_hit: SearchHit | None = None
+        self._pending_activation = False
+        self._shut_down = False
+
         layout = panel_layout(self)
+        self._build_controls(layout)
+        self._build_results(layout)
+        self._connect_search_signals()
+
+    def _build_controls(self, layout: QVBoxLayout) -> None:
+        """Build query, scope, mode, and searchable-dimension controls."""
+
+        controls = QFrame()
+        controls.setObjectName("contextSearchControls")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(8, 8, 8, 8)
+        controls_layout.setSpacing(7)
+
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("Search fields, values, and component hierarchy…")
+        add_clear_action(self.query)
+        controls_layout.addWidget(self.query)
+
+        search_controls = QHBoxLayout()
+        search_controls.setSpacing(8)
+        self.mode = QComboBox()
+        self.mode.addItem("Fuzzy", "fuzzy")
+        self.mode.addItem("Exact", "exact")
+        self.mode.addItem("Regex", "regex")
+        self.mode.setToolTip("Choose fuzzy, literal substring, or regex matching")
+        search_controls.addWidget(self.mode)
+        self.scope = QComboBox()
+        self.scope.addItem("Whole collection", "collection")
+        self.scope.addItem("Current evaluation", "current")
+        self.scope.setToolTip("Search one evaluation or every loaded context file")
+        search_controls.addWidget(self.scope)
+        search_controls.addStretch()
+        controls_layout.addLayout(search_controls)
+
+        dimensions = QGridLayout()
+        dimensions.setSpacing(8)
+        self.include_keys = QCheckBox("Include keys")
+        self.include_keys.setChecked(True)
+        self.include_keys.setToolTip("Match nested field paths and section names")
+        dimensions.addWidget(self.include_keys, 0, 0)
+        self.include_values = QCheckBox("Include values")
+        self.include_values.setChecked(True)
+        self.include_values.setToolTip("Match serialized field values")
+        dimensions.addWidget(self.include_values, 0, 1)
+        self.include_metadata = QCheckBox("Include metadata")
+        self.include_metadata.setChecked(True)
+        self.include_metadata.setToolTip(
+            "Include component metadata fields and values in search results"
+        )
+        dimensions.addWidget(self.include_metadata, 1, 0)
+        self.include_components = QCheckBox("Component names")
+        self.include_components.setChecked(False)
+        self.include_components.setToolTip(
+            "Include component names and hierarchy breadcrumbs when matching"
+        )
+        dimensions.addWidget(self.include_components, 1, 1)
+        dimensions.setColumnStretch(0, 1)
+        dimensions.setColumnStretch(1, 1)
+        controls_layout.addLayout(dimensions)
+        layout.addWidget(controls)
+
+    def _build_results(self, layout: QVBoxLayout) -> None:
+        """Build the status and ranked-result presentation."""
         self.status = muted_label(
-            "Type above to fuzzy-search context fields and values.", word_wrap=True
+            "Type above to search context fields and values.", word_wrap=True
         )
         layout.addWidget(self.status)
         self.results = QTreeWidget()
@@ -95,6 +176,7 @@ class ContextSearchPanel(QWidget):
         self.results.header().resizeSection(1, 150)
         self.results.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.results.header().resizeSection(2, 72)
+        self.results.currentItemChanged.connect(self._item_highlighted)
         self.results.itemDoubleClicked.connect(self._item_activated)
         self.results.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results.customContextMenuRequested.connect(self._show_context_menu)
@@ -117,76 +199,290 @@ class ContextSearchPanel(QWidget):
         self._activate_keypad_shortcut.activated.connect(self._activate_current_result)
         layout.addWidget(self.results, 1)
 
-    def set_index(self, index: ContextSearchIndex | None) -> None:
-        """Set the current-evaluation index used by direct panel searches."""
-        self._index = index
+    def _connect_search_signals(self) -> None:
+        """Connect controls and coordinator state to search invalidation."""
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(120)
+        self._debounce.timeout.connect(self._run_search)
+        self.query.textChanged.connect(self._search_controls_changed)
+        self.mode.currentIndexChanged.connect(self._search_controls_changed)
+        self.scope.currentIndexChanged.connect(self._search_controls_changed)
+        for option in (
+            self.include_keys,
+            self.include_values,
+            self.include_metadata,
+            self.include_components,
+        ):
+            option.toggled.connect(self._search_controls_changed)
+
+        self.coordinator.selected_record_changed.connect(self._record_changed)
+        self.coordinator.selected_record_change_requested.connect(
+            self._record_change_requested
+        )
+        self.coordinator.collection_changed.connect(self._collection_changed)
+        self.coordinator.operation_failed.connect(self._operation_failed)
+
+    def focus_query(self) -> None:
+        """Focus and select the query for the application Find action."""
+        self.query.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.query.selectAll()
+
+    def clear_query(self) -> None:
+        """Clear the active query and invalidate unfinished searches."""
+        self.query.clear()
+
+    def shutdown(self) -> None:
+        """Cancel search work and release the persistent process pool."""
+        if self._shut_down:
+            return
+        self._shut_down = True
+        self._debounce.stop()
+        self._cancel_search()
+        self._collection_search.shutdown(wait_for_workers=False)
+
+    def _schedule_search(self, _value: object = None) -> None:
+        """Invalidate active work immediately and debounce its replacement."""
+        self._cancel_search()
+        if not self.query.text().strip():
+            self._debounce.stop()
+            self._show_message("Type above to search context fields and values.")
+            return
         self.results.clear()
+        self.status.setText("Updating search…")
+        self._debounce.start()
+
+    def _search_controls_changed(self, value: object = None) -> None:
+        """Invalidate both results and navigation tied to an older query."""
+        self._clear_pending_hit()
+        self._schedule_search(value)
+
+    def _cancel_search(self) -> None:
+        if self._cancellation is not None:
+            self._cancellation.cancel()
+            self._cancellation = None
+        self.coordinator.task_runner.invalidate("context_search")
+
+    def _run_search(self) -> None:
+        """Snapshot controls and submit one freshness-guarded background search."""
+        if self._shut_down:
+            return
+        query = self.query.text().strip()
+        if not query:
+            return
+        mode = cast("SearchMode", self.mode.currentData())
+        if mode == "regex":
+            try:
+                re.compile(query, re.IGNORECASE)
+            except re.error as error:
+                self._show_message(f"Invalid regular expression: {error}")
+                return
+
+        options = SearchOptions(
+            query=query,
+            include_keys=self.include_keys.isChecked(),
+            include_values=self.include_values.isChecked(),
+            include_metadata=self.include_metadata.isChecked(),
+            include_components=self.include_components.isChecked(),
+            mode=mode,
+        )
+        scope = self.scope.currentData()
+        current_document = self.coordinator.selected_document
+        if scope == "current":
+            if current_document is None:
+                self._show_message("Select an evaluation to search it.")
+                return
+            records = (current_document.record,)
+            scope_label = "current evaluation"
+        else:
+            records = tuple(self.coordinator.collection)
+            scope_label = "whole collection"
+            if not records:
+                self._show_message("No context collection is loaded.")
+                return
+
+        cancellation = CancellationToken()
+        self._cancellation = cancellation
         self.status.setText(
-            "Type above to fuzzy-search context fields and values."
-            if index is not None
-            else "Select an evaluation to search its fields."
+            f"Searching {len(records):,} evaluation"
+            f"{'s' if len(records) != 1 else ''} in the background…"
+        )
+        component_label_key = (
+            current_document.component_label_metadata_key
+            if current_document is not None
+            else DEFAULT_COMPONENT_LABEL_METADATA_KEY
         )
 
-    def set_available(self, available: bool) -> None:
-        """Update availability without constructing an index on the UI thread."""
-        self._index = None
-        self.results.clear()
-        self.status.setText(
-            "Type above to search context fields and values."
-            if available
-            else "Select an evaluation to search its fields."
+        def task() -> CollectionSearchResult:
+            if scope == "collection":
+                return self._collection_search.search(
+                    records,
+                    options,
+                    component_label_key=component_label_key,
+                    cancellation=cancellation,
+                )
+            assert current_document is not None
+            index = self._index_cache.index_for(
+                current_document,
+                cooperative=True,
+                cancelled=lambda: cancellation.cancelled,
+            )
+            if cancellation.cancelled:
+                return CollectionSearchResult([], 0, cancelled=True)
+            hits = index.search(
+                options.query,
+                include_keys=options.include_keys,
+                include_values=options.include_values,
+                include_metadata=options.include_metadata,
+                include_components=options.include_components,
+                mode=options.mode,
+                cooperative=True,
+                cancelled=lambda: cancellation.cancelled,
+            )
+            return CollectionSearchResult(
+                hits,
+                0,
+                cancelled=cancellation.cancelled,
+            )
+
+        def succeeded(result: CollectionSearchResult) -> None:
+            if self._cancellation is cancellation:
+                self._cancellation = None
+            if result.cancelled:
+                return
+            self._show_results(
+                result.hits,
+                options.query,
+                include_keys=options.include_keys,
+                include_values=options.include_values,
+                include_metadata=options.include_metadata,
+                include_components=options.include_components,
+                mode=options.mode,
+                scope_label=scope_label,
+                searched_records=len(records),
+                failed_records=result.failed_records,
+            )
+
+        def failed(details: str) -> None:
+            if self._cancellation is cancellation:
+                self._cancellation = None
+            logger.error("Could not search context collection\n%s", details)
+            self._show_message("Could not search the context collection.")
+
+        self.coordinator.task_runner.submit_latest(
+            key="context_search",
+            function=task,
+            on_success=succeeded,
+            on_error=failed,
         )
 
-    def show_loading(self, text: str) -> None:
-        """Report replacement work without synchronously destroying result widgets."""
-        self.status.setText(text)
+    def _record_changed(self, document: ContextDocument | None) -> None:
+        pending = self._pending_hit
+        if pending is not None:
+            if document is not None and document.record.id == pending.record_id:
+                # The coordinator emits its restored context and field just
+                # after selected_record_changed. Apply the hit on the next GUI
+                # turn so those restoration signals cannot overwrite it.
+                QTimer.singleShot(
+                    0,
+                    lambda: self._apply_pending_hit(pending, document),
+                )
+            else:
+                # A different committed record supersedes pending navigation.
+                self._clear_pending_hit()
+        if self.scope.currentData() == "current" and self.query.text().strip():
+            self._schedule_search()
 
-    def show_message(self, text: str) -> None:
+    def _record_change_requested(self, request: object) -> None:
+        """Discard navigation if another record request supersedes its target."""
+        pending = self._pending_hit
+        if pending is None:
+            return
+        record = getattr(request, "ref", None)
+        if record is None or getattr(record, "id", None) != pending.record_id:
+            self._clear_pending_hit()
+
+    def _collection_changed(self, records: tuple[RecordRef, ...]) -> None:
+        self._index_cache.clear()
+        pending = self._pending_hit
+        if pending is not None and not any(
+            record.id == pending.record_id for record in records
+        ):
+            self._clear_pending_hit()
+        if self.scope.currentData() == "collection" and self.query.text().strip():
+            self._schedule_search()
+
+    def _operation_failed(self, operation: str, _details: str) -> None:
+        if operation == "Record selection" and self._pending_hit is not None:
+            self._clear_pending_hit()
+
+    def _navigate_to_hit(self, hit: SearchHit, *, activate: bool) -> None:
+        document = self.coordinator.selected_document
+        pending = self._pending_hit
+        if pending is hit:
+            self._pending_activation = self._pending_activation or activate
+            return
+        if pending is not None:
+            self._clear_pending_hit()
+            if document is not None and document.record.id == hit.record_id:
+                # Re-selecting the authoritative record invalidates the older
+                # coordinator load before this local hit is applied.
+                self.coordinator.select_record(document.record)
+        if document is not None and document.record.id == hit.record_id:
+            self._apply_hit(hit, document, activate=activate)
+            return
+        record = next(
+            (item for item in self.coordinator.collection if item.id == hit.record_id),
+            None,
+        )
+        if record is None:
+            self._show_message(
+                "The selected evaluation is no longer in the collection."
+            )
+            return
+        self._pending_hit = hit
+        self._pending_activation = activate
+        self.coordinator.select_record(record)
+
+    def _clear_pending_hit(self) -> None:
+        self._pending_hit = None
+        self._pending_activation = False
+
+    def _apply_pending_hit(self, hit: SearchHit, document: ContextDocument) -> None:
+        if (
+            self._pending_hit is not hit
+            or self.coordinator.selected_document is not document
+        ):
+            return
+        activate = self._pending_activation
+        self._clear_pending_hit()
+        self._apply_hit(hit, document, activate=activate)
+
+    def _apply_hit(
+        self,
+        hit: SearchHit,
+        document: ContextDocument,
+        *,
+        activate: bool,
+    ) -> None:
+        """Commit a hit only after its exact document is authoritative."""
+        if document.record.id != hit.record_id or not document.has_path(hit.node_path):
+            return
+        try:
+            self.coordinator.select_context(hit.node_path)
+            field_path = _coordinator_field_path(hit)
+            self.coordinator.select_field(field_path)
+        except ValueError:
+            self._show_message("The selected search result is no longer available.")
+            return
+        (self.hit_selected if activate else self.hit_previewed).emit(hit)
+
+    def _show_message(self, text: str) -> None:
         """Clear stale hits and display an informational or error state."""
         self.results.clear()
         self.status.setText(text)
 
-    def search(
-        self,
-        query: str,
-        *,
-        include_keys: bool = True,
-        include_values: bool = True,
-        include_metadata: bool = True,
-        include_components: bool = True,
-        mode: SearchMode = "fuzzy",
-    ) -> None:
-        """Search the installed index and render ranked hits synchronously."""
-        self.results.clear()
-        if self._index is None:
-            self.status.setText("Select an evaluation to search its fields.")
-            return
-        if not query.strip():
-            self.status.setText("Type above to fuzzy-search context fields and values.")
-            return
-        try:
-            hits = self._index.search(
-                query,
-                include_keys=include_keys,
-                include_values=include_values,
-                include_metadata=include_metadata,
-                include_components=include_components,
-                mode=mode,
-            )
-        except SearchQueryError as error:
-            self.status.setText(f"Invalid regular expression: {error}")
-            return
-        self.show_results(
-            hits,
-            query,
-            include_keys=include_keys,
-            include_values=include_values,
-            include_metadata=include_metadata,
-            include_components=include_components,
-            mode=mode,
-        )
-
-    def show_results(
+    def _show_results(
         self,
         hits: list[SearchHit],
         query: str,
@@ -301,7 +597,18 @@ class ContextSearchPanel(QWidget):
     def _item_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         hit = item.data(0, HIT_ROLE)
         if isinstance(hit, SearchHit):
-            self.hit_selected.emit(hit)
+            self._navigate_to_hit(hit, activate=True)
+
+    def _item_highlighted(
+        self,
+        item: QTreeWidgetItem | None,
+        _previous: QTreeWidgetItem | None,
+    ) -> None:
+        if item is None:
+            return
+        hit = item.data(0, HIT_ROLE)
+        if isinstance(hit, SearchHit):
+            self._navigate_to_hit(hit, activate=False)
 
     def _activate_current_result(self) -> None:
         item = self.results.currentItem()
@@ -503,3 +810,12 @@ def _hit_field_path(hit: SearchHit) -> str:
     for segment in hit.value_path:
         result += f"[{segment}]" if isinstance(segment, int) else f"/{segment}"
     return result
+
+
+def _coordinator_field_path(hit: SearchHit) -> tuple[str | int, ...] | None:
+    """Translate the index's section-relative path to a context-relative path."""
+    if hit.section is None:
+        return None
+    if hit.section == "metadata":
+        return ("meta", *hit.value_path)
+    return hit.value_path

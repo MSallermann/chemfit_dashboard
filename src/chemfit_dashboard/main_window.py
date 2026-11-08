@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from chemfit_dashboard.collection_plot import CollectionPlotPanel
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
+from chemfit_dashboard.context_search import ContextSearchPanel
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
 from chemfit_dashboard.extraction import (
@@ -35,6 +37,7 @@ from chemfit_dashboard.extraction import (
 from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.inspector import Inspector
+from chemfit_dashboard.search_core import SearchHit
 from chemfit_dashboard.source import ContextSource, JsonFileSource
 from chemfit_dashboard.ui_components import DetachablePanelController
 
@@ -56,6 +59,7 @@ class MainWindow(QMainWindow):
             source = JsonFileSource()
 
         self.coordinator = DashboardCoordinator(source=source)
+        self._tab_before_search: QWidget | None = None
 
         # some basic settings
         self.setAcceptDrops(True)
@@ -131,6 +135,14 @@ class MainWindow(QMainWindow):
         self.data_flow_panel = DataFlowPanel(coordinator=self.coordinator, parent=self)
 
         #########################
+        # Context search
+        #########################
+
+        self.search_panel = ContextSearchPanel(
+            coordinator=self.coordinator, parent=self
+        )
+
+        #########################
         # Collection plot
         #########################
 
@@ -162,6 +174,7 @@ class MainWindow(QMainWindow):
         self.center_tabs = QTabWidget()
         self.center_tabs.addTab(self.context_tree_panel, "Context Hierarchy")
         data_flow_tab_index = self.center_tabs.addTab(self.data_flow_panel, "Data Flow")
+        self.center_tabs.addTab(self.search_panel, "Context Search")
         self.center_tabs.addTab(self.extraction_panel, "Data Extraction")
         self.center_tabs.addTab(self.collection_plot, "Collection Plot")
         self._data_flow_detachment = DetachablePanelController(
@@ -201,7 +214,14 @@ class MainWindow(QMainWindow):
 
     def build_menu(self): ...
 
-    def build_navigation_shortcuts(self): ...
+    def build_navigation_shortcuts(self) -> None:
+        """Install application-level search navigation shortcuts."""
+        self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self.find_shortcut.activated.connect(self.focus_context_search)
+
+        self.clear_search_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.clear_search_shortcut.setEnabled(False)
+        self.clear_search_shortcut.activated.connect(self.clear_context_search)
 
     def connect_signals(self) -> None:
         """Connect requests between the application's feature panels."""
@@ -217,11 +237,48 @@ class MainWindow(QMainWindow):
 
         self.center_tabs.currentChanged.connect(self._center_tab_changed)
         self.data_flow_panel.expand_requested.connect(self._data_flow_detachment.toggle)
+        self.search_panel.copy_completed.connect(self.statusBar().showMessage)
+        self.search_panel.hit_previewed.connect(self._preview_search_hit)
+        self.search_panel.hit_selected.connect(self._show_search_hit)
 
     def _center_tab_changed(self, index: int) -> None:
-        """Start the deferred graph render when its workspace tab is opened."""
-        if self.center_tabs.widget(index) is self.data_flow_panel:
+        """Update behavior associated with the active workspace tab."""
+        current = self.center_tabs.widget(index)
+        self.clear_search_shortcut.setEnabled(current is self.search_panel)
+        if current is self.data_flow_panel:
             self.data_flow_panel.ensure_rendered()
+
+    def focus_context_search(self) -> None:
+        """Open Context Search and focus its query editor."""
+        current = self.center_tabs.currentWidget()
+        if current is not self.search_panel:
+            self._tab_before_search = current
+            self.center_tabs.setCurrentWidget(self.search_panel)
+        self.search_panel.focus_query()
+
+    def clear_context_search(self) -> None:
+        """Clear Search and return to the workspace active before Find."""
+        self.search_panel.clear_query()
+        previous = self._tab_before_search
+        self._tab_before_search = None
+        if previous is not None and self.center_tabs.indexOf(previous) >= 0:
+            self.center_tabs.setCurrentWidget(previous)
+
+    def _show_search_hit(self, hit: SearchHit) -> None:
+        """Reveal a coordinator-selected hit in the hierarchy and Inspector."""
+        self._tab_before_search = None
+        self.center_tabs.setCurrentWidget(self.context_tree_panel)
+        self._preview_search_hit(hit)
+
+    def _preview_search_hit(self, hit: SearchHit) -> None:
+        """Focus a highlighted result in the Inspector without leaving Search."""
+        if hit.section is not None:
+            self.inspector.focus_value(hit.section, hit.value_path)
+
+    def closeEvent(self, event) -> None:  # noqa: N802, ANN001
+        """Release persistent search workers before the window is destroyed."""
+        self.search_panel.shutdown()
+        super().closeEvent(event)
 
     def plot_field(self, selector: FieldSelector) -> None:
         """Plot the selected field and switch to the plot tab."""
