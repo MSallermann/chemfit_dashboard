@@ -332,6 +332,15 @@ class CollectionPlotPanel(QWidget):
         self.status.setText(f"Loading values from {count:,} contexts…")
         self._set_empty_chart("Values across context collection")
 
+    def add_series(self, selector: FieldSelector) -> None:
+        """Add a field to the existing plot."""
+        selectors = tuple(series.selector for series in self._data)
+
+        if selector in selectors:
+            return
+
+        self.build_series((*selectors, selector))
+
     def build_series(
         self,
         selectors: Sequence[FieldSelector],
