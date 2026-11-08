@@ -298,11 +298,12 @@ class EvaluationPanel(QWidget):
 
         self._focus_selected_record()
 
-    def on_selected_record_changed(self):
+    def on_selected_record_changed(self) -> None:
         selected_document = self.coordinator.selected_document
+
         if selected_document is not None:
-            path = selected_document.path
-            self.evaluation_path.setText(str(path))
+            self.evaluation_path.setText(str(selected_document.path))
+            self._focus_selected_record()
         else:
             self.evaluation_path.clear()
 

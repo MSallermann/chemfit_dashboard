@@ -66,6 +66,7 @@ from chemfit_dashboard.chart_style import (
     finish_cartesian_chart,
     series_color,
 )
+from chemfit_dashboard.context_document import ContextDocument
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.extraction import FieldSelector, extract_fields
 from chemfit_dashboard.icons import make_icon_only, set_themed_icon
@@ -174,8 +175,6 @@ class CollectionPlotPanel(QWidget):
 
     context_selected = Signal(str)
     point_selected = Signal(str, object)
-    remove_series_requested = Signal(object)
-    clear_series_requested = Signal()
     expand_requested = Signal()
     status_message = Signal(str)
 
@@ -218,9 +217,7 @@ class CollectionPlotPanel(QWidget):
             self.clear_button, "trash", "Clear every plotted series", role="danger"
         )
         self.clear_button.setEnabled(False)
-        self.clear_button.clicked.connect(
-            lambda _checked=False: self.clear_series_requested.emit()
-        )
+        self.clear_button.clicked.connect(lambda _checked=False: self.clear())
         series_controls.addWidget(self.clear_button)
         series_controls.addStretch()
         self.export_button = QToolButton()
@@ -320,6 +317,10 @@ class CollectionPlotPanel(QWidget):
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
 
+        self._pending_point_selection = None
+        self.point_selected.connect(self._select_point)
+        self.coordinator.selected_record_changed.connect(self._on_record_changed)
+
     def show_loading(
         self, selectors: FieldSelector | tuple[FieldSelector, ...], count: int
     ) -> None:
@@ -331,6 +332,24 @@ class CollectionPlotPanel(QWidget):
         self.selection_label.setText(f"Currently plotting: {description}")
         self.status.setText(f"Loading values from {count:,} contexts…")
         self._set_empty_chart("Values across context collection")
+
+    def remove_series(self, selector: FieldSelector) -> None:
+        """Remove a series from the current plot."""
+        remaining = tuple(
+            series for series in self._data if series.selector != selector
+        )
+
+        self.coordinator.task_runner.invalidate("collection_plot")
+
+        if remaining:
+            self.set_series_collection(remaining)
+        else:
+            self.clear()
+
+    def clear_plot(self) -> None:
+        """Clear the plot and invalidate pending extraction."""
+        self.coordinator.task_runner.invalidate("collection_plot")
+        self.clear()
 
     def add_series(self, selector: FieldSelector) -> None:
         """Add a field to the existing plot."""
@@ -788,7 +807,7 @@ class CollectionPlotPanel(QWidget):
         )
         remove.clicked.connect(
             lambda _checked=False, selector=series.selector: (
-                self.remove_series_requested.emit(selector)
+                self.remove_series(selector)
             )
         )
         return row
@@ -809,6 +828,48 @@ class CollectionPlotPanel(QWidget):
 
     def _copy_current_series_path(self) -> None:
         self._copy_series_path(self.series_list.currentRow())
+
+    def _select_point(self, record_id: str, selector: FieldSelector) -> None:
+        record = next(
+            (ref for ref in self.coordinator.collection if ref.id == record_id),
+            None,
+        )
+        if record is None:
+            return
+
+        self._pending_point_selection = (record_id, selector)
+
+        document = self.coordinator.selected_document
+
+        if document is not None and document.record.id == record_id:
+            self._on_record_changed(document)
+        else:
+            self.coordinator.select_record(record)
+
+    def _on_record_changed(self, document: ContextDocument) -> None:
+        """Synchronize the selection marker and finish pending point navigation."""
+
+        self.select_record(document.record.id if document is not None else None)
+
+        pending = self._pending_point_selection
+        if pending is None:
+            return
+
+        self._pending_point_selection = None
+
+        if document is None:
+            return
+
+        record_id, selector = pending
+
+        if document.record.id != record_id:
+            return
+
+        if not document.has_path(selector.node_path):
+            return
+
+        self.coordinator.select_context(selector.node_path)
+        self.coordinator.select_field(selector.value_path)
 
     def _copy_series_path(self, row: int) -> None:
         if not 0 <= row < len(self._data):
