@@ -63,7 +63,7 @@ class FieldSelector:
     value_path: JsonPath = ()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class OutputDescriptor:
     """A reusable output description for extractions."""
 
@@ -124,7 +124,7 @@ class ExtractionConfig:
             "include_identifiers": self.include_identifiers,
             "include_status_columns": self.include_status_columns,
             "fields": [
-                _field_to_dict(selector, output) for selector, output in self.fields
+                field_to_dict(selector, output) for selector, output in self.fields
             ],
         }
 
@@ -546,7 +546,7 @@ def _csv_value(value: Any, status: ExtractionStatus) -> str | int | float | bool
     return value
 
 
-def _field_to_dict(
+def field_to_dict(
     selector: FieldSelector,
     output: OutputDescriptor,
 ) -> dict[str, Any]:

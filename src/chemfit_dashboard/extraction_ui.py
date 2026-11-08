@@ -12,7 +12,8 @@ from __future__ import annotations
 import csv
 import io
 import json
-from dataclasses import dataclass, replace
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -54,13 +55,16 @@ from chemfit_dashboard.extraction import (
     ExtractionValue,
     FieldSelector,
     JsonPath,
+    OutputDescriptor,
     column_paths_for_value,
+    field_to_dict,
     flattened_column_name,
     load_config,
     save_config,
 )
 from chemfit_dashboard.icons import make_icon_only, set_themed_icon
 from chemfit_dashboard.ui_components import ActionRow, muted_label
+from chemfit_dashboard.util import format_combined_path
 
 PREVIEW_LIMIT = 200
 _ACTIONS_COLUMN_MIN_WIDTH = 320
@@ -170,12 +174,12 @@ class ExtractionPreviewModel(QAbstractTableModel):
         self._rows: tuple[ExtractionRow, ...] = ()
 
     def set_data(
-        self, selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
+        self, outputs: tuple[OutputDescriptor, ...], rows: tuple[ExtractionRow, ...]
     ) -> None:
         """Replace preview rows and derive visible flattened columns."""
         self.beginResetModel()
         self._rows = rows[:PREVIEW_LIMIT]
-        self._columns = _preview_columns(selectors, self._rows)
+        self._columns = _preview_columns(outputs, self._rows)
         self.endResetModel()
 
     def rowCount(  # noqa: N802
@@ -312,6 +316,13 @@ class ExtractionPreviewModel(QAbstractTableModel):
         extracted = row.values[column.selector_index]
         if column.nested_path is None:
             return extracted
+
+        if extracted.status not in (
+            ExtractionStatus.AVAILABLE,
+            ExtractionStatus.SERIALIZED_EXCEPTION,
+        ):
+            return extracted
+
         nested = _nested_preview_value(extracted.value, column.nested_path)
         return ExtractionValue(
             None if nested is _PREVIEW_MISSING else nested,
@@ -325,11 +336,13 @@ class ExtractionPreviewModel(QAbstractTableModel):
 
 class DataExtractionPanel(QWidget):
     """
-    Selection editor, lazy preview, configuration, and export workspace.
+    Widget for configuring and previewing data extraction.
 
-    The panel owns editable selector/options state and a bounded preview model.
-    It emits immutable configurations and sort/export requests; MainWindow owns
-    collection traversal and background-task lifetimes.
+    Manages field selections and their output settings, displays a bounded
+    preview of extracted values, and provides configuration and export actions.
+
+    Emits signals for extraction, sorting, and navigation requests. The parent
+    application handles evaluation traversal and background processing.
     """
 
     selectors_changed = Signal(object)
@@ -345,24 +358,16 @@ class DataExtractionPanel(QWidget):
     ):
         """Initialize extraction selection, preview, and export controls."""
         super().__init__(parent)
-        self._selectors: list[FieldSelector] = []
+        self._fields: list[tuple[FieldSelector, OutputDescriptor]] = []
         self._include_identifiers = True
         self._include_status_columns = True
-        self._clean_config = ExtractionConfig(())
         self._settings = settings
         layout = QVBoxLayout(self)
         heading = QHBoxLayout()
+
         self.title = QLabel("DATA EXTRACTION")
         self.title.setObjectName("sectionLabel")
         heading.addWidget(self.title)
-        self.dirty_indicator = QLabel("UNSAVED")
-        self.dirty_indicator.setObjectName("dirtyIndicator")
-        self.dirty_indicator.setToolTip(
-            "The current extraction configuration has not been saved to a file"
-        )
-        self.dirty_indicator.hide()
-        heading.addWidget(self.dirty_indicator)
-        heading.addStretch()
         self.status = muted_label("Add any inspector value or component to begin.")
         heading.addWidget(self.status)
         layout.addLayout(heading)
@@ -527,48 +532,68 @@ class DataExtractionPanel(QWidget):
         self._update_controls()
 
     @property
+    def fields(self) -> tuple[tuple[FieldSelector, OutputDescriptor], ...]:
+        """Return selectors in their visible configuration order."""
+        return tuple(self._fields)
+
+    @property
     def selectors(self) -> tuple[FieldSelector, ...]:
         """Return selectors in their visible configuration order."""
-        return tuple(self._selectors)
+        return tuple(selector for (selector, _output) in self._fields)
+
+    @property
+    def n_selectors(self) -> int:
+        return len(self._fields)
+
+    @property
+    def outputs(self) -> tuple[OutputDescriptor, ...]:
+        """Return output descriptors in their visible configuration order."""
+        return tuple(output for (_selector, output) in self._fields)
 
     @property
     def config(self) -> ExtractionConfig:
         """Build the complete configuration represented by the editor."""
         return ExtractionConfig(
-            self.selectors,
+            fields=deepcopy(tuple(self._fields)),
             include_identifiers=self._include_identifiers,
             include_status_columns=self._include_status_columns,
         )
 
-    def add_selector(self, selector: FieldSelector) -> None:
+    def add_selector(self, selector: FieldSelector, output: OutputDescriptor) -> None:
         """Append a selector with a unique export-column name."""
+
+        # so we dont modify the callers object
+        output = deepcopy(output)
+
         self._preview_state.pending_selection_column = None
-        existing = {item.column.casefold() for item in self._selectors}
-        base = selector.column.strip() or "value"
+        existing = {output.column.casefold() for output in self.outputs}
+        base = output.column.strip() or "value"
+
+        # if there is a naming conflict in the columns, we append a suffix
         column = base
         suffix = 2
         while column.casefold() in existing:
             column = f"{base}_{suffix}"
             suffix += 1
-        self._selectors.append(replace(selector, column=column))
-        self._rebuild_selection_table(len(self._selectors) - 1)
+        output.column = column
+        self._fields.append((selector, output))
+
+        self._rebuild_selection_table(self.n_selectors - 1)
         self._emit_changed()
 
-    def set_config(self, config: ExtractionConfig, *, mark_clean: bool = False) -> None:
+    def set_config(self, config: ExtractionConfig) -> None:
         """Replace editor state from a validated saved configuration."""
         self._preview_state.pending_selection_column = None
-        self._selectors = list(config.selectors)
+        self._fields = deepcopy(list(config.fields))
         self._include_identifiers = config.include_identifiers
         self._include_status_columns = config.include_status_columns
-        if mark_clean:
-            self._clean_config = config
-        self._rebuild_selection_table(0 if self._selectors else -1)
+        self._rebuild_selection_table(0 if self._fields else -1)
         self._emit_changed()
 
     def clear(self) -> None:
         """Remove all configured selectors and preview rows."""
         self._preview_state.pending_selection_column = None
-        self._selectors.clear()
+        self._fields.clear()
         self._rebuild_selection_table(-1)
         self.preview_model.set_data((), ())
         self._emit_changed()
@@ -579,7 +604,7 @@ class DataExtractionPanel(QWidget):
 
     def set_preview(self, rows: tuple[ExtractionRow, ...], total: int) -> None:
         """Install preview rows while retaining the collection's full count."""
-        self.preview_model.set_data(self.selectors, rows)
+        self.preview_model.set_data(self.outputs, rows)
         pending_column = self._preview_state.pending_selection_column
         self._preview_state.pending_selection_column = None
         if pending_column is not None and self.preview_model.columnCount() > 3:
@@ -618,15 +643,17 @@ class DataExtractionPanel(QWidget):
     def _rebuild_selection_table(self, selected_row: int) -> None:
         self.selections.blockSignals(True)
         self.selections.clearContents()
-        self.selections.setRowCount(len(self._selectors))
-        for row, selector in enumerate(self._selectors):
-            self.selections.setItem(row, 0, QTableWidgetItem(selector.column))
-            path_item = QTableWidgetItem(selector.path_label)
+        self.selections.setRowCount(len(self._fields))
+        for row, (selector, output) in enumerate(self.fields):
+            self.selections.setItem(row, 0, QTableWidgetItem(output.column))
+            path_item = QTableWidgetItem(
+                format_combined_path(selector.node_path, selector.value_path)
+            )
             path_item.setFlags(path_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.selections.setItem(row, 1, path_item)
-            self.selections.setCellWidget(row, 2, self._field_actions(row, selector))
+            self.selections.setCellWidget(row, 2, self._field_actions(row, output))
         self.selections.blockSignals(False)
-        if 0 <= selected_row < len(self._selectors):
+        if 0 <= selected_row < self.n_selectors:
             self.selections.setCurrentCell(selected_row, 0)
         self._resize_field_actions_column()
         self._update_controls()
@@ -648,13 +675,13 @@ class DataExtractionPanel(QWidget):
             header.resizeSection(2, required)
         self._automatic_actions_column_width = required
 
-    def _field_actions(self, row: int, selector: FieldSelector) -> ActionRow:
+    def _field_actions(self, row: int, output: OutputDescriptor) -> ActionRow:
         actions = ActionRow()
 
         move_up = actions.add_action(
             "moveUpAction",
             "↑",
-            f"Move {selector.column} up",
+            f"Move {output.column} up",
             compact=True,
             enabled=row > 0,
             icon_name="arrow_up",
@@ -667,9 +694,9 @@ class DataExtractionPanel(QWidget):
         move_down = actions.add_action(
             "moveDownAction",
             "↓",
-            f"Move {selector.column} down",
+            f"Move {output.column} down",
             compact=True,
-            enabled=row < len(self._selectors) - 1,
+            enabled=row < self.n_selectors - 1,
             icon_name="arrow_down",
             icon_only=True,
         )
@@ -680,7 +707,7 @@ class DataExtractionPanel(QWidget):
         rename = actions.add_action(
             "renameAction",
             "Rename",
-            f"Rename extraction column {selector.column}",
+            f"Rename extraction column {output.column}",
             icon_name="pencil",
             icon_only=True,
         )
@@ -691,31 +718,31 @@ class DataExtractionPanel(QWidget):
         flatten = actions.add_action(
             "flattenAction",
             "Flatten objects",
-            f"Recursively flatten nested dictionaries in {selector.column}",
+            f"Recursively flatten nested dictionaries in {output.column}",
             checkable=True,
         )
-        flatten.setChecked(selector.flatten)
+        flatten.setChecked(output.flatten)
         flatten.toggled.connect(
-            lambda checked, target=row: self._set_option(target, "flatten", checked)
+            lambda checked, target=row: self._set_flatten(target, checked)
         )
 
         expand_arrays = actions.add_action(
             "expandArraysAction",
             "Expand arrays",
-            f"Expand array values in {selector.column} into columns",
+            f"Expand array values in {output.column} into columns",
             checkable=True,
         )
-        expand_arrays.setChecked(selector.column_expansion_depth > 0)
+        expand_arrays.setChecked(output.array_expansion_depth > 0)
 
         array_depth = QSpinBox()
         array_depth.setObjectName("arrayExpansionDepth")
         array_depth.setRange(1, 8)
-        array_depth.setValue(max(1, selector.column_expansion_depth))
+        array_depth.setValue(max(1, output.array_expansion_depth))
         array_depth.setPrefix("Levels: ")
         depth_metrics = array_depth.fontMetrics()
         array_depth.setMinimumWidth(depth_metrics.horizontalAdvance("Levels: 8") + 40)
         array_depth.setToolTip(
-            f"Expand this many array levels in {selector.column} into columns; "
+            f"Expand this many array levels in {output.column} into columns; "
             "for shape [N, 3], choose 2 for scalar coordinate columns"
         )
         array_depth.setHidden(not expand_arrays.isChecked())
@@ -736,7 +763,7 @@ class DataExtractionPanel(QWidget):
         remove = actions.add_action(
             "removeAction",
             "\u00d7",
-            f"Remove {selector.column} from extraction",
+            f"Remove {output.column} from extraction",
             compact=True,
             icon_name="trash",
             icon_role="danger",
@@ -752,26 +779,17 @@ class DataExtractionPanel(QWidget):
         # column refer to different data, so its collection-sort marker is stale.
         self.clear_collection_sort()
         self._update_controls()
-        self._update_dirty_indicator()
-        self.selectors_changed.emit(self.selectors)
-
-    def _update_dirty_indicator(self) -> None:
-        self.dirty_indicator.setVisible(self.config != self._clean_config)
-
-    def _mark_config_clean(self) -> None:
-        self._clean_config = self.config
-        self._update_dirty_indicator()
+        self.selectors_changed.emit(self.config.fields)
 
     def _column_edited(self, item: QTableWidgetItem) -> None:
-        if item.column() != 0 or not (0 <= item.row() < len(self._selectors)):
+        if item.column() != 0 or not (0 <= item.row() < self.n_selectors):
             return
         column = item.text().strip()
         if not column:
             self._rebuild_selection_table(item.row())
             return
-        self._selectors[item.row()] = replace(
-            self._selectors[item.row()], column=column
-        )
+
+        self.outputs[item.row()].column = column
         self._emit_changed()
 
     def _edit_column_name(self, row: int) -> None:
@@ -791,22 +809,16 @@ class DataExtractionPanel(QWidget):
                 row, max(self.selections.rowHeight(row), minimum_height)
             )
 
-    def _set_option(self, row: int, option: str, checked: bool) -> None:
-        if 0 <= row < len(self._selectors):
-            selector = self._selectors[row]
-            if option == "flatten":
-                selector = replace(selector, flatten=checked)
-            self._selectors[row] = selector
+    def _set_flatten(self, row: int, checked: bool) -> None:
+        if 0 <= row < self.n_selectors:
+            output = self.outputs[row]
+            output.flatten = checked
             self._emit_changed()
 
     def _set_array_expansion_depth(self, row: int, depth: int) -> None:
-        if not 0 <= row < len(self._selectors):
+        if not 0 <= row < self.n_selectors:
             return
-        self._selectors[row] = replace(
-            self._selectors[row],
-            array_expansion_depth=depth,
-            expand_array=False,
-        )
+        self.outputs[row].array_expansion_depth = depth
         self._emit_changed()
 
     def _set_array_expansion_enabled(
@@ -820,9 +832,9 @@ class DataExtractionPanel(QWidget):
         self._remove_row(self.selections.currentRow())
 
     def _remove_row(self, row: int) -> None:
-        if 0 <= row < len(self._selectors):
-            del self._selectors[row]
-            self._rebuild_selection_table(min(row, len(self._selectors) - 1))
+        if 0 <= row < self.n_selectors:
+            del self._fields[row]
+            self._rebuild_selection_table(min(row, self.n_selectors - 1))
             self._emit_changed()
 
     def _remove_selected_rows(self) -> None:
@@ -836,9 +848,9 @@ class DataExtractionPanel(QWidget):
         if not rows:
             return
         for row in rows:
-            if 0 <= row < len(self._selectors):
-                del self._selectors[row]
-        self._rebuild_selection_table(min(rows[-1], len(self._selectors) - 1))
+            if 0 <= row < self.n_selectors:
+                del self._fields[row]
+        self._rebuild_selection_table(min(rows[-1], self.n_selectors - 1))
         self._emit_changed()
 
     def _move(self, offset: int) -> None:
@@ -846,20 +858,20 @@ class DataExtractionPanel(QWidget):
 
     def _move_row(self, row: int, offset: int) -> None:
         target = row + offset
-        if 0 <= row < len(self._selectors) and 0 <= target < len(self._selectors):
-            self._selectors[row], self._selectors[target] = (
-                self._selectors[target],
-                self._selectors[row],
+        if 0 <= row < self.n_selectors and 0 <= target < self.n_selectors:
+            self._fields[row], self._fields[target] = (
+                self._fields[target],
+                self._fields[row],
             )
             self._rebuild_selection_table(target)
             self._emit_changed()
 
     def _update_controls(self) -> None:
-        self.clear_button.setEnabled(bool(self._selectors))
-        self.save_button.setEnabled(bool(self._selectors))
-        self.copy_config_button.setEnabled(bool(self._selectors))
-        self.csv_button.setEnabled(bool(self._selectors))
-        self.jsonl_button.setEnabled(bool(self._selectors))
+        self.clear_button.setEnabled(bool(self._fields))
+        self.save_button.setEnabled(bool(self._fields))
+        self.copy_config_button.setEnabled(bool(self._fields))
+        self.csv_button.setEnabled(bool(self._fields))
+        self.jsonl_button.setEnabled(bool(self._fields))
 
     def copy_configuration(self) -> None:
         """Copy the complete CLI-compatible extraction configuration."""
@@ -884,7 +896,7 @@ class DataExtractionPanel(QWidget):
 
     def _show_selection_context_menu(self, position) -> None:  # noqa: ANN001
         item = self.selections.itemAt(position)
-        if item is None or not 0 <= item.row() < len(self._selectors):
+        if item is None or not 0 <= item.row() < self.n_selectors:
             return
         row = item.row()
         self.selections.setCurrentCell(row, item.column())
@@ -896,12 +908,13 @@ class DataExtractionPanel(QWidget):
         if selected is None:
             return
         if selected is copy_column:
-            self._copy_text(
-                self._selectors[row].column, "Copied extraction column name"
-            )
+            self._copy_text(self.outputs[row].column, "Copied extraction column name")
         elif selected is copy_path:
             self._copy_text(
-                self._selectors[row].path_label, "Copied extraction field path"
+                format_combined_path(
+                    self.selectors[row].node_path, self.selectors[row].value_path
+                ),
+                "Copied extraction field path",
             )
         elif selected is copy_selector:
             self._copy_selector_json(row)
@@ -910,11 +923,19 @@ class DataExtractionPanel(QWidget):
         self._copy_selector_json(self.selections.currentRow())
 
     def _copy_selector_json(self, row: int) -> None:
-        if not 0 <= row < len(self._selectors):
+        # This is a context-menu action that copies the configuration of one extraction field to the clipboard as JSON.
+
+        if not 0 <= row < len(self._fields):
             return
-        selector = ExtractionConfig((self._selectors[row],)).to_dict()["selectors"][0]
+
+        selector, output = self._fields[row]
+
         self._copy_text(
-            json.dumps(selector, indent=2, ensure_ascii=False),
+            json.dumps(
+                field_to_dict(selector, output),
+                indent=2,
+                ensure_ascii=False,
+            ),
             "Copied extraction field configuration as JSON",
         )
 
@@ -1088,35 +1109,35 @@ class DataExtractionPanel(QWidget):
                 excluded.setdefault(column.selector_index, set()).add(
                     column.nested_path
                 )
-        updated: list[FieldSelector] = []
-        for index, selector in enumerate(self._selectors):
+
+        updated_fields: list[tuple[FieldSelector, OutputDescriptor]] = []
+
+        for index, (selector, output) in enumerate(self._fields):
             if index in remove_selectors:
                 continue
+
             paths = excluded.get(index)
             if paths:
-                names = tuple(
+                output.excluded_paths = tuple(
+                    dict.fromkeys(
+                        (
+                            *output.excluded_paths,
+                            *sorted(paths, key=lambda path: tuple(map(str, path))),
+                        )
+                    )
+                )
+                output.flattened_column_names = tuple(
                     (path, name)
-                    for path, name in selector.flattened_column_names
+                    for path, name in output.flattened_column_names
                     if path not in paths
                 )
-                updated_selector = replace(
-                    selector,
-                    excluded_paths=tuple(
-                        dict.fromkeys(
-                            (
-                                *selector.excluded_paths,
-                                *sorted(paths, key=lambda path: tuple(map(str, path))),
-                            )
-                        )
-                    ),
-                    flattened_column_names=names,
-                )
-            else:
-                updated_selector = selector
-            updated.append(updated_selector)
-        self._selectors = updated
+
+            updated_fields.append((selector, output))
+
+        self._fields = updated_fields
+
         self._rebuild_selection_table(
-            min(self.selections.currentRow(), len(self._selectors) - 1)
+            min(self.selections.currentRow(), len(self._fields) - 1)
         )
         self._emit_changed()
 
@@ -1229,7 +1250,7 @@ class DataExtractionPanel(QWidget):
         header.resizeSection(column, max(header.sectionSize(column), 150))
         self.sort_requested.emit(
             (
-                self._selectors[preview_column.selector_index],
+                self.selectors[preview_column.selector_index],
                 preview_column.nested_path,
             ),
             descending,
@@ -1239,25 +1260,26 @@ class DataExtractionPanel(QWidget):
         path = column.nested_path
         if path is None:
             return
-        selector = self._selectors[column.selector_index]
+        selector = self.outputs[column.selector_index]
         names = tuple(
             (item_path, name)
             for item_path, name in selector.flattened_column_names
             if item_path != path
         )
-        self._selectors[column.selector_index] = replace(
-            selector,
-            excluded_paths=(*selector.excluded_paths, path),
-            flattened_column_names=names,
+        self.outputs[column.selector_index].excluded_paths = (
+            *selector.excluded_paths,
+            path,
         )
+        self.outputs[column.selector_index].flattened_column_names = names
+
         self._emit_changed()
 
     def _rename_flattened_column(self, column: _PreviewColumn) -> None:
         path = column.nested_path
         if path is None:
             return
-        selector = self._selectors[column.selector_index]
-        current = flattened_column_name(selector, path)
+        output = self.outputs[column.selector_index]
+        current = flattened_column_name(output, path)
         name, accepted = QInputDialog.getText(
             self,
             "Rename flattened column",
@@ -1267,12 +1289,10 @@ class DataExtractionPanel(QWidget):
         name = name.strip()
         if not accepted or not name:
             return
-        names = dict(selector.flattened_column_names)
+        names = dict(output.flattened_column_names)
         names[path] = name
-        self._selectors[column.selector_index] = replace(
-            selector,
-            flattened_column_names=tuple(names.items()),
-        )
+
+        output.flattened_column_names = tuple(names.items())
         self._emit_changed()
 
     def _copy_preview_cell(self, index: QModelIndex) -> None:
@@ -1369,7 +1389,6 @@ class DataExtractionPanel(QWidget):
                 self.show_error(f"Could not save configuration: {error}")
                 return
             self._remember_directory(CONFIG_DIRECTORY_SETTING, path)
-            self._mark_config_clean()
             self.status_message.emit(f"Saved extraction configuration to {path}")
 
     def _load(self) -> None:
@@ -1381,7 +1400,7 @@ class DataExtractionPanel(QWidget):
         )
         if path:
             try:
-                self.set_config(load_config(path), mark_clean=True)
+                self.set_config(load_config(path))
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 self.show_error(f"Could not load configuration: {error}")
                 return
@@ -1451,33 +1470,33 @@ def _csv_text(rows: tuple[tuple[str, ...], ...] | list[tuple[str, ...]]) -> str:
 
 
 def _preview_columns(
-    selectors: tuple[FieldSelector, ...], rows: tuple[ExtractionRow, ...]
+    outputs: tuple[OutputDescriptor, ...], rows: tuple[ExtractionRow, ...]
 ) -> tuple[_PreviewColumn, ...]:
     result: list[_PreviewColumn] = []
-    for selector_index, selector in enumerate(selectors):
+    for selector_index, output in enumerate(outputs):
         paths: set[JsonPath] = set()
-        if selector.flatten or selector.column_expansion_depth:
+        if output.flatten or output.array_expansion_depth:
             for row in rows:
                 value = row.values[selector_index].value
                 paths.update(
                     column_paths_for_value(
                         value,
-                        flatten_mappings=selector.flatten,
-                        array_depth=selector.column_expansion_depth,
+                        flatten_mappings=output.flatten,
+                        array_depth=output.array_expansion_depth,
                     )
                 )
-        if selector.flatten or selector.column_expansion_depth:
+        if output.flatten or output.array_expansion_depth:
             result.extend(
                 _PreviewColumn(
                     selector_index,
                     path,
-                    flattened_column_name(selector, path),
+                    flattened_column_name(output, path),
                 )
                 for path in sorted(paths, key=lambda item: tuple(map(str, item)))
-                if path not in selector.excluded_paths
+                if path not in output.excluded_paths
             )
         else:
-            result.append(_PreviewColumn(selector_index, None, selector.column))
+            result.append(_PreviewColumn(selector_index, None, output.column))
     return tuple(result)
 
 

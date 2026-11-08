@@ -40,6 +40,7 @@ from chemfit_dashboard.extraction import (
 from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import JsonValueModel
 from chemfit_dashboard.ui_components import muted_label
+from chemfit_dashboard.util import format_json_path, format_json_value
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -114,7 +115,7 @@ class JsonView(QTreeView):
         text = (
             json.dumps(value, ensure_ascii=False, indent=2)
             if as_json
-            else _clipboard_value(value)
+            else format_json_value(value)
         )
         QApplication.clipboard().setText(text)
         self.copy_completed.emit(
@@ -127,7 +128,7 @@ class JsonView(QTreeView):
         if not index.isValid():
             return
         path = self._json_model.value_path(index)
-        text = _format_value_path((*self._prefix, *path))
+        text = format_json_path((*self._prefix, *path))
         QApplication.clipboard().setText(text)
         self.copy_completed.emit("Copied inspector field path")
 
@@ -454,7 +455,7 @@ class Inspector(QWidget):
         has_field = selector is not None
         is_numeric = extracted is not None and extracted.is_numeric
 
-        label = _format_value_path(path) if path is not None else ""
+        label = format_json_path(path) if path is not None else ""
         selected = f"\nSelected: {label}" if has_field else ""
 
         # Extraction controls
@@ -629,27 +630,3 @@ def _format_dependencies(value: Any) -> str:
     if not isinstance(value, list):
         return "—"
     return ", ".join(map(str, value)) if value else "none"
-
-
-def _format_value_path(path: tuple[str | int, ...]) -> str:
-    """Render a nested JSON field path, e.g. ``output.values[2]``."""
-    result = ""
-    for segment in path:
-        if isinstance(segment, int):
-            result += f"[{segment}]"
-        else:
-            result += f".{segment}" if result else segment
-    return result or "value"
-
-
-def _clipboard_value(value: Any) -> str:
-    """Render a JSON-compatible value for ordinary clipboard copying."""
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return str(value)

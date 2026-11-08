@@ -23,7 +23,7 @@ from chemfit_dashboard.extraction import (
 )
 from chemfit_dashboard.ordered_record_collection import OrderedRecordCollection
 from chemfit_dashboard.source import ContextSource
-from chemfit_dashboard.workers import GenerationTracker, TaskRunner
+from chemfit_dashboard.workers import TaskRunner
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,14 @@ class DashboardCoordinator(QObject):
         self._preferred_field_path: JsonPath | None = None
 
         self._task_runner = TaskRunner()
-        self._generations = GenerationTracker()
+
+    @property
+    def source(self) -> ContextSource:
+        return self._source
+
+    @property
+    def task_runner(self) -> TaskRunner:
+        return self._task_runner
 
     @property
     def collection(self) -> OrderedRecordCollection:
