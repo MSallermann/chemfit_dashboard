@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.collection_plot import CollectionPlotPanel
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
@@ -122,6 +123,14 @@ class MainWindow(QMainWindow):
         )
 
         #########################
+        # Collection plot
+        #########################
+
+        self.collection_plot = CollectionPlotPanel(
+            coordinator=self.coordinator, parent=self
+        )
+
+        #########################
         # Context inspector
         #########################
 
@@ -145,6 +154,7 @@ class MainWindow(QMainWindow):
         self.center_tabs = QTabWidget()
         self.center_tabs.addTab(self.context_tree_panel, "Context Hierarchy")
         self.center_tabs.addTab(self.extraction_panel, "Data Extraction")
+        self.center_tabs.addTab(self.collection_plot, "Collection Plot")
 
         #########################
         # Main workspace

@@ -24,7 +24,7 @@ from chemfit_dashboard.context_document import (
     NodePath,
 )
 from chemfit_dashboard.traversal import CancellationToken, iter_collection
-from chemfit_dashboard.util import format_json_path
+from chemfit_dashboard.util import format_combined_path, format_json_path
 
 get_nested = pydictnest.get_nested
 _pydictnest_get_path = getattr(pydictnest, "get_path", None)
@@ -62,6 +62,9 @@ class FieldSelector:
     node_path: NodePath
     # Describes where in the context dict the required field is
     value_path: JsonPath = ()
+
+    def format(self) -> str:
+        return format_combined_path(self.node_path, self.value_path)
 
 
 @dataclass(slots=True)

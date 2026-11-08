@@ -8,16 +8,11 @@ histogram, and statistics modes and emits record-selection requests.
 
 from __future__ import annotations
 
-import csv
-import io
-import json
 import math
-import re
 import statistics
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCharts import (
     QBarCategoryAxis,
@@ -47,17 +42,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QMessageBox,
     QPushButton,
     QRubberBand,
     QSizePolicy,
@@ -66,7 +56,6 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QToolButton,
     QToolTip,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -76,17 +65,9 @@ from chemfit_dashboard.chart_style import (
     finish_cartesian_chart,
     series_color,
 )
-from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.coordinator import DashboardCoordinator
+from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.icons import make_icon_only, set_themed_icon
-from chemfit_dashboard.semantic import (
-    ComponentResolution,
-    NodeTrail,
-    NodeTrailSegment,
-    component_trail_for_path,
-    resolve_component_path,
-    resolve_component_selection,
-)
-from chemfit_dashboard.source import ContextDocument, ContextSourceError
 from chemfit_dashboard.ui_components import (
     ActionRow,
     expand_button,
@@ -95,45 +76,12 @@ from chemfit_dashboard.ui_components import (
     panel_layout,
     set_expand_button_state,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
-
-    from chemfit_dashboard.source import RecordRef
+from chemfit_dashboard.util import format_combined_path
 
 JsonPath = tuple[str | int, ...]
 RASTER_EXPORT_DPI = 300
 SCREEN_DPI = 96
 MAX_RENDERED_POINTS_PER_SERIES = 4_000
-
-__all__ = [
-    "CollectionPlotPanel",
-    "CollectionSeries",
-    "ComponentResolution",
-    "NodeTrail",
-    "NodeTrailSegment",
-    "NumberSelector",
-    "SeriesPoint",
-    "build_collection_series",
-    "build_collection_series_multi",
-    "component_trail_for_path",
-    "ordered_records",
-    "resolve_component_path",
-    "resolve_component_selection",
-    "selector_for_document",
-]
-
-
-@dataclass(frozen=True, slots=True)
-class NumberSelector:
-    """Location of a numeric leaf within one context node."""
-
-    node_path: NodePath
-    section: str
-    value_path: JsonPath
-    label: str
-    value_label: str = ""
-    node_trail: NodeTrail | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +98,7 @@ class SeriesPoint:
 class CollectionSeries:
     """Resolved values and missing-value context for one numeric selector."""
 
-    selector: NumberSelector
+    selector: FieldSelector
     labels: tuple[str, ...]
     points: tuple[SeriesPoint, ...]
     record_ids: tuple[str, ...] = ()
@@ -186,7 +134,7 @@ class _RenderedPointLookup:
     labels_by_coordinate: dict[tuple[int, float], list[str]] = field(
         default_factory=lambda: defaultdict(list)
     )
-    selectors_by_coordinate: dict[tuple[int, float], list[NumberSelector]] = field(
+    selectors_by_coordinate: dict[tuple[int, float], list[FieldSelector]] = field(
         default_factory=lambda: defaultdict(list)
     )
 
@@ -200,82 +148,15 @@ class _RenderedPointLookup:
         self,
         point: SeriesPoint,
         rendered_point: QPointF,
-        selector: NumberSelector,
+        selector: FieldSelector,
     ) -> None:
         """Index one point using the coordinate identity used by Qt Charts."""
         coordinate = (point.index, point.value)
         self.points_by_index[point.index].append(rendered_point)
-        self.labels_by_coordinate[coordinate].append(selector.label)
+        self.labels_by_coordinate[coordinate].append(
+            format_combined_path(selector.node_path, selector.value_path)
+        )
         self.selectors_by_coordinate[coordinate].append(selector)
-
-
-def ordered_records(records: Iterable[RecordRef]) -> list[RecordRef]:
-    """Sort ChemFit collection records by step and context number."""
-    return sorted(records, key=_record_sort_key)
-
-
-def selector_for_document(
-    document: ContextDocument, selector: NumberSelector
-) -> NumberSelector:
-    """Attach a semantic component trail from the selected document."""
-    trail = component_trail_for_path(document, selector.node_path)
-    component_label = (
-        " / ".join(segment.name for segment in trail) if trail else "Evaluation root"
-    )
-    value_label = selector.value_label or selector.label
-    return replace(
-        selector,
-        label=f"{component_label} / {value_label}",
-        value_label=value_label,
-        node_trail=trail,
-    )
-
-
-def build_collection_series(
-    selector: NumberSelector,
-    records_and_documents: Iterable[tuple[RecordRef, ContextDocument | None]],
-) -> CollectionSeries:
-    """Resolve one selected numeric leaf across a context collection."""
-    labels: list[str] = []
-    record_ids: list[str] = []
-    points: list[SeriesPoint] = []
-    for index, (record, document) in enumerate(records_and_documents):
-        labels.append(record.name)
-        record_ids.append(record.id)
-        if document is None:
-            continue
-        value = _selected_value(document, selector)
-        if _is_plottable_number(value):
-            points.append(SeriesPoint(index, record.name, float(value), record.id))
-    return CollectionSeries(selector, tuple(labels), tuple(points), tuple(record_ids))
-
-
-def build_collection_series_multi(
-    selectors: Iterable[NumberSelector],
-    records_and_documents: Iterable[tuple[RecordRef, ContextDocument | None]],
-) -> tuple[CollectionSeries, ...]:
-    """Resolve several plot series during one collection traversal."""
-    selected = tuple(selectors)
-    labels: list[str] = []
-    record_ids: list[str] = []
-    points: list[list[SeriesPoint]] = [[] for _selector in selected]
-    for index, (record, document) in enumerate(records_and_documents):
-        labels.append(record.name)
-        record_ids.append(record.id)
-        if document is None:
-            continue
-        for selector_index, selector in enumerate(selected):
-            value = _selected_value(document, selector)
-            if _is_plottable_number(value):
-                points[selector_index].append(
-                    SeriesPoint(index, record.name, float(value), record.id)
-                )
-    shared_labels = tuple(labels)
-    shared_ids = tuple(record_ids)
-    return tuple(
-        CollectionSeries(selector, shared_labels, tuple(series_points), shared_ids)
-        for selector, series_points in zip(selected, points, strict=True)
-    )
 
 
 class CollectionPlotPanel(QWidget):
@@ -294,9 +175,12 @@ class CollectionPlotPanel(QWidget):
     expand_requested = Signal()
     status_message = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
+    def __init__(  # noqa: PLR0915
+        self, *, coordinator: DashboardCoordinator, parent: QWidget | None = None
+    ):
         """Initialize an empty interactive collection chart."""
         super().__init__(parent)
+        self.coordinator = coordinator
         layout = panel_layout(self)
         self.selection_label = QLabel("Currently plotting: no value selected")
         self.selection_label.setObjectName("plotSelection")
@@ -344,8 +228,6 @@ class CollectionPlotPanel(QWidget):
         self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         set_themed_icon(self.export_button, "save")
         export_menu = QMenu(self.export_button)
-        export_csv = export_menu.addAction("Data as CSV…")
-        export_csv.triggered.connect(self._choose_csv_export)
         export_image = export_menu.addAction("Image…")
         export_image.triggered.connect(self._choose_image_export)
         self.export_button.setMenu(export_menu)
@@ -430,17 +312,17 @@ class CollectionPlotPanel(QWidget):
         self._selected_record_id: str | None = None
         self._selection_series: QScatterSeries | None = None
         self._point_lookup = _RenderedPointLookup()
-        self._hidden_selectors: set[NumberSelector] = set()
+        self._hidden_selectors: set[FieldSelector] = set()
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
 
     def show_loading(
-        self, selectors: NumberSelector | tuple[NumberSelector, ...], count: int
+        self, selectors: FieldSelector | tuple[FieldSelector, ...], count: int
     ) -> None:
         """Present a loading state without discarding the active selectors."""
-        selected = (selectors,) if isinstance(selectors, NumberSelector) else selectors
+        selected = (selectors,) if isinstance(selectors, FieldSelector) else selectors
         description = (
-            selected[0].label if len(selected) == 1 else f"{len(selected)} values"
+            selected[0].format() if len(selected) == 1 else f"{len(selected)} values"
         )
         self.selection_label.setText(f"Currently plotting: {description}")
         self.status.setText(f"Loading values from {count:,} contexts…")
@@ -480,7 +362,7 @@ class CollectionPlotPanel(QWidget):
         mode = self.plot_mode.currentData()
         self._apply_mode_controls(mode)
         self.selection_label.setText(
-            f"Currently plotting: {data.selector.label}"
+            f"Currently plotting: {data.selector.format()}"
             if len(data_collection) == 1
             else f"Currently plotting: {len(data_collection)} values"
         )
@@ -514,7 +396,7 @@ class CollectionPlotPanel(QWidget):
             rendered = _sample_points(visible, MAX_RENDERED_POINTS_PER_SERIES)
             color = series_color(self._scheme, data_index)
             markers = QScatterSeries()
-            markers.setName(series_data.selector.label)
+            markers.setName(series_data.selector.format())
             markers.setMarkerSize(9.0)
             markers.setColor(color)
             markers.setBorderColor(color.lighter(145))
@@ -545,13 +427,12 @@ class CollectionPlotPanel(QWidget):
                     contiguous = []
                 contiguous.append(point)
             _append_line(chart, lines, contiguous, color)
+            label = series_data.selector.format()
             markers.hovered.connect(
                 lambda point,
                 state,
                 marker_series=markers,
-                label=series_data.selector.label: self._point_hovered(
-                    marker_series, point, state, label
-                )
+                label=label: self._point_hovered(marker_series, point, state, label)
             )
             markers.clicked.connect(
                 lambda point, series_data=series_data: self._point_clicked(
@@ -572,7 +453,7 @@ class CollectionPlotPanel(QWidget):
         axis_label = (
             "Normalized value (0-1)"
             if self.normalize.isChecked()
-            else axis_data.selector.value_label or axis_data.selector.label
+            else axis_data.selector.format() or axis_data.selector.format()
         )
         if len(visible_collection) > 1 and not self.normalize.isChecked():
             axis_label = "Value (multiple fields)"
@@ -719,7 +600,7 @@ class CollectionPlotPanel(QWidget):
             series = presented.data
             values = [point.value for point in series.points]
             cells: tuple[str, ...] = (
-                series.selector.label,
+                series.selector.format(),
                 f"{len(values):,}",
                 f"{series.missing_count:,}",
                 f"{min(values):.8g}" if values else "—",
@@ -756,7 +637,7 @@ class CollectionPlotPanel(QWidget):
             for point in series.points:
                 index = min(bins - 1, max(0, int((point.value - minimum) / width)))
                 counts[index] += 1
-            bar_set = QBarSet(series.selector.label)
+            bar_set = QBarSet(series.selector.format())
             bar_values = (
                 [count / len(series.points) for count in counts]
                 if normalized and series.points
@@ -812,7 +693,7 @@ class CollectionPlotPanel(QWidget):
         swatch.setProperty("seriesIndex", index)
         self._set_swatch_color(swatch, index)
         row.add_widget(swatch)
-        visible = QCheckBox(series.selector.label)
+        visible = QCheckBox(series.selector.format())
         visible.setObjectName("seriesVisibility")
         visible.setChecked(series.selector not in self._hidden_selectors)
         visible.setToolTip("Show or hide this series without removing it")
@@ -828,7 +709,7 @@ class CollectionPlotPanel(QWidget):
         remove = row.add_action(
             "removeSeriesAction",
             "\u00d7",
-            f"Remove {series.selector.label} from the plot",
+            f"Remove {series.selector.format()} from the plot",
             compact=True,
             icon_name="trash",
             icon_role="danger",
@@ -851,15 +732,9 @@ class CollectionPlotPanel(QWidget):
         self.series_list.setCurrentRow(row)
         menu = QMenu(self.series_list)
         copy_path = menu.addAction("Copy series field path")
-        copy_config = menu.addAction("Copy series configuration as JSON")
-        copy_data = menu.addAction("Copy series data as CSV")
         selected = menu.exec(self.series_list.viewport().mapToGlobal(position))
         if selected is copy_path:
             self._copy_series_path(row)
-        elif selected is copy_config:
-            self._copy_series_config(row)
-        elif selected is copy_data:
-            self._copy_series_data(row)
 
     def _copy_current_series_path(self) -> None:
         self._copy_series_path(self.series_list.currentRow())
@@ -868,51 +743,15 @@ class CollectionPlotPanel(QWidget):
         if not 0 <= row < len(self._data):
             return
         self._copy_text(
-            _selector_path_label(self._data[row].selector),
+            self._data[row].selector.format(),
             "Copied plot series field path",
-        )
-
-    def _copy_series_config(self, row: int) -> None:
-        if not 0 <= row < len(self._data):
-            return
-        selector = self._data[row].selector
-        payload = {
-            "node_path": list(selector.node_path),
-            "node_trail": [asdict(segment) for segment in selector.node_trail]
-            if selector.node_trail is not None
-            else None,
-            "section": selector.section,
-            "value_path": list(selector.value_path),
-            "label": selector.label,
-            "value_label": selector.value_label,
-        }
-        self._copy_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            "Copied plot series configuration as JSON",
-        )
-
-    def _copy_series_data(self, row: int) -> None:
-        if not 0 <= row < len(self._data):
-            return
-        series = self._data[row]
-        values = {point.index: point.value for point in series.points}
-        stream = io.StringIO(newline="")
-        writer = csv.writer(stream, lineterminator="\n")
-        writer.writerow(("Index", "Filename", "Record ID", series.selector.label))
-        for index, label in enumerate(series.labels):
-            record_id = (
-                series.record_ids[index] if index < len(series.record_ids) else ""
-            )
-            writer.writerow((index, label, record_id, values.get(index, "")))
-        self._copy_text(
-            stream.getvalue().rstrip("\n"), "Copied plot series data as CSV"
         )
 
     def _copy_text(self, text: str, message: str) -> None:
         QApplication.clipboard().setText(text)
         self.status_message.emit(message)
 
-    def _set_series_visible(self, selector: NumberSelector, visible: bool) -> None:
+    def _set_series_visible(self, selector: FieldSelector, visible: bool) -> None:
         if visible:
             self._hidden_selectors.discard(selector)
         else:
@@ -951,42 +790,6 @@ class CollectionPlotPanel(QWidget):
         """Highlight the selected evaluation without rebuilding the chart."""
         self._selected_record_id = record_id
         self._update_selection_marker()
-
-    def csv_column_names(self) -> tuple[str, ...]:
-        """Return the default headers for the current wide CSV export."""
-        return (
-            "context_index",
-            "context",
-            "record_id",
-            *(series.selector.label for series in self._data),
-        )
-
-    def export_csv(
-        self, path: str | Path, column_names: tuple[str, ...] | None = None
-    ) -> None:
-        """Export the current plot as a wide, collection-ordered CSV table."""
-        if not self._data:
-            return
-        requested_headers = (
-            column_names if column_names is not None else self.csv_column_names()
-        )
-        headers = _validated_csv_column_names(requested_headers, 3 + len(self._data))
-        first = self._data[0]
-        values = [
-            {point.index: point.value for point in series.points}
-            for series in self._data
-        ]
-        with Path(path).open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.writer(stream)
-            writer.writerow(headers)
-            for index, label in enumerate(first.labels):
-                record_id = (
-                    first.record_ids[index] if index < len(first.record_ids) else ""
-                )
-                writer.writerow(
-                    [index, label, record_id]
-                    + [series_values.get(index, "") for series_values in values]
-                )
 
     def export_image(self, path: str | Path) -> None:
         """Render the current chart view to PNG or SVG based on its suffix."""
@@ -1045,55 +848,6 @@ class CollectionPlotPanel(QWidget):
             record_id = data.record_ids[index]
             self.context_selected.emit(record_id)
             self.point_selected.emit(record_id, data.selector)
-
-    def _choose_csv_export(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export collection plot data", "collection_plot.csv", "CSV (*.csv)"
-        )
-        if not path:
-            return
-        if not Path(path).suffix:
-            path += ".csv"
-        column_names = self._prompt_csv_column_names()
-        if column_names is not None:
-            self.export_csv(path, column_names)
-
-    def _prompt_csv_column_names(self) -> tuple[str, ...] | None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("CSV column names")
-        layout = QVBoxLayout(dialog)
-        explanation = muted_label(
-            "Rename the columns written to the wide CSV file. Names must be "
-            "non-empty and unique.",
-            word_wrap=True,
-        )
-        layout.addWidget(explanation)
-        form = QFormLayout()
-        defaults = self.csv_column_names()
-        descriptions = ["Context index", "Context filename", "Record ID"] + [
-            f"Series {index}: {series.selector.label}"
-            for index, series in enumerate(self._data, start=1)
-        ]
-        editors: list[QLineEdit] = []
-        for description, default in zip(descriptions, defaults, strict=True):
-            editor = QLineEdit(default)
-            editor.selectAll()
-            form.addRow(description, editor)
-            editors.append(editor)
-        layout.addLayout(form)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        while dialog.exec() == QDialog.DialogCode.Accepted:
-            names = tuple(editor.text().strip() for editor in editors)
-            try:
-                return _validated_csv_column_names(names, len(defaults))
-            except ValueError as exc:
-                QMessageBox.warning(dialog, "Invalid CSV column names", str(exc))
-        return None
 
     def set_color_scheme(self, scheme: ColorScheme) -> None:
         """Apply a scheme to chart elements painted outside Qt stylesheets."""
@@ -1219,6 +973,7 @@ class CoordinateChartView(QChartView):
     coordinate_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
+        """Initialize the coordinate chart view."""
         super().__init__(parent)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -1301,18 +1056,6 @@ class CoordinateChartView(QChartView):
         ).normalized()
 
 
-def _selector_path_label(selector: NumberSelector) -> str:
-    component = (
-        "Evaluation root"
-        if not selector.node_trail
-        else " / ".join(segment.name for segment in selector.node_trail)
-    )
-    value_path = ""
-    for segment in selector.value_path:
-        value_path += f"[{segment}]" if isinstance(segment, int) else f"/{segment}"
-    return f"{component} / {selector.section}{value_path}"
-
-
 def _sample_points(
     points: tuple[SeriesPoint, ...], maximum: int
 ) -> tuple[SeriesPoint, ...]:
@@ -1334,85 +1077,6 @@ def _sample_points(
         for index in removable[: len(indexes) - maximum]:
             indexes.remove(index)
     return tuple(points[index] for index in sorted(indexes))
-
-
-def _selected_value(document: ContextDocument, selector: NumberSelector) -> Any:
-    node_path = _resolve_node_path(document, selector)
-    if node_path is None:
-        return None
-    try:
-        details = document.details(node_path)
-    except ContextSourceError:
-        return None
-    section_value = {
-        "fields": details.fields,
-        "metadata": details.metadata,
-        "structure": details.structure,
-        "raw": details.raw,
-    }.get(selector.section)
-    value: Any = section_value
-    for segment in selector.value_path:
-        if isinstance(segment, str) and isinstance(value, dict):
-            if segment not in value:
-                return None
-            value = value[segment]
-        elif isinstance(segment, int) and isinstance(value, list):
-            if not 0 <= segment < len(value):
-                return None
-            value = value[segment]
-        else:
-            return None
-    return value
-
-
-def _resolve_node_path(
-    document: ContextDocument, selector: NumberSelector
-) -> NodePath | None:
-    if selector.node_trail is None:
-        try:
-            document.details(selector.node_path)
-        except ContextSourceError:
-            return None
-        return selector.node_path
-
-    return resolve_component_path(document, selector.node_path, selector.node_trail)
-
-
-def _is_plottable_number(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
-
-
-def _record_sort_key(record: RecordRef) -> tuple[str, float, float, str]:
-    match = re.fullmatch(r"step_(\d+)_ctx_(\d+)\.json", record.name)
-    if match is None:
-        return (str(record.path.parent).casefold(), math.inf, math.inf, record.name)
-    return (
-        str(record.path.parent).casefold(),
-        int(match.group(1)),
-        int(match.group(2)),
-        record.name,
-    )
-
-
-def _validated_csv_column_names(
-    names: tuple[str, ...], expected_count: int
-) -> tuple[str, ...]:
-    if len(names) != expected_count:
-        message = f"Expected {expected_count} column names, received {len(names)}."
-        raise ValueError(message)
-    cleaned = tuple(name.strip() for name in names)
-    if any(not name for name in cleaned):
-        message = "Column names cannot be empty."
-        raise ValueError(message)
-    folded = [name.casefold() for name in cleaned]
-    if len(set(folded)) != len(folded):
-        message = "Column names must be unique."
-        raise ValueError(message)
-    return cleaned
 
 
 def _append_line(
