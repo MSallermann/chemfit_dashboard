@@ -398,7 +398,7 @@ class Inspector(QWidget):
         """Create the four views of a context node's serialized data."""
         self.tabs = QTabWidget()
         self.summary = JsonView(prefix=())
-        self.metadata = JsonView(prefix=("metadata",))
+        self.metadata = JsonView(prefix=("meta",))
         self.structure = StructureView()
         self.raw = JsonView(prefix=())
         self.tabs.addTab(self.summary, "Overview")
