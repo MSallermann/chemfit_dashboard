@@ -317,9 +317,15 @@ class CollectionPlotPanel(QWidget):
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
 
+        self._requested_selectors: tuple[FieldSelector, ...] = ()
         self._pending_point_selection = None
         self.point_selected.connect(self._select_point)
+
         self.coordinator.selected_record_changed.connect(self._on_record_changed)
+        self.coordinator.collection_order_changed.connect(self.refresh_series)
+        self.coordinator.collection_changed.connect(
+            lambda _records: self.refresh_series()
+        )
 
     def show_loading(
         self, selectors: FieldSelector | tuple[FieldSelector, ...], count: int
@@ -334,31 +340,32 @@ class CollectionPlotPanel(QWidget):
         self._set_empty_chart("Values across context collection")
 
     def remove_series(self, selector: FieldSelector) -> None:
-        """Remove a series from the current plot."""
+        """Remove a series."""
+
+        self._requested_selectors = tuple(
+            s for s in self._requested_selectors if s != selector
+        )
+
+        if not self._requested_selectors:
+            self.clear()
+            return
+
         remaining = tuple(
             series for series in self._data if series.selector != selector
         )
 
-        self.coordinator.task_runner.invalidate("collection_plot")
-
         if remaining:
             self.set_series_collection(remaining)
-        else:
-            self.clear()
-
-    def clear_plot(self) -> None:
-        """Clear the plot and invalidate pending extraction."""
-        self.coordinator.task_runner.invalidate("collection_plot")
-        self.clear()
 
     def add_series(self, selector: FieldSelector) -> None:
-        """Add a field to the existing plot."""
-        selectors = tuple(series.selector for series in self._data)
+        if selector not in self._requested_selectors:
+            self.build_series((*self._requested_selectors, selector))
 
-        if selector in selectors:
-            return
+    def refresh_series(self) -> None:
+        """Rebuild the active plot after collection changes."""
 
-        self.build_series((*selectors, selector))
+        if self._requested_selectors:
+            self.build_series(self._requested_selectors)
 
     def build_series(
         self,
@@ -367,9 +374,12 @@ class CollectionPlotPanel(QWidget):
         """Extract multiple numeric series in a single collection traversal."""
 
         selectors = tuple(selectors)
+        self._requested_selectors = selectors
+
         records = tuple(self.coordinator.collection)
 
-        if not selectors:
+        if not selectors or not records:
+            self.clear()
             return
 
         def task():
@@ -408,7 +418,12 @@ class CollectionPlotPanel(QWidget):
             )
 
         def on_success(data: tuple[CollectionSeries, ...]) -> None:
-            self.set_series_collection(data)
+            requested = set(self._requested_selectors)
+
+            remaining = tuple(series for series in data if series.selector in requested)
+
+            if remaining:
+                self.set_series_collection(remaining)
 
         def on_error(details: str):
             self.show_error(details)
@@ -606,6 +621,10 @@ class CollectionPlotPanel(QWidget):
 
     def clear(self) -> None:
         """Remove every plotted series and restore the empty state."""
+
+        self.coordinator.task_runner.invalidate("collection_plot")
+        self._requested_selectors = ()
+
         self._data = ()
         self._hidden_selectors.clear()
         self.series_list.clear()
