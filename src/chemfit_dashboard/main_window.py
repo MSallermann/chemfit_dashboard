@@ -33,8 +33,10 @@ from chemfit_dashboard.extraction import (
     OutputDescriptor,
 )
 from chemfit_dashboard.extraction_ui import DataExtractionPanel
+from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.source import ContextSource, JsonFileSource
+from chemfit_dashboard.ui_components import DetachablePanelController
 
 
 class MainWindow(QMainWindow):
@@ -123,6 +125,12 @@ class MainWindow(QMainWindow):
         )
 
         #########################
+        # Data flow
+        #########################
+
+        self.data_flow_panel = DataFlowPanel(coordinator=self.coordinator, parent=self)
+
+        #########################
         # Collection plot
         #########################
 
@@ -153,8 +161,20 @@ class MainWindow(QMainWindow):
 
         self.center_tabs = QTabWidget()
         self.center_tabs.addTab(self.context_tree_panel, "Context Hierarchy")
+        data_flow_tab_index = self.center_tabs.addTab(self.data_flow_panel, "Data Flow")
         self.center_tabs.addTab(self.extraction_panel, "Data Extraction")
         self.center_tabs.addTab(self.collection_plot, "Collection Plot")
+        self._data_flow_detachment = DetachablePanelController(
+            self,
+            self.center_tabs,
+            self.data_flow_panel,
+            tab_label="Data Flow",
+            window_title="ChemFit Data Flow",
+            object_prefix="dataFlow",
+            tab_index=data_flow_tab_index,
+            expanded_changed=self.data_flow_panel.set_expanded,
+            detached=self.data_flow_panel.ensure_rendered,
+        )
 
         #########################
         # Main workspace
@@ -194,6 +214,14 @@ class MainWindow(QMainWindow):
 
         self.inspector.plot_requested.connect(self.plot_field)
         self.inspector.plot_add_requested.connect(self.add_plot_series)
+
+        self.center_tabs.currentChanged.connect(self._center_tab_changed)
+        self.data_flow_panel.expand_requested.connect(self._data_flow_detachment.toggle)
+
+    def _center_tab_changed(self, index: int) -> None:
+        """Start the deferred graph render when its workspace tab is opened."""
+        if self.center_tabs.widget(index) is self.data_flow_panel:
+            self.data_flow_panel.ensure_rendered()
 
     def plot_field(self, selector: FieldSelector) -> None:
         """Plot the selected field and switch to the plot tab."""

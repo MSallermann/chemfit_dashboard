@@ -3,7 +3,7 @@ Interactive Qt graphics view for declared ChemFit data flow.
 
 ``DataFlowView`` coordinates graph construction, background layout, batched
 scene rendering, zoom, and selection. ``DataFlowPanel`` adds breadcrumbs and
-level navigation and synchronizes selections with MainWindow.
+level navigation and synchronizes selections with ``DashboardCoordinator``.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from shiboken6 import isValid
 
 from chemfit_dashboard.appearance import ColorScheme, active_color_scheme
 from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.data_flow import DataFlowGraph, DataFlowNode, build_data_flow
 from chemfit_dashboard.graph_layout import GraphLayout, data_flow_layout
 from chemfit_dashboard.icons import make_icon_only
@@ -51,10 +52,12 @@ from chemfit_dashboard.ui_components import (
     panel_layout,
     set_expand_button_state,
 )
-from chemfit_dashboard.workers import GenerationTracker, TaskRunner
+from chemfit_dashboard.workers import GenerationTracker
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from chemfit_dashboard.workers import TaskRunner
 
 NODE_WIDTH = 220.0
 NODE_HEIGHT = 76.0
@@ -146,12 +149,16 @@ class DataFlowView(QGraphicsView):
     document; all graphics-item creation remains on the GUI thread.
     """
 
-    node_selected = Signal(object)
+    context_selected = Signal(object)
     navigate_requested = Signal(object)
     level_changed = Signal(object)
     render_finished = Signal(int)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        task_runner: TaskRunner,
+        parent: QWidget | None = None,
+    ):
         """Initialize an empty, deferred data-flow canvas."""
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
@@ -166,7 +173,7 @@ class DataFlowView(QGraphicsView):
         self._styled_selected_item: _FlowNodeItem | None = None
         self._graph_bounds = QRectF()
         self._clearing_scene = False
-        self._tasks = TaskRunner(self)
+        self._task_runner = task_runner
         self._generations = GenerationTracker[_GraphRequest]()
         self._layout_cancellation: CancellationToken | None = None
         self._scheme = active_color_scheme()
@@ -249,9 +256,12 @@ class DataFlowView(QGraphicsView):
         self.level_changed.emit(path)
         self._render_current()
 
-    def select_path(self, path: NodePath) -> None:
+    def select_path(self, path: NodePath | None) -> None:
         self._selected_path = path
         if self._document is None:
+            return
+        if path is None:
+            self._apply_selection()
             return
         if path == self._current_path:
             self._apply_selection()
@@ -312,10 +322,6 @@ class DataFlowView(QGraphicsView):
         self.scale(factor, factor)
         event.accept()
 
-    def cancel_pending_layout(self) -> None:
-        self._cancel_layout()
-        self._tasks.cancel_pending()
-
     def _render_current(self) -> None:
         """Build the current graph and schedule expensive layout when needed."""
         document = self._document
@@ -359,7 +365,7 @@ class DataFlowView(QGraphicsView):
             cancellation = CancellationToken()
             self._layout_cancellation = cancellation
             self._show_message(f"Laying out {len(graph.nodes):,} flow nodes…")
-            self._tasks.submit(
+            self._task_runner.submit(
                 lambda: data_flow_layout(
                     graph.node_ids,
                     edge_pairs,
@@ -588,7 +594,7 @@ class DataFlowView(QGraphicsView):
         path = selected_item.data(0)
         if isinstance(path, tuple):
             self._selected_path = path
-            self.node_selected.emit(path)
+            self.context_selected.emit(path)
 
     def _style_selected_item(self, item: _FlowNodeItem | None) -> None:
         previous = self._styled_selected_item
@@ -649,15 +655,19 @@ class DataFlowView(QGraphicsView):
 
 
 class DataFlowPanel(QWidget):
-    """Data-flow canvas with breadcrumbs and level navigation."""
+    """Data-flow canvas synchronized with the dashboard's current context."""
 
-    node_selected = Signal(object)
     expand_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        *,
+        coordinator: DashboardCoordinator,
+        parent: QWidget | None = None,
+    ):
         """Initialize flow controls, navigation, and the graphics view."""
         super().__init__(parent)
-        self._document: ContextDocument | None = None
+        self.coordinator = coordinator
         layout = panel_layout(self)
         controls = QHBoxLayout()
         self.back_button = QPushButton("Back")
@@ -681,7 +691,7 @@ class DataFlowPanel(QWidget):
         layout.addLayout(controls)
         self.status = muted_label("Data Flow builds on demand")
         layout.addWidget(self.status)
-        self.view = DataFlowView()
+        self.view = DataFlowView(task_runner=coordinator.task_runner)
         layout.addWidget(self.view, 1)
         hint = muted_label(
             "Rounded nodes are atomic. Accent nodes with clipped corners are "
@@ -690,7 +700,7 @@ class DataFlowPanel(QWidget):
         )
         layout.addWidget(hint)
 
-        self.view.node_selected.connect(self.node_selected.emit)
+        self.view.context_selected.connect(self._select_context)
         self.view.navigate_requested.connect(self._enter)
         self.view.level_changed.connect(self._update_breadcrumbs)
         self.view.render_finished.connect(self._render_finished)
@@ -701,14 +711,31 @@ class DataFlowPanel(QWidget):
         self.expand_button.clicked.connect(self.expand_requested.emit)
         self._update_breadcrumbs(())
 
-    def set_document(self, document: ContextDocument | None) -> None:
-        self._document = document
+        self.coordinator.selected_record_changed.connect(
+            self.on_selected_record_changed
+        )
+        self.coordinator.selected_context_changed.connect(
+            self.on_selected_context_changed
+        )
+        self.on_selected_record_changed(self.coordinator.selected_document)
+        self.on_selected_context_changed(self.coordinator.selected_context)
+
+    def on_selected_record_changed(self, document: ContextDocument | None) -> None:
+        """Install the coordinator's committed document in the graph view."""
         self.view.set_document(document)
         self.status.setText(
             "Data Flow builds on demand"
             if document is not None
             else "No evaluation selected"
         )
+        if document is not None and self.isVisible():
+            # The coordinator emits the restored context immediately after the
+            # document. Render after that selection has chosen the right level.
+            QTimer.singleShot(0, self.ensure_rendered)
+
+    def on_selected_context_changed(self, path: NodePath | None) -> None:
+        """Mirror context selections made in any dashboard feature."""
+        self.view.select_path(path)
 
     def ensure_rendered(self) -> None:
         self.view.ensure_rendered()
@@ -719,23 +746,13 @@ class DataFlowPanel(QWidget):
             message or f"{count:,} declared flow node{'s' if count != 1 else ''}"
         )
 
-    def select_path(self, path: NodePath) -> None:
-        self.view.select_path(path)
-
-    def set_color_scheme(self, scheme: ColorScheme) -> None:
-        self.view.set_color_scheme(scheme)
-
-    def refresh_labels(self) -> None:
-        self.view.refresh_labels()
-        self._update_breadcrumbs(self.view.current_path)
-
     def set_expanded(self, expanded: bool) -> None:
         """Reflect whether the panel is hosted in the expanded window."""
         set_expand_button_state(self.expand_button, "Data Flow", expanded=expanded)
 
     def _enter(self, path: NodePath) -> None:
         self.view.navigate_to(path)
-        self.node_selected.emit(path)
+        self._select_context(path)
 
     def _back(self) -> None:
         path = self.view.current_path
@@ -743,11 +760,15 @@ class DataFlowPanel(QWidget):
             return
         parent = path[:-1]
         self.view.navigate_to(parent)
-        self.node_selected.emit(parent)
+        self._select_context(parent)
 
     def _navigate_breadcrumb(self, path: NodePath) -> None:
         self.view.navigate_to(path)
-        self.node_selected.emit(path)
+        self._select_context(path)
+
+    def _select_context(self, path: NodePath) -> None:
+        """Route graph navigation through the authoritative application state."""
+        self.coordinator.select_context(path)
 
     def _update_breadcrumbs(self, path: NodePath) -> None:
         while self.breadcrumbs.count():
@@ -774,18 +795,14 @@ class DataFlowPanel(QWidget):
     def _breadcrumb_label(self, path: NodePath) -> str:
         if not path:
             return "Root"
-        if self._document is None:
+        document = self.view.document
+        if document is None:
             return ".".join(map(str, path))
         try:
-            self._document.details(path)
+            document.details(path)
         except ContextSourceError:
             return ".".join(map(str, path))
-        return self._document.component_label(path)
-
-
-# Kept as an import compatibility alias; there is only one renderer.
-ContextGraphPanel = DataFlowPanel
-ContextGraphView = DataFlowView
+        return document.component_label(path)
 
 
 def _status_color(node: DataFlowNode, scheme: ColorScheme) -> str:
