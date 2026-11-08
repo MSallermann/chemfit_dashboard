@@ -185,12 +185,6 @@ class MainWindow(QMainWindow):
         self.inspector.extraction_requested.connect(self.add_extraction_field)
         self.inspector.component_extraction_requested.connect(self.add_extraction_field)
 
-        self.extraction_panel.selectors_changed.connect(self.refresh_extraction_preview)
-        self.coordinator.collection_changed.connect(self.refresh_extraction_preview)
-        self.coordinator.collection_order_changed.connect(
-            self.refresh_extraction_preview
-        )
-
         self.extraction_panel.export_requested.connect(self.export_extraction)
         self.extraction_panel.record_selected.connect(self.open_extraction_record)
         self.extraction_panel.status_message.connect(self.statusBar().showMessage)

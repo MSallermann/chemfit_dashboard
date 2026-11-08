@@ -14,6 +14,7 @@ import io
 import json
 from copy import deepcopy
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any, cast
 
@@ -58,6 +59,7 @@ from chemfit_dashboard.extraction import (
     JsonPath,
     OutputDescriptor,
     column_paths_for_value,
+    extract_fields,
     field_to_dict,
     flattened_column_name,
     load_config,
@@ -535,6 +537,10 @@ class DataExtractionPanel(QWidget):
         layout.addLayout(actions)
         self._update_controls()
 
+        self.selectors_changed.connect(self.refresh_preview)
+        self.coordinator.collection_changed.connect(self.refresh_preview)
+        self.coordinator.collection_order_changed.connect(self.refresh_preview)
+
     @property
     def fields(self) -> tuple[tuple[FieldSelector, OutputDescriptor], ...]:
         """Return selectors in their visible configuration order."""
@@ -620,6 +626,34 @@ class DataExtractionPanel(QWidget):
         suffix = " (limited)" if total > len(rows) or shown >= PREVIEW_LIMIT else ""
         self.status.setText(
             f"Preview: {shown:,} rows from {total:,} evaluations{suffix}"
+        )
+
+    def refresh_preview(self) -> None:
+        """Build a bounded extraction preview in the background."""
+        records = tuple(self.coordinator.collection)
+        config = self.config
+        selectors = tuple(selector for selector, _ in config.fields)
+
+        if not records or not selectors:
+            self.coordinator.task_runner.invalidate("extraction_preview")
+            self.set_preview((), len(records))
+            return
+
+        self.show_loading(len(records))
+
+        def task():
+            return tuple(
+                islice(
+                    extract_fields(self.coordinator.source, records, selectors),
+                    PREVIEW_LIMIT,
+                )
+            )
+
+        self.coordinator.task_runner.submit_latest(
+            "extraction_preview",
+            task,
+            lambda rows: self.set_preview(rows, len(records)),
+            self.show_error,
         )
 
     def show_error(self, message: str) -> None:
