@@ -58,9 +58,6 @@ class MainWindow(QMainWindow):
         if source is None:
             source = JsonFileSource()
 
-        self.source = source
-        self.coordinator = DashboardCoordinator(source=self.source)
-
         self.coordinator = DashboardCoordinator(source=source)
 
         # some basic settings
@@ -133,6 +130,7 @@ class MainWindow(QMainWindow):
         #########################
         # Context inspector
         #########################
+
         self.inspector = Inspector(
             coordinator=self.coordinator,
             parent=self,
@@ -141,6 +139,7 @@ class MainWindow(QMainWindow):
         #########################
         # Extraction ui
         #########################
+
         self.extraction_panel = DataExtractionPanel(parent=self)
 
         #########################
@@ -210,7 +209,7 @@ class MainWindow(QMainWindow):
         def task():
             return tuple(
                 islice(
-                    extract_fields(self.source, records, selectors),
+                    extract_fields(self.coordinator.source, records, selectors),
                     PREVIEW_LIMIT,
                 )
             )
@@ -230,8 +229,8 @@ class MainWindow(QMainWindow):
 
         def task() -> int:
             if format_name == "csv":
-                return export_csv(path, self.source, records, config)
-            return export_jsonl(path, self.source, records, config)
+                return export_csv(path, self.coordinator.source, records, config)
+            return export_jsonl(path, self.coordinator.source, records, config)
 
         self.coordinator.task_runner.submit(
             task,

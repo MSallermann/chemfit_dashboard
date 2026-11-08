@@ -1,4 +1,5 @@
 import logging
+import math
 import traceback
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -19,10 +20,12 @@ from chemfit_dashboard.extraction import (
     ExtractionValue,
     FieldSelector,
     JsonPath,
+    extract_fields,
     extract_value,
 )
 from chemfit_dashboard.ordered_record_collection import OrderedRecordCollection
 from chemfit_dashboard.source import ContextSource
+from chemfit_dashboard.util import format_combined_path
 from chemfit_dashboard.workers import TaskRunner
 
 logger = logging.getLogger(__name__)
@@ -419,3 +422,55 @@ class DashboardCoordinator(QObject):
             return
 
         self.collection_order_changed.emit()
+
+    def sort_records_by_field(
+        self, field_selector: FieldSelector, ascending: bool = True
+    ):
+        records = tuple(self.collection)
+
+        if not records:
+            return
+
+        label = format_combined_path(
+            field_selector.node_path, field_selector.value_path
+        )
+
+        def task():
+            numeric_values: list[tuple[str, float]] = []
+            non_numeric_values: list[str] = []
+
+            for row in extract_fields(
+                source=self.source,
+                records=records,
+                selectors=(field_selector,),
+            ):
+                extracted = row.values[0]
+                if extracted.is_numeric and not math.isnan(extracted.value):
+                    numeric_values.append((row.record_id, float(extracted.value)))
+                else:
+                    non_numeric_values.append(row.record_id)
+
+            numeric_values.sort(key=lambda elem: elem[1], reverse=not ascending)
+
+            order: tuple[str, ...] = (
+                *(elem[0] for elem in numeric_values),
+                *non_numeric_values,
+            )
+
+            return order
+
+        def on_success(order: Sequence[str]):
+            if tuple(self.collection) != records:
+                return
+            self.order_records(order=order, label=label, ascending=ascending)
+
+        def on_error(details: str) -> None:
+            self.operation_failed.emit("Sort by field", details)
+            logger.exception(details)
+
+        self.task_runner.submit_latest(
+            key="order_records_by_field",
+            function=task,
+            on_success=on_success,
+            on_error=on_error,
+        )
