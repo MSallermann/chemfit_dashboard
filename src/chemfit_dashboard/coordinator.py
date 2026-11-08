@@ -14,6 +14,13 @@ from chemfit_dashboard.context_document import (
     NodePath,
     RecordRef,
 )
+from chemfit_dashboard.extraction import (
+    ExtractionStatus,
+    ExtractionValue,
+    FieldSelector,
+    JsonPath,
+    extract_value,
+)
 from chemfit_dashboard.ordered_record_collection import OrderedRecordCollection
 from chemfit_dashboard.source import ContextSource
 from chemfit_dashboard.workers import GenerationTracker, TaskRunner
@@ -101,6 +108,15 @@ class DashboardCoordinator(QObject):
     selected_context_changed = Signal(object)
 
     # ------------------------------------------------------------------
+    # Field selection
+    # ------------------------------------------------------------------
+
+    # Emitted when the selected field within the current context changes.
+    # Selection may be restored automatically when switching evaluations.
+    # Payload: NodePath | None, where None indicates no selected context.
+    selected_field_changed = Signal(object)
+
+    # ------------------------------------------------------------------
     # Collection ordering
     # ------------------------------------------------------------------
 
@@ -120,9 +136,17 @@ class DashboardCoordinator(QObject):
         super().__init__()
         self._source: ContextSource = source
         self._collection: OrderedRecordCollection = OrderedRecordCollection()
+
         self._selected_document: ContextDocument | None = None
         self._selected_context: NodePath | None = None
+        self._selected_field: JsonPath | None = None
+        self._selected_field_value: ExtractionValue | None = None
+
+        # These two remember the last selected context/field path and try
+        # to restore it when a new record/context is selected
         self._preferred_context_path: NodePath = ()
+        self._preferred_field_path: JsonPath | None = None
+
         self._task_runner = TaskRunner()
         self._generations = GenerationTracker()
 
@@ -140,6 +164,16 @@ class DashboardCoordinator(QObject):
     def selected_context(self) -> NodePath | None:
         """Path of the selected context within the current document."""
         return self._selected_context
+
+    @property
+    def selected_field(self) -> JsonPath | None:
+        """Path of the selected context within the current document."""
+        return self._selected_field
+
+    @property
+    def selected_field_value(self) -> ExtractionValue | None:
+        """Value of the selected field within the current document."""
+        return self._selected_field_value
 
     def load_collection(
         self, locations: Iterable[str | Path], *, append: bool = False
@@ -196,9 +230,11 @@ class DashboardCoordinator(QObject):
             self._selected_document = None
             self._selected_context = None
             self._preferred_context_path = ()
+            self._preferred_field_path = None
 
             self.selected_record_changed.emit(None)
             self.selected_context_changed.emit(None)
+            self._restore_field()
             return
 
         def task() -> ContextDocument:
@@ -208,6 +244,7 @@ class DashboardCoordinator(QObject):
         def on_success(document: ContextDocument) -> None:
             path = self._preferred_context_path
 
+            # Try to restore the selected context
             # Fall back to the closest available ancestor.
             while not document.has_path(path):
                 path = path[:-1]
@@ -217,6 +254,9 @@ class DashboardCoordinator(QObject):
 
             self.selected_record_changed.emit(document)
             self.selected_context_changed.emit(path)
+
+            # We also try to restore the selected field within the context
+            self._restore_field()
 
         def on_error(details: str) -> None:
             self.operation_failed.emit("Record selection", details)
@@ -251,6 +291,68 @@ class DashboardCoordinator(QObject):
 
         self._selected_context = path
         self.selected_context_changed.emit(path)
+
+        # Here, we deliberately forget the preferred field
+        # path
+        self._preferred_field_path = None
+        self._restore_field()
+
+    def _restore_field(self) -> None:
+        """Restore the preferred field in the current evaluation."""
+
+        self._selected_field = None
+        self._selected_field_value = None
+
+        if (
+            self._selected_document is not None
+            and self._selected_context == self._preferred_context_path
+            and self._preferred_field_path is not None
+            and self._selected_context is not None
+        ):
+            selector = FieldSelector(
+                self._selected_context,
+                self._preferred_field_path,
+            )
+            value = extract_value(self._selected_document, selector)
+
+            if value.status not in {
+                ExtractionStatus.MISSING_COMPONENT,
+                ExtractionStatus.MISSING_FIELD,
+            }:
+                self._selected_field = self._preferred_field_path
+                self._selected_field_value = value
+
+        self.selected_field_changed.emit(self._selected_field)
+
+    def select_field(self, json_path: JsonPath | None) -> None:
+        """Select a field within the current context."""
+
+        if json_path == self._selected_field:
+            return
+
+        if json_path is None:
+            self._selected_field = None
+            self._selected_field_value = None
+            self.selected_field_changed.emit(None)
+            return
+
+        if self.selected_document is None or self.selected_context is None:
+            msg = "No context selected"
+            raise ValueError(msg)
+
+        selector = FieldSelector(self.selected_context, json_path)
+        value = extract_value(self.selected_document, selector)
+
+        if value.status in {
+            ExtractionStatus.MISSING_COMPONENT,
+            ExtractionStatus.MISSING_FIELD,
+        }:
+            msg = f"Invalid field path: {json_path}"
+            raise ValueError(msg)
+
+        # The new user-selected path becomes the preferred path
+        self._preferred_field_path = json_path
+        self._restore_field()
 
     def order_records(
         self, order: Sequence[str], label: str | None, ascending: bool = True
