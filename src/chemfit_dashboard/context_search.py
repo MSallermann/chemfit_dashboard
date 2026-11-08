@@ -146,10 +146,22 @@ class ContextSearchPanel(QWidget):
             "Include component names and hierarchy breadcrumbs when matching"
         )
         dimensions.addWidget(self.include_components, 1, 1)
+        self._add_field_type_controls(dimensions)
         dimensions.setColumnStretch(0, 1)
         dimensions.setColumnStretch(1, 1)
         controls_layout.addLayout(dimensions)
         layout.addWidget(controls)
+
+    def _add_field_type_controls(self, dimensions: QGridLayout) -> None:
+        """Add independent input/output filters, enabled by default."""
+        self.include_inputs = QCheckBox("Input fields")
+        self.include_inputs.setChecked(True)
+        self.include_inputs.setToolTip("Include input fields and their nested values")
+        dimensions.addWidget(self.include_inputs, 2, 0)
+        self.include_outputs = QCheckBox("Output fields")
+        self.include_outputs.setChecked(True)
+        self.include_outputs.setToolTip("Include output fields and their nested values")
+        dimensions.addWidget(self.include_outputs, 2, 1)
 
     def _build_results(self, layout: QVBoxLayout) -> None:
         """Build the status and ranked-result presentation."""
@@ -213,6 +225,8 @@ class ContextSearchPanel(QWidget):
             self.include_values,
             self.include_metadata,
             self.include_components,
+            self.include_inputs,
+            self.include_outputs,
         ):
             option.toggled.connect(self._search_controls_changed)
 
@@ -284,6 +298,8 @@ class ContextSearchPanel(QWidget):
             include_values=self.include_values.isChecked(),
             include_metadata=self.include_metadata.isChecked(),
             include_components=self.include_components.isChecked(),
+            include_inputs=self.include_inputs.isChecked(),
+            include_outputs=self.include_outputs.isChecked(),
             mode=mode,
         )
         scope = self.scope.currentData()
@@ -335,6 +351,8 @@ class ContextSearchPanel(QWidget):
                 include_values=options.include_values,
                 include_metadata=options.include_metadata,
                 include_components=options.include_components,
+                include_inputs=options.include_inputs,
+                include_outputs=options.include_outputs,
                 mode=options.mode,
                 cooperative=True,
                 cancelled=lambda: cancellation.cancelled,
@@ -357,6 +375,8 @@ class ContextSearchPanel(QWidget):
                 include_values=options.include_values,
                 include_metadata=options.include_metadata,
                 include_components=options.include_components,
+                include_inputs=options.include_inputs,
+                include_outputs=options.include_outputs,
                 mode=options.mode,
                 scope_label=scope_label,
                 searched_records=len(records),
@@ -492,6 +512,8 @@ class ContextSearchPanel(QWidget):
         mode: SearchMode,
         include_metadata: bool = True,
         include_components: bool = True,
+        include_inputs: bool = True,
+        include_outputs: bool = True,
         scope_label: str = "current evaluation",
         searched_records: int = 1,
         failed_records: int = 0,
@@ -527,6 +549,10 @@ class ContextSearchPanel(QWidget):
             for column in range(self.results.columnCount()):
                 item.setSizeHint(column, QSize(0, row_height))
         dimensions = ["fields"]
+        if include_inputs:
+            dimensions.append("input fields")
+        if include_outputs:
+            dimensions.append("output fields")
         if include_components:
             dimensions.append("component names")
         if include_metadata:

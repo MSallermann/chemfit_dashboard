@@ -95,6 +95,8 @@ class ContextSearchIndex:
         include_values: bool = True,
         include_metadata: bool = True,
         include_components: bool = True,
+        include_inputs: bool = True,
+        include_outputs: bool = True,
         mode: SearchMode = "fuzzy",
         cooperative: bool = False,
         cancelled: Callable[[], bool] | None = None,
@@ -123,6 +125,17 @@ class ContextSearchIndex:
                     return []
                 time.sleep(0)
             if not include_metadata and entry.section == "metadata":
+                continue
+            # Field paths are rooted at input/output, so one check excludes the
+            # complete subtree without duplicating traversal or index entries.
+            if (
+                entry.section == "fields"
+                and entry.value_path
+                and (
+                    (entry.value_path[0] == "input" and not include_inputs)
+                    or (entry.value_path[0] == "output" and not include_outputs)
+                )
+            ):
                 continue
             score = _entry_score(
                 normalized,

@@ -62,6 +62,8 @@ class SearchOptions:
     include_values: bool = True
     include_metadata: bool = True
     include_components: bool = True
+    include_inputs: bool = True
+    include_outputs: bool = True
     mode: SearchMode = "fuzzy"
 
 
@@ -156,6 +158,8 @@ def _search_record(
             include_values=options.include_values,
             include_metadata=options.include_metadata,
             include_components=options.include_components,
+            include_inputs=options.include_inputs,
+            include_outputs=options.include_outputs,
             mode=options.mode,
         ),
         False,
