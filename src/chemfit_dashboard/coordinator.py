@@ -171,6 +171,18 @@ class DashboardCoordinator(QObject):
         return self._selected_field
 
     @property
+    def current_field_selector(self) -> FieldSelector | None:
+        """Construct a selector from the current application selection."""
+
+        context = self.selected_context
+        field = self.selected_field
+
+        if context is None or field is None:
+            return None
+
+        return FieldSelector(context, field)
+
+    @property
     def selected_field_value(self) -> ExtractionValue | None:
         """Value of the selected field within the current document."""
         return self._selected_field_value

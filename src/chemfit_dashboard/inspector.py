@@ -10,7 +10,6 @@ plotting, sorting and extraction are handled elsewhere.
 from __future__ import annotations
 
 import json
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
@@ -31,10 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from chemfit_dashboard.collection_plot import NumberSelector
 from chemfit_dashboard.context_document import NodeDetails
 from chemfit_dashboard.coordinator import DashboardCoordinator, NodePath
-from chemfit_dashboard.extraction import FieldSelector
+from chemfit_dashboard.extraction import (
+    FieldSelector,
+    JsonPath,
+    OutputDescriptor,
+)
 from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import JsonValueModel
 from chemfit_dashboard.ui_components import muted_label
@@ -47,22 +49,19 @@ MAX_STRUCTURE_TABLE_ROWS = 500
 
 class JsonView(QTreeView):
     """
-    Display a JSON value and report which nested field the user selects.
+    Display arbitrary JSON through a lazy Qt item model.
 
-    The underlying ``JsonValueModel`` creates Qt items on demand. The signals
-    carry (path, value) tuples; ``numeric_selected`` emits ``None`` for any
-    selection that is not a number. ``section`` identifies the value's origin
-    (fields, metadata, structure or raw) when copying its path.
+    Emits the path of the selected value relative to the displayed JSON.
+    Supports copying values and paths to the clipboard.
     """
 
-    numeric_selected = Signal(object)
-    value_selected = Signal(object)
+    path_selected = Signal(object)  # JsonPath | None
     copy_completed = Signal(str)
 
-    def __init__(self, section: str = "value", parent: QWidget | None = None):
+    def __init__(self, prefix: JsonPath = (), parent: QWidget | None = None):
         """Initialize a generic expandable value view."""
         super().__init__(parent)
-        self._section = section
+        self._prefix: JsonPath = prefix
         self._json_model = JsonValueModel(parent=self)
         self.setModel(self._json_model)
         self.setAlternatingRowColors(True)
@@ -91,14 +90,13 @@ class JsonView(QTreeView):
         return True
 
     def _current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        """Translate Qt selection changes into field and numeric selections."""
-        value = self._json_model.value(current)
+        """Report the selected path relative to the context root."""
+        if not current.isValid():
+            self.path_selected.emit(None)
+            return
+
         path = self._json_model.value_path(current)
-        self.value_selected.emit((path, value) if current.isValid() else None)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            self.numeric_selected.emit((path, value))
-        else:
-            self.numeric_selected.emit(None)
+        self.path_selected.emit((*self._prefix, *path))
 
     def copy_current_value(self, *, as_json: bool = False) -> None:
         """Copy the selected value as text or pretty-printed JSON."""
@@ -122,8 +120,8 @@ class JsonView(QTreeView):
         if not index.isValid():
             return
         path = self._json_model.value_path(index)
-        suffix = _format_value_path(path)
-        QApplication.clipboard().setText(f"{self._section}/{suffix}")
+        text = _format_value_path((*self._prefix, *path))
+        QApplication.clipboard().setText(text)
         self.copy_completed.emit("Copied inspector field path")
 
     def _show_context_menu(self, position) -> None:  # noqa: ANN001
@@ -185,7 +183,7 @@ class StructureView(QWidget):
         self.table.setModel(self.table_model)
         layout.addWidget(self.table, 2)
 
-        self.raw = JsonView("structure")
+        self.raw = JsonView(("meta", "chemfit.structure"))
         layout.addWidget(self.raw, 1)
 
     def set_structure(self, structure: Mapping[str, Any] | None) -> None:
@@ -282,14 +280,13 @@ class Inspector(QWidget):
         self._details: NodeDetails | None = None
         self._populated_tabs: set[QWidget] = set()
         self._component_label = ""
-        self._number_selector: NumberSelector | None = None
-        self._field_selector: FieldSelector | None = None
         self._connect_view_signals()
 
         # Wire up signals
         self.coordinator.selected_context_changed.connect(
             self.on_selected_context_changed
         )
+        self.coordinator.selected_field_changed.connect(self._on_selected_field_changed)
 
     def on_selected_context_changed(self, path: NodePath | None) -> None:
         document = self.coordinator.selected_document
@@ -400,10 +397,10 @@ class Inspector(QWidget):
     def _setup_tabs(self, layout: QVBoxLayout) -> None:
         """Create the four views of a context node's serialized data."""
         self.tabs = QTabWidget()
-        self.summary = JsonView("fields")
-        self.metadata = JsonView("metadata")
+        self.summary = JsonView(prefix=())
+        self.metadata = JsonView(prefix=("metadata",))
         self.structure = StructureView()
-        self.raw = JsonView("raw")
+        self.raw = JsonView(prefix=())
         self.tabs.addTab(self.summary, "Overview")
         self.tabs.addTab(self.metadata, "Metadata")
         self.tabs.addTab(self.structure, "Structure")
@@ -411,33 +408,76 @@ class Inspector(QWidget):
         layout.addWidget(self.tabs, 1)
 
     def _connect_view_signals(self) -> None:
-        """
-        Route value selections to the relevant controls and action signals.
-
-        A section identifies where a selected JSON path came from. It becomes
-        part of ``NumberSelector`` or ``FieldSelector`` so the main window can
-        apply the operation to other evaluations in the collection.
-        """
         views = (
-            ("fields", self.summary),
-            ("metadata", self.metadata),
-            ("structure", self.structure.raw),
-            ("raw", self.raw),
+            self.summary,
+            self.metadata,
+            self.structure.raw,
+            self.raw,
         )
-        for section, view in views:
-            view.numeric_selected.connect(partial(self._numeric_selected, section))
-            view.value_selected.connect(partial(self._value_selected, section))
+
+        for view in views:
+            view.path_selected.connect(self._on_path_selected)
             view.copy_completed.connect(self.status_message.emit)
 
-        # Defer tab contents until a tab is first shown for this selection.
         self.tabs.currentChanged.connect(lambda _index: self._populate_current_tab())
+
+    def _on_path_selected(self, path: JsonPath | None) -> None:
+        """Forward a selected JSON path to the coordinator."""
+        if path is not None:
+            self.coordinator.select_field(path)
+
+    def _on_selected_field_changed(self, path: JsonPath | None) -> None:
+        """Update field actions, labels, and tooltips from coordinator state."""
+
+        selector = self.coordinator.current_field_selector
+        extracted = self.coordinator.selected_field_value
+
+        has_field = selector is not None
+        is_numeric = extracted is not None and extracted.is_numeric
+
+        label = _format_value_path(path) if path is not None else ""
+        selected = f"\nSelected: {label}" if has_field else ""
+
+        # Extraction controls
+        self.extract_button.setEnabled(has_field)
+        self.field_selection.setText(
+            f"Selected: {label}" if has_field else "No field selected"
+        )
+        self.field_selection.setToolTip(label if has_field else "")
+        self.extract_button.setToolTip(f"Add this field to Data Extraction.{selected}")
+
+        # Plotting and sorting controls
+        self.plot_button.setEnabled(is_numeric)
+        self.plot_add_button.setEnabled(is_numeric)
+        self.order_ascending_button.setEnabled(is_numeric)
+        self.order_descending_button.setEnabled(is_numeric)
+
+        self.plot_selection.setText(
+            f"Selected: {label}" if is_numeric else "No number selected"
+        )
+        self.plot_selection.setToolTip(label if is_numeric else "")
+
+        numeric_selected = selected if is_numeric else ""
+
+        self.plot_button.setToolTip(
+            f"Create a plot of this number across the collection.{numeric_selected}"
+        )
+        self.plot_add_button.setToolTip(
+            f"Add this number as another series in the current plot.{numeric_selected}"
+        )
+        self.order_ascending_button.setToolTip(
+            f"Sort the collection by this value in ascending order; "
+            f"missing values go last.{numeric_selected}"
+        )
+        self.order_descending_button.setToolTip(
+            f"Sort the collection by this value in descending order; "
+            f"missing values go last.{numeric_selected}"
+        )
 
     def clear(self) -> None:
         """Reset the inspector when no context is selected."""
         self._details = None
         self._component_label = ""
-        self._set_number_selector(None)
-        self._set_field_selector(None)
         self.extract_component_button.setEnabled(False)
         self.extract_component_button.setToolTip(
             "Add the entire selected component to Data Extraction."
@@ -462,8 +502,6 @@ class Inspector(QWidget):
         """Show a new node; defer inactive tabs until they are opened."""
         self._details = details
         self._component_label = component_label or details.info.label
-        self._set_number_selector(None)
-        self._set_field_selector(None)
         self.extract_component_button.setEnabled(True)
         self.extract_component_button.setToolTip(
             f"Add the entire {self._component_label} component to Data Extraction."
@@ -507,124 +545,47 @@ class Inspector(QWidget):
         self.tabs.setCurrentWidget(tab)
         return view.focus_path(path)
 
-    def _numeric_selected(self, section: str, selection: object) -> None:
-        """Turn a JSON number selection into a collection-wide selector."""
-        if self._details is None or not isinstance(selection, tuple):
-            self._set_number_selector(None)
-            return
-        value_path, _value = selection
-        if not isinstance(value_path, tuple):
-            self._set_number_selector(None)
-            return
-        value_label = _format_value_path(value_path)
-        component_label = (
-            self._component_label if self._details.info.path else "Evaluation root"
-        )
-        label = f"{component_label} · {value_label}"
-        self._set_number_selector(
-            NumberSelector(
-                node_path=self._details.info.path,
-                section=section,
-                value_path=value_path,
-                label=label,
-                value_label=value_label,
-            )
-        )
-
-    def _set_number_selector(self, selector: NumberSelector | None) -> None:
-        """Keep the numeric action buttons in sync with the selection."""
-        self._number_selector = selector
-        self.plot_button.setEnabled(selector is not None)
-        self.plot_add_button.setEnabled(selector is not None)
-        self.order_ascending_button.setEnabled(selector is not None)
-        self.order_descending_button.setEnabled(selector is not None)
-        selected = f"\nSelected: {selector.label}" if selector is not None else ""
-        self.plot_button.setToolTip(
-            f"Create a plot of this number across the collection.{selected}"
-        )
-        self.plot_add_button.setToolTip(
-            f"Add this number as another series in the current plot.{selected}"
-        )
-        self.order_ascending_button.setToolTip(
-            f"Sort contexts ascending by this number; missing values go last.{selected}"
-        )
-        self.order_descending_button.setToolTip(
-            f"Sort contexts descending by this number; missing values go last.{selected}"
-        )
-        self.plot_selection.setText(
-            f"Selected: {selector.value_label}"
-            if selector is not None
-            else "No number selected"
-        )
-        self.plot_selection.setToolTip(selector.label if selector is not None else "")
-
-    def _value_selected(self, section: str, selection: object) -> None:
-        """Turn a JSON field selection into an extraction selector."""
-        if self._details is None or not isinstance(selection, tuple):
-            self._set_field_selector(None)
-            return
-        value_path, _value = selection
-        if not isinstance(value_path, tuple):
-            self._set_field_selector(None)
-            return
-        column = str(value_path[-1]) if value_path else section
-        self._set_field_selector(
-            FieldSelector(
-                node_path=self._details.info.path,
-                section=section,
-                value_path=value_path,
-                column=column,
-            )
-        )
-
-    def _set_field_selector(self, selector: FieldSelector | None) -> None:
-        """Keep the extraction controls in sync with the selected field."""
-        self._field_selector = selector
-        self.extract_button.setEnabled(selector is not None)
-        self.extract_button.setToolTip(
-            f"Add this field to Data Extraction.\nSelected: {selector.path_label}"
-            if selector is not None
-            else "Add a selected field to Data Extraction."
-        )
-        self.field_selection.setText(
-            f"Selected: {selector.column}"
-            if selector is not None
-            else "No field selected"
-        )
-        self.field_selection.setToolTip(
-            selector.path_label if selector is not None else ""
-        )
-
     # The buttons only emit requests; MainWindow performs the operations.
     def _request_plot(self) -> None:
-        if self._number_selector is not None:
-            self.plot_requested.emit(self._number_selector)
+        selector = self.coordinator.current_field_selector
+        if selector is not None:
+            self.plot_requested.emit(selector)
 
     def _request_plot_add(self) -> None:
-        if self._number_selector is not None:
-            self.plot_add_requested.emit(self._number_selector)
+        selector = self.coordinator.current_field_selector
+        if selector is not None:
+            self.plot_add_requested.emit(selector)
 
     def _request_order_ascending(self) -> None:
-        if self._number_selector is not None:
-            self.order_requested.emit(self._number_selector)
+        selector = self.coordinator.current_field_selector
+        if selector is not None:
+            self.order_requested.emit(selector)
 
     def _request_order_descending(self) -> None:
-        if self._number_selector is not None:
-            self.order_descending_requested.emit(self._number_selector)
+        selector = self.coordinator.current_field_selector
+        if selector is not None:
+            self.order_descending_requested.emit(selector)
 
     def _request_extraction(self) -> None:
-        if self._field_selector is not None:
-            self.extraction_requested.emit(self._field_selector)
+        selector = self.coordinator.current_field_selector
+        if selector is None:
+            return
+
+        column = str(selector.value_path[-1]) if selector.value_path else "value"
+
+        self.extraction_requested.emit((selector, OutputDescriptor(column=column)))
 
     def _request_component_extraction(self) -> None:
-        if self._details is not None:
-            self.component_extraction_requested.emit(
-                FieldSelector(
-                    node_path=self._details.info.path,
-                    section="component",
-                    column=self._details.info.label or "component",
-                )
+        context = self.coordinator.selected_context
+        if context is None:
+            return
+
+        self.component_extraction_requested.emit(
+            (
+                FieldSelector(node_path=context),
+                OutputDescriptor(column=self._component_label or "component"),
             )
+        )
 
 
 def _format_sources(value: Any) -> str:

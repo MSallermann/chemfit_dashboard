@@ -86,6 +86,16 @@ class ExtractionValue:
     value: Any
     status: ExtractionStatus
 
+    @property
+    def is_numeric(self) -> bool:
+        """Whether the extracted value is an available number."""
+
+        return (
+            self.status == ExtractionStatus.AVAILABLE
+            and isinstance(self.value, (int, float))
+            and not isinstance(self.value, bool)
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ExtractionRow:
