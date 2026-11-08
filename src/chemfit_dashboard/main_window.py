@@ -140,7 +140,9 @@ class MainWindow(QMainWindow):
         # Extraction ui
         #########################
 
-        self.extraction_panel = DataExtractionPanel(parent=self)
+        self.extraction_panel = DataExtractionPanel(
+            parent=self, coordinator=self.coordinator
+        )
 
         #########################
         # Center workspace

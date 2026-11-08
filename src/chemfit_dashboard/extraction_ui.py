@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
     ExtractionRow,
@@ -353,6 +354,8 @@ class DataExtractionPanel(QWidget):
 
     def __init__(  # noqa: PLR0915
         self,
+        *,
+        coordinator: DashboardCoordinator,
         parent: QWidget | None = None,
         settings: QSettings | None = None,
     ):
@@ -362,6 +365,7 @@ class DataExtractionPanel(QWidget):
         self._include_identifiers = True
         self._include_status_columns = True
         self._settings = settings
+        self.coordinator = coordinator
         layout = QVBoxLayout(self)
         heading = QHBoxLayout()
 
@@ -1248,12 +1252,20 @@ class DataExtractionPanel(QWidget):
         header = self.preview_header
         header.set_sort_marker(column, order)
         header.resizeSection(column, max(header.sectionSize(column), 150))
-        self.sort_requested.emit(
-            (
-                self.selectors[preview_column.selector_index],
-                preview_column.nested_path,
+
+        selector = self.selectors[preview_column.selector_index]
+
+        field_selector = FieldSelector(
+            node_path=selector.node_path,
+            value_path=(
+                *selector.value_path,
+                *(preview_column.nested_path or ()),
             ),
-            descending,
+        )
+
+        self.coordinator.sort_records_by_field(
+            field_selector=field_selector,
+            ascending=not descending,
         )
 
     def _exclude_flattened_column(self, column: _PreviewColumn) -> None:
