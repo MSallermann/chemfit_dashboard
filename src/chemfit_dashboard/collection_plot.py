@@ -13,6 +13,7 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCharts import (
     QBarCategoryAxis,
@@ -66,7 +67,7 @@ from chemfit_dashboard.chart_style import (
     series_color,
 )
 from chemfit_dashboard.coordinator import DashboardCoordinator
-from chemfit_dashboard.extraction import FieldSelector
+from chemfit_dashboard.extraction import FieldSelector, extract_fields
 from chemfit_dashboard.icons import make_icon_only, set_themed_icon
 from chemfit_dashboard.ui_components import (
     ActionRow,
@@ -77,6 +78,9 @@ from chemfit_dashboard.ui_components import (
     set_expand_button_state,
 )
 from chemfit_dashboard.util import format_combined_path
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 JsonPath = tuple[str | int, ...]
 RASTER_EXPORT_DPI = 300
@@ -328,9 +332,67 @@ class CollectionPlotPanel(QWidget):
         self.status.setText(f"Loading values from {count:,} contexts…")
         self._set_empty_chart("Values across context collection")
 
-    def set_series(self, data: CollectionSeries) -> None:
-        """Replace the plot with one resolved collection series."""
-        self.set_series_collection((data,))
+    def build_series(
+        self,
+        selectors: Sequence[FieldSelector],
+    ) -> None:
+        """Extract multiple numeric series in a single collection traversal."""
+
+        selectors = tuple(selectors)
+        records = tuple(self.coordinator.collection)
+
+        if not selectors:
+            return
+
+        def task():
+            labels = []
+            record_ids = []
+            points = [[] for _ in selectors]
+            for row in extract_fields(self.coordinator.source, records, selectors):
+                labels.append(row.filename)
+                record_ids.append(row.record_id)
+
+                for index, extracted in enumerate(row.values):
+                    if not extracted.is_numeric:
+                        continue
+
+                    value = float(extracted.value)
+                    if not math.isfinite(value):
+                        continue
+
+                    points[index].append(
+                        SeriesPoint(
+                            index=row.index,
+                            label=row.filename,
+                            value=value,
+                            record_id=row.record_id,
+                        )
+                    )
+
+            return tuple(
+                CollectionSeries(
+                    selector=selector,
+                    labels=tuple(labels),
+                    points=tuple(series_points),
+                    record_ids=tuple(record_ids),
+                )
+                for selector, series_points in zip(selectors, points, strict=True)
+            )
+
+        def on_success(data: tuple[CollectionSeries, ...]) -> None:
+            self.set_series_collection(data)
+
+        def on_error(details: str):
+            self.show_error(details)
+
+        self.show_loading(selectors, len(records))
+
+        self.coordinator.task_runner.submit_latest(
+            key="collection_plot",
+            function=task,
+            on_success=on_success,
+            on_error=on_error,
+        )
 
     def set_series_collection(self, data: tuple[CollectionSeries, ...]) -> None:
         """Install resolved series and rebuild the active visualization mode."""

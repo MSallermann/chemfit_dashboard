@@ -192,6 +192,13 @@ class MainWindow(QMainWindow):
         self.extraction_panel.record_selected.connect(self.open_extraction_record)
         self.extraction_panel.status_message.connect(self.statusBar().showMessage)
 
+        self.inspector.plot_requested.connect(self.plot_field)
+
+    def plot_field(self, selector: FieldSelector) -> None:
+        """Plot the selected field and switch to the plot tab."""
+        self.collection_plot.build_series((selector,))
+        self.center_tabs.setCurrentWidget(self.collection_plot)
+
     def open_extraction_record(self, record_id: str) -> None:
         """Open a previewed evaluation in the Inspector."""
         record = next(
