@@ -79,7 +79,7 @@ class JsonView(QTreeView):
         self._json_model.set_value(value)
         self.expandToDepth(0)
 
-    def focus_path(self, path: tuple[str | int, ...]) -> bool:
+    def focus_path(self, path: JsonPath) -> bool:
         """Expand, select, and reveal one nested JSON value."""
         index = self._json_model.index_for_value_path(path)
         if not index.isValid():
@@ -421,6 +421,20 @@ class Inspector(QWidget):
 
         self.tabs.currentChanged.connect(lambda _index: self._populate_current_tab())
 
+    def _restore_visible_field(self) -> None:
+        """Highlight the selected field in the currently visible JSON view."""
+        path = self.coordinator.selected_field
+        if path is None:
+            return
+
+        tab = self.tabs.currentWidget()
+        view = self.structure.raw if tab is self.structure else tab
+
+        if not isinstance(view, JsonView):
+            return
+
+        view.focus_path(path)
+
     def _on_path_selected(self, path: JsonPath | None) -> None:
         """Forward a selected JSON path to the coordinator."""
         if path is not None:
@@ -473,6 +487,8 @@ class Inspector(QWidget):
             f"Sort the collection by this value in descending order; "
             f"missing values go last.{numeric_selected}"
         )
+
+        self._restore_visible_field()
 
     def clear(self) -> None:
         """Reset the inspector when no context is selected."""
