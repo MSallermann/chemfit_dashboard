@@ -89,6 +89,13 @@ class JsonView(QTreeView):
         self.scrollTo(value_index, QAbstractItemView.ScrollHint.PositionAtCenter)
         return True
 
+    def focus_context_path(self, path: JsonPath) -> bool:
+        """Focus a field using its context-relative path."""
+        if path[: len(self._prefix)] != self._prefix:
+            return False
+
+        return self.focus_path(path[len(self._prefix) :])
+
     def _current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         """Report the selected path relative to the context root."""
         if not current.isValid():
@@ -430,10 +437,8 @@ class Inspector(QWidget):
         tab = self.tabs.currentWidget()
         view = self.structure.raw if tab is self.structure else tab
 
-        if not isinstance(view, JsonView):
-            return
-
-        view.focus_path(path)
+        if isinstance(view, JsonView):
+            view.focus_context_path(path)
 
     def _on_path_selected(self, path: JsonPath | None) -> None:
         """Forward a selected JSON path to the coordinator."""
