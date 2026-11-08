@@ -9,8 +9,6 @@ module owns collection/session state and synchronization between views.
 
 from __future__ import annotations
 
-from itertools import islice
-
 from PySide6.QtCore import (
     Qt,
     Signal,
@@ -30,14 +28,10 @@ from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
 from chemfit_dashboard.extraction import (
-    ExtractionConfig,
     FieldSelector,
     OutputDescriptor,
-    export_csv,
-    export_jsonl,
-    extract_fields,
 )
-from chemfit_dashboard.extraction_ui import PREVIEW_LIMIT, DataExtractionPanel
+from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.source import ContextSource, JsonFileSource
 
@@ -185,56 +179,8 @@ class MainWindow(QMainWindow):
         self.inspector.extraction_requested.connect(self.add_extraction_field)
         self.inspector.component_extraction_requested.connect(self.add_extraction_field)
 
-        self.extraction_panel.export_requested.connect(self.export_extraction)
         self.extraction_panel.record_selected.connect(self.open_extraction_record)
         self.extraction_panel.status_message.connect(self.statusBar().showMessage)
-
-    def refresh_extraction_preview(self) -> None:
-        """Build a bounded extraction preview in the background."""
-        records = tuple(self.coordinator.collection)
-        config = self.extraction_panel.config
-        selectors = tuple(selector for selector, _ in config.fields)
-
-        if not records or not selectors:
-            self.coordinator.task_runner.invalidate("extraction_preview")
-            self.extraction_panel.set_preview((), len(records))
-            return
-
-        self.extraction_panel.show_loading(len(records))
-
-        def task():
-            return tuple(
-                islice(
-                    extract_fields(self.coordinator.source, records, selectors),
-                    PREVIEW_LIMIT,
-                )
-            )
-
-        self.coordinator.task_runner.submit_latest(
-            "extraction_preview",
-            task,
-            lambda rows: self.extraction_panel.set_preview(rows, len(records)),
-            self.extraction_panel.show_error,
-        )
-
-    def export_extraction(
-        self, path: str, format_name: str, config: ExtractionConfig
-    ) -> None:
-        """Export the current collection using the supplied configuration."""
-        records = tuple(self.coordinator.collection)
-
-        def task() -> int:
-            if format_name == "csv":
-                return export_csv(path, self.coordinator.source, records, config)
-            return export_jsonl(path, self.coordinator.source, records, config)
-
-        self.coordinator.task_runner.submit(
-            task,
-            lambda count: self.statusBar().showMessage(
-                f"Exported {count:,} evaluations to {path}"
-            ),
-            self.extraction_panel.show_error,
-        )
 
     def open_extraction_record(self, record_id: str) -> None:
         """Open a previewed evaluation in the Inspector."""

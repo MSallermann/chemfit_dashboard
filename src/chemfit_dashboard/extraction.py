@@ -24,6 +24,7 @@ from chemfit_dashboard.context_document import (
     NodePath,
 )
 from chemfit_dashboard.traversal import CancellationToken, iter_collection
+from chemfit_dashboard.util import format_json_path
 
 get_nested = pydictnest.get_nested
 _pydictnest_get_path = getattr(pydictnest, "get_path", None)
@@ -379,11 +380,6 @@ def load_config(path: str | Path) -> ExtractionConfig:
     if not isinstance(value, dict):
         raise ValueError("Extraction configuration must be a JSON object")
     return ExtractionConfig.from_dict(value)
-
-
-def format_json_path(path: JsonPath) -> str:
-    """Format a mixed path using collision-safe JSON Pointer escaping."""
-    return "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in path)
 
 
 def flattened_column_name(

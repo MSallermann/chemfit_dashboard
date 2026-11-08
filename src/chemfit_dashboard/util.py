@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from chemfit_dashboard.context_document import NodePath
-from chemfit_dashboard.extraction import JsonPath
+
+if TYPE_CHECKING:
+    from chemfit_dashboard.extraction import JsonPath
 
 
 def format_json_path(path: JsonPath) -> str:

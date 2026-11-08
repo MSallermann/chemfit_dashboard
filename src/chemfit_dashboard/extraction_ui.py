@@ -59,6 +59,8 @@ from chemfit_dashboard.extraction import (
     JsonPath,
     OutputDescriptor,
     column_paths_for_value,
+    export_csv,
+    export_jsonl,
     extract_fields,
     field_to_dict,
     flattened_column_name,
@@ -590,6 +592,25 @@ class DataExtractionPanel(QWidget):
 
         self._rebuild_selection_table(self.n_selectors - 1)
         self._emit_changed()
+
+    def export_extraction(
+        self, path: str, format_name: str, config: ExtractionConfig
+    ) -> None:
+        """Export the current collection using the supplied configuration."""
+        records = tuple(self.coordinator.collection)
+
+        def task() -> int:
+            if format_name == "csv":
+                return export_csv(path, self.coordinator.source, records, config)
+            return export_jsonl(path, self.coordinator.source, records, config)
+
+        self.coordinator.task_runner.submit(
+            task,
+            on_success=lambda count: self.status_message.emit(
+                f"Exported {count:,} evaluations to {path}"
+            ),
+            on_error=self.show_error,
+        )
 
     def set_config(self, config: ExtractionConfig) -> None:
         """Replace editor state from a validated saved configuration."""
@@ -1465,7 +1486,9 @@ class DataExtractionPanel(QWidget):
             if not Path(path).suffix:
                 path += f".{extension}"
             self._remember_directory(EXPORT_DIRECTORY_SETTING, path)
-            self.export_requested.emit(path, format_name, self.config)
+            self.export_extraction(
+                path=path, format_name=format_name, config=self.config
+            )
 
     def _dialog_path(self, key: str, filename: str = "") -> str:
         directory = ""
