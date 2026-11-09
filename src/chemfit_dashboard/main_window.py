@@ -10,12 +10,14 @@ module owns collection/session state and synchronization between views.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -23,6 +25,17 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.activity import ActivityStatus
+from chemfit_dashboard.appearance import (
+    COLOR_SCHEME_SETTING,
+    COLOR_SCHEMES,
+    DEFAULT_COLOR_SCHEME,
+    DENSITY_SETTING,
+    STYLE_PROFILE_SETTING,
+    application_settings,
+    color_scheme,
+    set_active_color_scheme,
+    stylesheet_for,
+)
 from chemfit_dashboard.collection_plot import CollectionPlotPanel
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.context_search import ContextSearchPanel
@@ -34,6 +47,7 @@ from chemfit_dashboard.extraction import (
 )
 from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
+from chemfit_dashboard.icons import refresh_themed_icons, set_themed_icon
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.search_core import SearchHit
 from chemfit_dashboard.source import ContextSource, JsonFileSource
@@ -56,6 +70,20 @@ class MainWindow(QMainWindow):
 
         self.coordinator = DashboardCoordinator(source=source)
         self._tab_before_search: QWidget | None = None
+        self._settings = application_settings()
+        self._scheme_key = color_scheme(
+            str(
+                self._settings.value(COLOR_SCHEME_SETTING, DEFAULT_COLOR_SCHEME)
+                or DEFAULT_COLOR_SCHEME
+            )
+        ).key
+        self._style_profile = str(
+            self._settings.value(STYLE_PROFILE_SETTING, "classic") or "classic"
+        )
+        self._density = str(
+            self._settings.value(DENSITY_SETTING, "comfortable") or "comfortable"
+        )
+        self._apply_appearance()
 
         # some basic settings
         self.setAcceptDrops(True)
@@ -66,7 +94,6 @@ class MainWindow(QMainWindow):
         self.build_ui()
         self.activity = ActivityStatus(self)
         self.build_menu()
-        self.build_navigation_shortcuts()
         self.connect_signals()
 
     def build_ui(self):
@@ -209,16 +236,182 @@ class MainWindow(QMainWindow):
         # set central widget
         self.setCentralWidget(container)
 
-    def build_menu(self): ...
+    def build_menu(self) -> None:  # noqa: PLR0915
+        """Build application menus from the refactored feature entry points."""
+        file_menu = self.menuBar().addMenu("&File")
 
-    def build_navigation_shortcuts(self) -> None:
-        """Install application-level search navigation shortcuts."""
-        self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
-        self.find_shortcut.activated.connect(self.focus_context_search)
+        open_file = QAction("Open &file…", self)
+        set_themed_icon(open_file, "open_file")
+        open_file.setShortcut(QKeySequence.StandardKey.Open)
+        open_file.triggered.connect(self.evaluation_panel.open_files)
+        file_menu.addAction(open_file)
 
-        self.clear_search_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        self.clear_search_shortcut.setEnabled(False)
-        self.clear_search_shortcut.activated.connect(self.clear_context_search)
+        open_directory = QAction("Open &directory…", self)
+        set_themed_icon(open_directory, "open_folder")
+        open_directory.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        open_directory.triggered.connect(self.evaluation_panel.open_directory)
+        file_menu.addAction(open_directory)
+        file_menu.addSeparator()
+
+        add_files = QAction("&Add files to collection…", self)
+        set_themed_icon(add_files, "open_file")
+        add_files.triggered.connect(self.evaluation_panel.add_files)
+        file_menu.addAction(add_files)
+
+        add_directory = QAction("Add &directory to collection…", self)
+        set_themed_icon(add_directory, "open_folder")
+        add_directory.triggered.connect(self.evaluation_panel.add_directory)
+        file_menu.addAction(add_directory)
+        file_menu.addSeparator()
+
+        self.close_collection_action = QAction("&Close collection", self)
+        set_themed_icon(self.close_collection_action, "trash", role="danger")
+        self.close_collection_action.setShortcut(QKeySequence.StandardKey.Close)
+        self.close_collection_action.setEnabled(bool(self.coordinator.collection))
+        self.close_collection_action.triggered.connect(self.close_collection)
+        file_menu.addAction(self.close_collection_action)
+        file_menu.addSeparator()
+
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+
+        edit_menu = self.menuBar().addMenu("&Edit")
+        self.find_action = QAction("&Find in contexts…", self)
+        self.find_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.find_action.triggered.connect(self.focus_context_search)
+        edit_menu.addAction(self.find_action)
+
+        self.clear_search_action = QAction("Clear search", self)
+        self.clear_search_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.clear_search_action.setEnabled(False)
+        self.clear_search_action.triggered.connect(self.clear_context_search)
+        edit_menu.addAction(self.clear_search_action)
+
+        navigate_menu = self.menuBar().addMenu("&Navigate")
+        destinations = (
+            ("Context &Hierarchy", self.context_tree_panel, "Ctrl+1"),
+            ("Data &Flow", self.data_flow_panel, "Ctrl+2"),
+            ("Context &Search", self.search_panel, "Ctrl+3"),
+            ("Data &Extraction", self.extraction_panel, "Ctrl+4"),
+            ("Collection &Plot", self.collection_plot, "Ctrl+5"),
+        )
+        for label, widget, shortcut in destinations:
+            action = QAction(label, self)
+            action.setShortcut(QKeySequence(shortcut))
+            action.triggered.connect(
+                lambda _checked=False, target=widget: self._show_workspace(target)
+            )
+            navigate_menu.addAction(action)
+
+        settings_menu = self.menuBar().addMenu("&Settings")
+        theme_menu = settings_menu.addMenu("Theme")
+        self._theme_actions = QActionGroup(self)
+        self._theme_actions.setExclusive(True)
+        for scheme in COLOR_SCHEMES:
+            action = theme_menu.addAction(scheme.label)
+            action.setCheckable(True)
+            action.setChecked(scheme.key == self._scheme_key)
+            action.triggered.connect(
+                lambda _checked=False, key=scheme.key: self._set_color_scheme(key)
+            )
+            self._theme_actions.addAction(action)
+
+        style_menu = settings_menu.addMenu("Interface style")
+        self._style_actions = QActionGroup(self)
+        self._style_actions.setExclusive(True)
+        for label, profile in (("Classic", "classic"), ("Lightweight", "lightweight")):
+            action = style_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(profile == self._style_profile)
+            action.triggered.connect(
+                lambda _checked=False, value=profile: self._set_style_profile(value)
+            )
+            self._style_actions.addAction(action)
+
+        density_menu = settings_menu.addMenu("Spacing")
+        self._density_actions = QActionGroup(self)
+        self._density_actions.setExclusive(True)
+        for label, density in (
+            ("Compact", "compact"),
+            ("Comfortable", "comfortable"),
+            ("Spacious", "spacious"),
+        ):
+            action = density_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(density == self._density)
+            action.triggered.connect(
+                lambda _checked=False, value=density: self._set_density(value)
+            )
+            self._density_actions.addAction(action)
+
+        help_menu = self.menuBar().addMenu("&Help")
+        shortcuts = QAction("Keyboard shortcuts…", self)
+        shortcuts.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        shortcuts.triggered.connect(self._show_keyboard_shortcuts)
+        help_menu.addAction(shortcuts)
+
+    def _apply_appearance(self) -> None:
+        """Apply the persisted palette and spacing to all dashboard widgets."""
+        scheme = set_active_color_scheme(self._scheme_key)
+        application = QApplication.instance()
+        if isinstance(application, QApplication):
+            application.setStyleSheet(
+                stylesheet_for(
+                    scheme,
+                    style_profile=self._style_profile,
+                    density=self._density,
+                )
+            )
+        if hasattr(self, "data_flow_panel"):
+            self.data_flow_panel.view.set_color_scheme(scheme)
+            self.collection_plot.set_color_scheme(scheme)
+            refresh_themed_icons(self, scheme)
+            self.update()
+
+    def _set_color_scheme(self, key: str) -> None:
+        self._scheme_key = color_scheme(key).key
+        self._settings.setValue(COLOR_SCHEME_SETTING, self._scheme_key)
+        self._settings.sync()
+        self._apply_appearance()
+        self.statusBar().showMessage(
+            f"Color scheme: {color_scheme(self._scheme_key).label}", 3000
+        )
+
+    def _set_style_profile(self, profile: str) -> None:
+        self._style_profile = profile
+        self._settings.setValue(STYLE_PROFILE_SETTING, profile)
+        self._settings.sync()
+        self._apply_appearance()
+
+    def _set_density(self, density: str) -> None:
+        self._density = density
+        self._settings.setValue(DENSITY_SETTING, density)
+        self._settings.sync()
+        self._apply_appearance()
+
+    def close_collection(self) -> None:
+        """Close the collection while leaving the dashboard open."""
+        if not self.coordinator.collection:
+            return
+        self.search_panel.clear_query()
+        self.coordinator.close_collection()
+        self.statusBar().showMessage("Closed context collection", 3000)
+
+    def _show_keyboard_shortcuts(self) -> None:
+        QMessageBox.information(
+            self,
+            "Keyboard shortcuts",
+            "Ctrl+1 … Ctrl+5    Open a workspace tab\n"
+            "Ctrl+F             Search contexts\n"
+            "Esc                Clear search and return\n"
+            "Ctrl+O             Open a context file\n"
+            "Ctrl+Shift+O       Open a context directory\n"
+            "Ctrl+W             Close the collection\n"
+            "Ctrl+Q             Quit\n"
+            "F1                 Show this overview",
+        )
 
     def connect_signals(self) -> None:
         """Connect requests between the application's feature panels."""
@@ -240,11 +433,14 @@ class MainWindow(QMainWindow):
         self.coordinator.task_runner.lifecycle_changed.connect(
             self.activity.task_changed
         )
+        self.coordinator.collection_changed.connect(
+            lambda records: self.close_collection_action.setEnabled(bool(records))
+        )
 
     def _center_tab_changed(self, index: int) -> None:
         """Update behavior associated with the active workspace tab."""
         current = self.center_tabs.widget(index)
-        self.clear_search_shortcut.setEnabled(current is self.search_panel)
+        self.clear_search_action.setEnabled(current is self.search_panel)
         if current is self.data_flow_panel:
             self.data_flow_panel.ensure_rendered()
 
@@ -255,6 +451,14 @@ class MainWindow(QMainWindow):
             self._tab_before_search = current
             self.center_tabs.setCurrentWidget(self.search_panel)
         self.search_panel.focus_query()
+
+    def _show_workspace(self, widget: QWidget) -> None:
+        """Navigate to one center workspace while preserving search return state."""
+        if widget is self.search_panel:
+            self.focus_context_search()
+            return
+        self._tab_before_search = None
+        self.center_tabs.setCurrentWidget(widget)
 
     def clear_context_search(self) -> None:
         """Clear Search and return to the workspace active before Find."""

@@ -312,6 +312,25 @@ class EvaluationPanel(QWidget):
         if path:
             self.coordinator.load_collection([path])
 
+    def add_files(self) -> None:
+        """Append selected context files to the current collection."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add context files to collection",
+            "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if paths:
+            self.coordinator.load_collection(paths, append=True)
+
+    def add_directory(self) -> None:
+        """Append one context directory to the current collection."""
+        path = QFileDialog.getExistingDirectory(
+            self, "Add context directory to collection"
+        )
+        if path:
+            self.coordinator.load_collection([path], append=True)
+
     def _show_evaluation_context_menu(self, position) -> None:  # noqa: ANN001
         proxy_index = self.file_list.indexAt(position)
         if not proxy_index.isValid():
@@ -353,21 +372,21 @@ class EvaluationPanel(QWidget):
         self.coordinator.select_record(record)
 
     def _copy_current_evaluation(self) -> None:
-        record = self.coordinator.selected_document
-        if record is not None:
-            QApplication.clipboard().setText(record.name)
+        document = self.coordinator.selected_document
+        if document is not None:
+            QApplication.clipboard().setText(document.record.name)
 
     def _copy_current_evaluation_path(self) -> None:
-        record = self.coordinator.selected_document
-        if record is None:
+        document = self.coordinator.selected_document
+        if document is None:
             return
-        QApplication.clipboard().setText(str(record.path))
+        QApplication.clipboard().setText(str(document.record.path))
 
     def _open_current_evaluation_folder(self) -> None:
-        record = self.coordinator.selected_document
-        if record is None:
+        document = self.coordinator.selected_document
+        if document is None:
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(record.path.parent)))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(document.record.path.parent)))
 
     def _focus_selected_record(self) -> None:
         """Reveal and focus the currently selected record."""

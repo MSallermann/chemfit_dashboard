@@ -233,6 +233,15 @@ class DashboardCoordinator(QObject):
             label="Loading evaluations",
         )
 
+    def close_collection(self) -> None:
+        """Clear the shared collection and selection state."""
+        self._task_runner.invalidate("collection")
+        self._task_runner.invalidate("order_records_by_field")
+        self.select_record(None)
+        self._collection.replace(())
+        self.collection_changed.emit(())
+        self.collection_order_changed.emit()
+
     def select_record(self, record: RecordRef | None):
         """Asynchronously load a record from the configured source."""
 
