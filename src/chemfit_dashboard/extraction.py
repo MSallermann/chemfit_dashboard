@@ -11,10 +11,11 @@ from __future__ import annotations
 # ruff: noqa: EM101, EM102, PLR0911
 import csv
 import json
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pydictnest
 
@@ -23,6 +24,7 @@ from chemfit_dashboard.context_document import (
     ContextDocumentError,
     NodePath,
 )
+from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import CancellationToken, iter_collection
 from chemfit_dashboard.util import format_combined_path, format_json_path
 
@@ -33,12 +35,97 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from chemfit_dashboard.source import ContextSource, RecordRef
+    from chemfit_dashboard.workers import TaskContext
 
 JsonPath = tuple[str | int, ...]
 CONFIG_VERSION = 3
 MAX_FLATTENED_COLUMNS = 512
 MAX_EXPANDED_ROWS = 1_000_000
 _MISSING = object()
+
+
+def export_json_file_process(
+    path: str,
+    format_name: str,
+    records: tuple[RecordRef, ...],
+    config: ExtractionConfig,
+    *,
+    task_context: TaskContext,
+) -> int:
+    """Export local JSON records atomically inside one worker process."""
+
+    return export_file_atomically(
+        path,
+        format_name,
+        JsonFileSource(),
+        records,
+        config,
+        task_context=task_context,
+    )
+
+
+def export_file_atomically(
+    path: str,
+    format_name: str,
+    source: ContextSource,
+    records: tuple[RecordRef, ...],
+    config: ExtractionConfig,
+    *,
+    task_context: TaskContext,
+) -> int:
+    """Write a temporary sibling and publish it only after full success."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+
+    total = len(records)
+    if format_name == "csv" and any(
+        output.flatten or output.array_expansion_depth for _, output in config.fields
+    ):
+        total *= 2
+    highest_progress = 0
+
+    def progress(completed: int, _record: RecordRef) -> None:
+        nonlocal highest_progress
+        task_context.raise_if_cancelled()
+        highest_progress = max(highest_progress, completed)
+        task_context.report_progress(highest_progress, max(1, total))
+
+    try:
+        if format_name == "csv":
+            count = export_csv(
+                temporary,
+                source,
+                records,
+                config,
+                cancellation=cast("CancellationToken", task_context),
+                progress=progress,
+            )
+        elif format_name == "jsonl":
+            count = export_jsonl(
+                temporary,
+                source,
+                records,
+                config,
+                cancellation=cast("CancellationToken", task_context),
+                progress=progress,
+            )
+        else:
+            message = f"Unknown extraction format: {format_name}"
+            raise ValueError(message)
+        task_context.raise_if_cancelled()
+        task_context.report_progress(max(1, total), max(1, total))
+        temporary.replace(destination)
+        return count
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 class ExtractionStatus(str, Enum):

@@ -366,17 +366,18 @@ class DataFlowView(QGraphicsView):
             self._layout_cancellation = cancellation
             self._show_message(f"Laying out {len(graph.nodes):,} flow nodes…")
             self._task_runner.submit(
-                lambda: data_flow_layout(
+                function=lambda: data_flow_layout(
                     graph.node_ids,
                     edge_pairs,
                     node_width=NODE_WIDTH,
                     node_height=NODE_HEIGHT,
                     cancelled=lambda: cancellation.cancelled,
                 ),
-                lambda layout: self._layout_ready(
+                on_success=lambda layout: self._layout_ready(
                     generation, document, graph, cancellation, layout
                 ),
-                lambda _details: self._layout_failed(generation, cancellation),
+                on_error=lambda _details: self._layout_failed(generation, cancellation),
+                label="Laying out data flow",
             )
             return
         layout = data_flow_layout(

@@ -435,6 +435,7 @@ class CollectionPlotPanel(QWidget):
             function=task,
             on_success=on_success,
             on_error=on_error,
+            label="Extracting collection plot data",
         )
 
     def set_series_collection(self, data: tuple[CollectionSeries, ...]) -> None:

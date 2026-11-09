@@ -226,10 +226,11 @@ class DashboardCoordinator(QObject):
 
         self.collection_load_requested.emit(request)
         self._task_runner.submit_latest(
-            "collection",
-            task,
-            on_success,
-            on_error,
+            key="collection",
+            function=task,
+            on_success=on_success,
+            on_error=on_error,
+            label="Loading evaluations",
         )
 
     def select_record(self, record: RecordRef | None):
@@ -287,10 +288,12 @@ class DashboardCoordinator(QObject):
         self.selected_record_change_requested.emit(request)
 
         self._task_runner.submit_latest(
-            "record",
-            task,
-            on_success,
-            on_error,
+            key="record",
+            function=task,
+            on_success=on_success,
+            on_error=on_error,
+            label="Loading evaluation",
+            display_delay_ms=200,
         )
 
     def select_context(self, path: NodePath | None) -> None:
@@ -473,4 +476,5 @@ class DashboardCoordinator(QObject):
             function=task,
             on_success=on_success,
             on_error=on_error,
+            label="Sorting evaluations",
         )

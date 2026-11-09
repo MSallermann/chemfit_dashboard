@@ -9,10 +9,7 @@ module owns collection/session state and synchronization between views.
 
 from __future__ import annotations
 
-from PySide6.QtCore import (
-    Qt,
-    Signal,
-)
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
@@ -25,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chemfit_dashboard.activity import ActivityStatus
 from chemfit_dashboard.collection_plot import CollectionPlotPanel
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.context_search import ContextSearchPanel
@@ -44,8 +42,6 @@ from chemfit_dashboard.ui_components import DetachablePanelController
 
 class MainWindow(QMainWindow):
     """todo."""
-
-    operation_progress = Signal(str, int, int)
 
     def __init__(
         self,
@@ -68,6 +64,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 620)
 
         self.build_ui()
+        self.activity = ActivityStatus(self)
         self.build_menu()
         self.build_navigation_shortcuts()
         self.connect_signals()
@@ -240,6 +237,9 @@ class MainWindow(QMainWindow):
         self.search_panel.copy_completed.connect(self.statusBar().showMessage)
         self.search_panel.hit_previewed.connect(self._preview_search_hit)
         self.search_panel.hit_selected.connect(self._show_search_hit)
+        self.coordinator.task_runner.lifecycle_changed.connect(
+            self.activity.task_changed
+        )
 
     def _center_tab_changed(self, index: int) -> None:
         """Update behavior associated with the active workspace tab."""
@@ -276,9 +276,16 @@ class MainWindow(QMainWindow):
             self.inspector.focus_value(hit.section, hit.value_path)
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
-        """Release persistent search workers before the window is destroyed."""
+        """Release persistent background workers before window destruction."""
         self.search_panel.shutdown()
+        self.coordinator.task_runner.shutdown()
         super().closeEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
+        """Keep the expanded activity panel anchored above the status bar."""
+        super().resizeEvent(event)
+        if hasattr(self, "activity") and self.activity.panel.isVisible():
+            self.activity.position_panel()
 
     def plot_field(self, selector: FieldSelector) -> None:
         """Plot the selected field and switch to the plot tab."""

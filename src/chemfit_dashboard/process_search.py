@@ -9,17 +9,14 @@ honors cooperative cancellation between process futures.
 from __future__ import annotations
 
 import math
-import threading
 from collections import OrderedDict
 from concurrent.futures import (
     FIRST_COMPLETED,
     Executor,
     Future,
-    ProcessPoolExecutor,
     wait,
 )
 from dataclasses import dataclass, field
-from multiprocessing import get_context
 from typing import TYPE_CHECKING
 
 from chemfit_dashboard.search_core import (
@@ -286,57 +283,3 @@ def search_collection(
         collector.extend(result.hits)
         failed_records += result.failed_records
     return CollectionSearchResult(collector.results(), failed_records)
-
-
-class CollectionSearchExecutor:
-    """Own the dashboard's reusable spawn-based collection search pool."""
-
-    def __init__(
-        self,
-        max_workers: int = DEFAULT_SEARCH_WORKERS,
-        *,
-        executor: Executor | None = None,
-    ) -> None:
-        """Create a lazy persistent pool; workers start on the first submission."""
-        self.max_workers = max(1, max_workers)
-        self._executor = executor or ProcessPoolExecutor(
-            max_workers=self.max_workers,
-            mp_context=get_context("spawn"),
-        )
-        self._closed = False
-        self._lock = threading.Lock()
-
-    def search(
-        self,
-        records: Sequence[RecordRef],
-        options: SearchOptions,
-        *,
-        component_label_key: str,
-        cancellation: CancellationToken | None = None,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> CollectionSearchResult:
-        """Coordinate one search from a non-GUI thread."""
-        with self._lock:
-            if self._closed:
-                message = "Collection search executor is closed"
-                raise RuntimeError(message)
-        return search_collection(
-            self._executor,
-            records,
-            options,
-            component_label_key=component_label_key,
-            worker_count=self.max_workers,
-            cancellation=cancellation,
-            progress=progress,
-        )
-
-    def shutdown(self, *, wait_for_workers: bool = False) -> None:
-        """Reject new work and cancel queued chunks; running chunks finish normally."""
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-        self._executor.shutdown(
-            wait=wait_for_workers,
-            cancel_futures=True,
-        )

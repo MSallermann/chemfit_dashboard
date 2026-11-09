@@ -1,11 +1,9 @@
 """
 Background-operation lifecycle and status-bar presentation.
 
-``ActivityStatus`` owns the cancellation tokens and progress state for work
-started by :class:`chemfit_dashboard.main_window.MainWindow`. It also owns the
-compact status-bar widgets and the expandable list of concurrent operations.
-Keeping those concerns together prevents operation state from being duplicated
-between the coordinator and its presentation.
+``ActivityStatus`` presents lifecycle events emitted by the shared task runner.
+It owns only status-bar widget state; execution, cancellation, and freshness
+remain the runner's responsibility.
 """
 
 from __future__ import annotations
@@ -22,16 +20,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from chemfit_dashboard.traversal import CancellationToken
+from chemfit_dashboard.workers import TaskEvent, TaskState
 
 
 class ActivityStatus:
     """
-    Own active-operation state and its status-bar widgets.
-
-    Starting an operation with an existing name cancels its predecessor, so a
-    feature can have at most one current task. Cancellation is cooperative:
-    this class only sets tokens; the worker must periodically inspect them.
+    Present active-operation state in status-bar widgets.
 
     Widgets are parented to ``window`` and follow Qt's ownership lifecycle.
     ``position_panel`` must be called when the window is resized because the
@@ -41,7 +35,7 @@ class ActivityStatus:
     def __init__(self, window: QMainWindow) -> None:
         """Create operation state and install its widgets into ``window``."""
         self.window = window
-        self.tokens: dict[str, CancellationToken] = {}
+        self._pending: dict[str, object] = {}
         self.labels: dict[str, str] = {}
         self.progress_values: dict[str, tuple[int, int] | None] = {}
         self.active_progress_name: str | None = None
@@ -75,77 +69,70 @@ class ActivityStatus:
         heading.setObjectName("sectionLabel")
         self.panel_layout.addWidget(heading)
         self.rows: dict[str, tuple[QWidget, QLabel, QProgressBar]] = {}
+        self._task_names: dict[int, str] = {}
         self.panel.hide()
 
-    def begin(
-        self, name: str, label: str, *, display_delay_ms: int = 0
-    ) -> CancellationToken:
-        """
-        Start named work and return the token its worker should observe.
+    def task_changed(self, event: TaskEvent) -> None:
+        """Reflect one runner lifecycle transition in the status widgets."""
+        task = event.task
+        name = f"task:{task.id}"
+        if event.state == TaskState.SUBMITTED:
+            if task.label is None:
+                return
+            self._task_names[task.id] = name
+            self._begin(
+                name,
+                task.label,
+                display_delay_ms=task.display_delay_ms,
+            )
+            return
+        if task.id not in self._task_names:
+            return
+        if event.state == TaskState.PROGRESS and event.progress is not None:
+            self._set_progress(name, *event.progress)
+            return
+        if event.state == TaskState.FAILED:
+            self._task_names.pop(task.id, None)
+            self._finish(name, f"Failed: {task.label}")
+            return
+        if event.state in {
+            TaskState.COMPLETED,
+            TaskState.CANCELLED,
+            TaskState.INVALIDATED,
+        }:
+            self._task_names.pop(task.id, None)
+            self._finish(name)
 
-        Short operations may request a display delay to avoid flashing the
-        footer. The delayed callback verifies token identity, so completion or
-        replacement before the timer fires cannot resurrect stale activity.
-        """
-        token = self.new_token(name)
+    def _begin(self, name: str, label: str, *, display_delay_ms: int = 0) -> None:
+        """Present work after an optional delay that avoids status-bar flashing."""
+        marker = object()
+        self._pending[name] = marker
         self.progress_values[name] = None
         if display_delay_ms > 0 and name not in self.labels:
             QTimer.singleShot(
                 display_delay_ms,
-                lambda: self.show_if_current(name, label, token),
+                lambda: self._show_if_current(name, label, marker),
             )
         else:
-            self.show_if_current(name, label, token)
-        return token
+            self._show_if_current(name, label, marker)
 
-    def new_token(self, name: str) -> CancellationToken:
-        """Replace and cancel the token for one logical operation."""
-        previous = self.tokens.get(name)
-        if previous is not None:
-            previous.cancel()
-        token = CancellationToken()
-        self.tokens[name] = token
-        return token
-
-    def finish(self, name: str, message: str | None = None) -> None:
+    def _finish(self, name: str, message: str | None = None) -> None:
         """Forget a completed operation and optionally show a transient result."""
         self.labels.pop(name, None)
         self.progress_values.pop(name, None)
-        self.tokens.pop(name, None)
+        self._pending.pop(name, None)
         self._choose_active_after_removal(name)
         self._update()
         if message:
             self.show_message(message, 4000)
 
-    def cancel(self, name: str) -> None:
-        """Request cancellation and immediately remove an operation from the UI."""
-        token = self.tokens.get(name)
-        if token is not None:
-            token.cancel()
-        self.labels.pop(name, None)
-        self.progress_values.pop(name, None)
-        self._choose_active_after_removal(name)
-        self._update()
-
-    def cancel_all(self) -> None:
-        """Request cancellation for every running operation during shutdown."""
-        for token in self.tokens.values():
-            token.cancel()
-
-    def clear(self) -> None:
-        """Cancel and forget all operations when the collection is closed."""
-        self.cancel_all()
-        self.tokens.clear()
-        self.labels.clear()
-        self.progress_values.clear()
-        self.active_progress_name = None
-        self._update()
-
-    def set_progress(self, name: str, value: int, total: int) -> None:
-        """Update determinate progress if the named operation is still visible."""
-        if name not in self.labels:
+    def _set_progress(self, name: str, value: int, total: int) -> None:
+        """Retain progress while the named operation is still current."""
+        if name not in self._pending:
             return
         self.progress_values[name] = (value, max(1, total))
+        if name not in self.labels:
+            return
         self.active_progress_name = name
         self._update()
 
@@ -175,11 +162,11 @@ class ActivityStatus:
         """Route transient application messages through the universal footer."""
         self.window.statusBar().showMessage(message, timeout)
 
-    def show_if_current(self, name: str, label: str, token: CancellationToken) -> None:
-        """Reveal delayed work only while ``token`` is still the current token."""
+    def _show_if_current(self, name: str, label: str, marker: object) -> None:
+        """Reveal delayed work only while its exact task remains current."""
         # A delayed operation may finish or be superseded before this callback
-        # reaches the GUI thread. Token identity distinguishes that stale work.
-        if self.tokens.get(name) is not token:
+        # reaches the GUI thread. Marker identity distinguishes that stale work.
+        if self._pending.get(name) is not marker:
             return
         self.labels[name] = label
         self.active_progress_name = name

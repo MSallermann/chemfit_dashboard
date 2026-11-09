@@ -59,8 +59,8 @@ from chemfit_dashboard.extraction import (
     JsonPath,
     OutputDescriptor,
     column_paths_for_value,
-    export_csv,
-    export_jsonl,
+    export_file_atomically,
+    export_json_file_process,
     extract_fields,
     field_to_dict,
     flattened_column_name,
@@ -68,10 +68,13 @@ from chemfit_dashboard.extraction import (
     save_config,
 )
 from chemfit_dashboard.icons import make_icon_only, set_themed_icon
+from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.ui_components import ActionRow, muted_label
 from chemfit_dashboard.util import format_combined_path
+from chemfit_dashboard.workers import TaskContext
 
 PREVIEW_LIMIT = 200
+PROCESS_EXPORT_THRESHOLD = 200
 _ACTIONS_COLUMN_MIN_WIDTH = 320
 _PREVIEW_MISSING = object()
 CONFIG_DIRECTORY_SETTING = "paths/extraction_config"
@@ -598,18 +601,35 @@ class DataExtractionPanel(QWidget):
     ) -> None:
         """Export the current collection using the supplied configuration."""
         records = tuple(self.coordinator.collection)
+        source = self.coordinator.source
 
-        def task() -> int:
-            if format_name == "csv":
-                return export_csv(path, self.coordinator.source, records, config)
-            return export_jsonl(path, self.coordinator.source, records, config)
+        def thread_task(*, task_context: TaskContext) -> int:
+            return export_file_atomically(
+                path,
+                format_name,
+                source,
+                records,
+                config,
+                task_context=task_context,
+            )
+
+        process_safe = (
+            source.__class__ is JsonFileSource
+            and len(records) >= PROCESS_EXPORT_THRESHOLD
+        )
+        function = export_json_file_process if process_safe else thread_task
+        args = (path, format_name, records, config) if process_safe else ()
 
         self.coordinator.task_runner.submit(
-            task,
+            function=function,
             on_success=lambda count: self.status_message.emit(
                 f"Exported {count:,} evaluations to {path}"
             ),
             on_error=self.show_error,
+            backend="process" if process_safe else "thread",
+            label=f"Exporting {format_name.upper()}",
+            args=args,
+            with_context=True,
         )
 
     def set_config(self, config: ExtractionConfig) -> None:
@@ -671,10 +691,11 @@ class DataExtractionPanel(QWidget):
             )
 
         self.coordinator.task_runner.submit_latest(
-            "extraction_preview",
-            task,
-            lambda rows: self.set_preview(rows, len(records)),
-            self.show_error,
+            key="extraction_preview",
+            function=task,
+            on_success=lambda rows: self.set_preview(rows, len(records)),
+            on_error=self.show_error,
+            label="Building extraction preview",
         )
 
     def show_error(self, message: str) -> None:

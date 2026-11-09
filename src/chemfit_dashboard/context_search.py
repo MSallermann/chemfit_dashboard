@@ -43,9 +43,9 @@ from chemfit_dashboard.context_document import (
 )
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.process_search import (
-    CollectionSearchExecutor,
     CollectionSearchResult,
     SearchOptions,
+    search_collection,
 )
 from chemfit_dashboard.search_core import (
     ContextSearchCache,
@@ -55,6 +55,7 @@ from chemfit_dashboard.search_core import (
 )
 from chemfit_dashboard.traversal import CancellationToken
 from chemfit_dashboard.ui_components import add_clear_action, muted_label, panel_layout
+from chemfit_dashboard.workers import TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,6 @@ class ContextSearchPanel(QWidget):
         super().__init__(parent)
         self.coordinator = coordinator
         self._index_cache = ContextSearchCache(capacity=32)
-        self._collection_search = CollectionSearchExecutor()
         self._cancellation: CancellationToken | None = None
         self._pending_hit: SearchHit | None = None
         self._pending_activation = False
@@ -247,13 +247,12 @@ class ContextSearchPanel(QWidget):
         self.query.clear()
 
     def shutdown(self) -> None:
-        """Cancel search work and release the persistent process pool."""
+        """Cancel search work before the shared runner is shut down."""
         if self._shut_down:
             return
         self._shut_down = True
         self._debounce.stop()
         self._cancel_search()
-        self._collection_search.shutdown(wait_for_workers=False)
 
     def _schedule_search(self, _value: object = None) -> None:
         """Invalidate active work immediately and debounce its replacement."""
@@ -328,14 +327,23 @@ class ContextSearchPanel(QWidget):
             if current_document is not None
             else DEFAULT_COMPONENT_LABEL_METADATA_KEY
         )
+        process_executor = (
+            self.coordinator.task_runner.process_executor
+            if scope == "collection"
+            else None
+        )
 
-        def task() -> CollectionSearchResult:
+        def task(*, task_context: TaskContext) -> CollectionSearchResult:
             if scope == "collection":
-                return self._collection_search.search(
+                assert process_executor is not None
+                return search_collection(
+                    process_executor,
                     records,
                     options,
                     component_label_key=component_label_key,
+                    worker_count=self.coordinator.task_runner.process_workers,
                     cancellation=cancellation,
+                    progress=task_context.report_progress,
                 )
             assert current_document is not None
             index = self._index_cache.index_for(
@@ -394,6 +402,8 @@ class ContextSearchPanel(QWidget):
             function=task,
             on_success=succeeded,
             on_error=failed,
+            label="Searching contexts",
+            with_context=True,
         )
 
     def _record_changed(self, document: ContextDocument | None) -> None:

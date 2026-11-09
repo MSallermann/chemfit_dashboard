@@ -5,7 +5,6 @@ from chemfit_dashboard.context_document import (
     RecordRef,
     alphanumeric_key,
 )
-from chemfit_dashboard.workers import TaskRunner
 
 
 class OrderedRecordCollection(Sequence[RecordRef]):
@@ -42,8 +41,6 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         self._order: tuple[str, ...] = ()
         self._order_label: str | None = None
         self._order_ascending: bool | None = None
-
-        self._task_runner = TaskRunner()
 
     def replace(self, refs: Iterable[RecordRef]) -> None:
         """
