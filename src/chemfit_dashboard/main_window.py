@@ -3,8 +3,8 @@ Top-level Qt window and cross-feature application coordination.
 
 ``MainWindow`` assembles feature panels and translates user actions into
 document loads, navigation, search, plotting, analysis, and extraction work.
-Feature-specific data processing lives in the corresponding modules; this
-module owns collection/session state and synchronization between views.
+Feature-specific processing and persistent state live in dedicated controllers;
+this module coordinates navigation and synchronization between views.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from chemfit_dashboard.icons import set_themed_icon
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.navigation_history import ContextNavigationHistory
 from chemfit_dashboard.search_core import SearchHit
+from chemfit_dashboard.session import DashboardSessionController
 from chemfit_dashboard.settings_ui import DashboardSettingsController
 from chemfit_dashboard.source import ContextSource, JsonFileSource
 from chemfit_dashboard.ui_components import (
@@ -78,9 +79,18 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 620)
 
         self.build_ui()
+        self.session = DashboardSessionController(
+            coordinator=self.coordinator,
+            settings=self.settings.store,
+            window=self,
+            splitter=self.main_workspace,
+            workspace_tabs=self.center_tabs,
+            parent=self,
+        )
         self.activity = ActivityStatus(self)
         self.build_menu()
         self.connect_signals()
+        self._center_tab_changed(self.center_tabs.currentIndex())
 
     def build_ui(self):  # noqa: PLR0915
         """Build the main UI."""
@@ -268,6 +278,7 @@ class MainWindow(QMainWindow):
         open_directory.setShortcut(QKeySequence("Ctrl+Shift+O"))
         open_directory.triggered.connect(self.evaluation_panel.open_directory)
         file_menu.addAction(open_directory)
+        self.session.populate_file_menu(file_menu)
         file_menu.addSeparator()
 
         add_files = QAction("&Add files to collection…", self)
@@ -449,6 +460,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
         """Release persistent background workers before window destruction."""
+        self.session.save()
         self.search_panel.shutdown()
         self.coordinator.task_runner.shutdown()
         super().closeEvent(event)
