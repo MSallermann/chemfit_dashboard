@@ -233,12 +233,12 @@ class CollectionAnalysisPanel(QWidget):
     """Collection health summary and grouped primary-failure navigator."""
 
     failure_selected = Signal(object)
-    refresh_requested = Signal()
     status_message = Signal(str)
 
     def __init__(  # noqa: PLR0915
         self,
-        coordinator: DashboardCoordinator | None = None,
+        *,
+        coordinator: DashboardCoordinator,
         parent: QWidget | None = None,
     ):
         """Initialize the summary tables and failure navigation controls."""
@@ -344,19 +344,18 @@ class CollectionAnalysisPanel(QWidget):
         self._current_occurrence = -1
         self._pending_failure: FailureOccurrence | None = None
 
-        if self.coordinator is not None:
-            self.coordinator.collection_changed.connect(self._collection_changed)
-            self.coordinator.selected_record_changed.connect(
-                self._complete_pending_failure_navigation
-            )
-            self.coordinator.operation_failed.connect(self._operation_failed)
-            self._collection_changed(tuple(self.coordinator.collection))
+        self.coordinator.collection_changed.connect(self._collection_changed)
+        self.coordinator.selected_record_changed.connect(
+            self._complete_pending_failure_navigation
+        )
+        self.coordinator.operation_failed.connect(self._operation_failed)
+        self.coordinator.component_label_metadata_key_changed.connect(
+            lambda _key: self.refresh_collection_analysis()
+        )
+        self._collection_changed(tuple(self.coordinator.collection))
 
     def _refresh_clicked(self, _checked: bool = False) -> None:
         """Refresh through the coordinator when the panel is application-owned."""
-        if self.coordinator is None:
-            self.refresh_requested.emit()
-            return
         self.refresh_collection_analysis(force=True)
 
     def _collection_changed(self, _records: object) -> None:
@@ -366,36 +365,45 @@ class CollectionAnalysisPanel(QWidget):
 
     def refresh_collection_analysis(self, *, force: bool = False) -> None:
         """Build the collection overview, deferring very large scans by default."""
-        if self.coordinator is None:
-            return
-        records = tuple(self.coordinator.collection)
+        coordinator = self.coordinator
+        records = tuple(coordinator.collection)
         if not records:
-            self.coordinator.task_runner.invalidate("collection_analysis")
+            coordinator.task_runner.invalidate("collection_analysis")
             self.clear()
             return
         if not force and len(records) > AUTO_ANALYSIS_RECORD_LIMIT:
-            self.coordinator.task_runner.invalidate("collection_analysis")
+            coordinator.task_runner.invalidate("collection_analysis")
             self.show_deferred(len(records))
             return
 
         self.show_loading(len(records))
+        component_label_key = coordinator.component_label_metadata_key
 
         def task(*, task_context):  # noqa: ANN001
             items = iter_collection(
-                self.coordinator.source,
+                coordinator.source,
                 records,
                 cancellation=task_context,
                 progress=lambda completed, _record: task_context.report_progress(
                     completed, len(records)
                 ),
             )
-            return analyze_collection((item.record, item.document) for item in items)
+
+            def labeled_documents():
+                for item in items:
+                    if item.document is not None:
+                        item.document.set_component_label_metadata_key(
+                            component_label_key
+                        )
+                    yield item.record, item.document
+
+            return analyze_collection(labeled_documents())
 
         def failed(details: str) -> None:
             logger.error("Could not analyze context collection\n%s", details)
             self.show_error("Could not build the collection summary.")
 
-        self.coordinator.task_runner.submit_latest(
+        coordinator.task_runner.submit_latest(
             key="collection_analysis",
             function=task,
             on_success=self.set_summary,
@@ -569,10 +577,6 @@ class CollectionAnalysisPanel(QWidget):
 
     def _select_failure(self, occurrence: FailureOccurrence) -> None:
         """Select an occurrence through the shared coordinator."""
-        if self.coordinator is None:
-            self.failure_selected.emit(occurrence)
-            return
-
         document = self.coordinator.selected_document
         if document is not None and document.record.id == occurrence.record_id:
             self._focus_failure(occurrence)
@@ -608,8 +612,6 @@ class CollectionAnalysisPanel(QWidget):
 
     def _focus_failure(self, occurrence: FailureOccurrence) -> None:
         """Select a failure context and notify the shell to reveal its feature."""
-        if self.coordinator is None:
-            return
         document = self.coordinator.selected_document
         if (
             document is None

@@ -10,11 +10,7 @@ from PySide6.QtCore import (
     Signal,
 )
 
-from chemfit_dashboard.context_document import (
-    ContextDocument,
-    NodePath,
-    RecordRef,
-)
+from chemfit_dashboard.context_document import ContextDocument, NodePath, RecordRef
 from chemfit_dashboard.extraction import (
     ExtractionStatus,
     ExtractionValue,
@@ -119,6 +115,10 @@ class DashboardCoordinator(QObject):
     # Payload: NodePath | None, where None indicates no selected context.
     selected_field_changed = Signal(object)
 
+    # Emitted after the metadata key used for user-facing component labels changes.
+    # Payload: normalized metadata key, or an empty string for structural names.
+    component_label_metadata_key_changed = Signal(str)
+
     # ------------------------------------------------------------------
     # Collection ordering
     # ------------------------------------------------------------------
@@ -149,6 +149,7 @@ class DashboardCoordinator(QObject):
         # to restore it when a new record/context is selected
         self._preferred_context_path: NodePath = ()
         self._preferred_field_path: JsonPath | None = None
+        self._component_label_metadata_key = ""
 
         self._task_runner = TaskRunner()
 
@@ -196,6 +197,21 @@ class DashboardCoordinator(QObject):
     def selected_field_value(self) -> ExtractionValue | None:
         """Value of the selected field within the current document."""
         return self._selected_field_value
+
+    @property
+    def component_label_metadata_key(self) -> str:
+        """Metadata key used for component labels in every feature."""
+        return self._component_label_metadata_key
+
+    def set_component_label_metadata_key(self, key: str) -> None:
+        """Change component labels and notify every feature to refresh its view."""
+        key = key.strip()
+        if key == self._component_label_metadata_key:
+            return
+        self._component_label_metadata_key = key
+        if self._selected_document is not None:
+            self._selected_document.set_component_label_metadata_key(key)
+        self.component_label_metadata_key_changed.emit(key)
 
     def load_collection(
         self, locations: Iterable[str | Path], *, append: bool = False
@@ -274,6 +290,9 @@ class DashboardCoordinator(QObject):
             return self._source.load(record)
 
         def on_success(document: ContextDocument) -> None:
+            document.set_component_label_metadata_key(
+                self._component_label_metadata_key
+            )
             path = self._preferred_context_path
 
             # Try to restore the selected context

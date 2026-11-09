@@ -10,9 +10,8 @@ module owns collection/session state and synchronization between views.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -25,17 +24,6 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.activity import ActivityStatus
-from chemfit_dashboard.appearance import (
-    COLOR_SCHEME_SETTING,
-    COLOR_SCHEMES,
-    DEFAULT_COLOR_SCHEME,
-    DENSITY_SETTING,
-    STYLE_PROFILE_SETTING,
-    application_settings,
-    color_scheme,
-    set_active_color_scheme,
-    stylesheet_for,
-)
 from chemfit_dashboard.collection_analysis import CollectionAnalysisPanel
 from chemfit_dashboard.collection_plot import CollectionPlotPanel
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
@@ -48,9 +36,10 @@ from chemfit_dashboard.extraction import (
 )
 from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
-from chemfit_dashboard.icons import refresh_themed_icons, set_themed_icon
+from chemfit_dashboard.icons import set_themed_icon
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.search_core import SearchHit
+from chemfit_dashboard.settings_ui import DashboardSettingsController
 from chemfit_dashboard.source import ContextSource, JsonFileSource
 from chemfit_dashboard.ui_components import DetachablePanelController
 
@@ -70,21 +59,10 @@ class MainWindow(QMainWindow):
             source = JsonFileSource()
 
         self.coordinator = DashboardCoordinator(source=source)
+        self.settings = DashboardSettingsController(
+            coordinator=self.coordinator, parent=self
+        )
         self._tab_before_search: QWidget | None = None
-        self._settings = application_settings()
-        self._scheme_key = color_scheme(
-            str(
-                self._settings.value(COLOR_SCHEME_SETTING, DEFAULT_COLOR_SCHEME)
-                or DEFAULT_COLOR_SCHEME
-            )
-        ).key
-        self._style_profile = str(
-            self._settings.value(STYLE_PROFILE_SETTING, "classic") or "classic"
-        )
-        self._density = str(
-            self._settings.value(DENSITY_SETTING, "comfortable") or "comfortable"
-        )
-        self._apply_appearance()
 
         # some basic settings
         self.setAcceptDrops(True)
@@ -134,6 +112,7 @@ class MainWindow(QMainWindow):
         # header_layout.addWidget(self.back_button)
         # header_layout.addWidget(self.forward_button)
         header_layout.addStretch()
+        self.settings.add_font_controls(header_layout)
 
         outer.addWidget(header)
 
@@ -245,6 +224,11 @@ class MainWindow(QMainWindow):
 
         # set central widget
         self.setCentralWidget(container)
+        self.settings.bind_views(
+            root=self,
+            data_flow_panel=self.data_flow_panel,
+            collection_plot=self.collection_plot,
+        )
 
     def build_menu(self) -> None:  # noqa: PLR0915
         """Build application menus from the refactored feature entry points."""
@@ -316,90 +300,13 @@ class MainWindow(QMainWindow):
             navigate_menu.addAction(action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
-        theme_menu = settings_menu.addMenu("Theme")
-        self._theme_actions = QActionGroup(self)
-        self._theme_actions.setExclusive(True)
-        for scheme in COLOR_SCHEMES:
-            action = theme_menu.addAction(scheme.label)
-            action.setCheckable(True)
-            action.setChecked(scheme.key == self._scheme_key)
-            action.triggered.connect(
-                lambda _checked=False, key=scheme.key: self._set_color_scheme(key)
-            )
-            self._theme_actions.addAction(action)
-
-        style_menu = settings_menu.addMenu("Interface style")
-        self._style_actions = QActionGroup(self)
-        self._style_actions.setExclusive(True)
-        for label, profile in (("Classic", "classic"), ("Lightweight", "lightweight")):
-            action = style_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(profile == self._style_profile)
-            action.triggered.connect(
-                lambda _checked=False, value=profile: self._set_style_profile(value)
-            )
-            self._style_actions.addAction(action)
-
-        density_menu = settings_menu.addMenu("Spacing")
-        self._density_actions = QActionGroup(self)
-        self._density_actions.setExclusive(True)
-        for label, density in (
-            ("Compact", "compact"),
-            ("Comfortable", "comfortable"),
-            ("Spacious", "spacious"),
-        ):
-            action = density_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(density == self._density)
-            action.triggered.connect(
-                lambda _checked=False, value=density: self._set_density(value)
-            )
-            self._density_actions.addAction(action)
+        self.settings.populate_menu(settings_menu)
 
         help_menu = self.menuBar().addMenu("&Help")
         shortcuts = QAction("Keyboard shortcuts…", self)
         shortcuts.setShortcut(QKeySequence(Qt.Key.Key_F1))
         shortcuts.triggered.connect(self._show_keyboard_shortcuts)
         help_menu.addAction(shortcuts)
-
-    def _apply_appearance(self) -> None:
-        """Apply the persisted palette and spacing to all dashboard widgets."""
-        scheme = set_active_color_scheme(self._scheme_key)
-        application = QApplication.instance()
-        if isinstance(application, QApplication):
-            application.setStyleSheet(
-                stylesheet_for(
-                    scheme,
-                    style_profile=self._style_profile,
-                    density=self._density,
-                )
-            )
-        if hasattr(self, "data_flow_panel"):
-            self.data_flow_panel.view.set_color_scheme(scheme)
-            self.collection_plot.set_color_scheme(scheme)
-            refresh_themed_icons(self, scheme)
-            self.update()
-
-    def _set_color_scheme(self, key: str) -> None:
-        self._scheme_key = color_scheme(key).key
-        self._settings.setValue(COLOR_SCHEME_SETTING, self._scheme_key)
-        self._settings.sync()
-        self._apply_appearance()
-        self.statusBar().showMessage(
-            f"Color scheme: {color_scheme(self._scheme_key).label}", 3000
-        )
-
-    def _set_style_profile(self, profile: str) -> None:
-        self._style_profile = profile
-        self._settings.setValue(STYLE_PROFILE_SETTING, profile)
-        self._settings.sync()
-        self._apply_appearance()
-
-    def _set_density(self, density: str) -> None:
-        self._density = density
-        self._settings.setValue(DENSITY_SETTING, density)
-        self._settings.sync()
-        self._apply_appearance()
 
     def close_collection(self) -> None:
         """Close the collection while leaving the dashboard open."""
@@ -431,6 +338,7 @@ class MainWindow(QMainWindow):
 
         self.extraction_panel.record_selected.connect(self.open_extraction_record)
         self.extraction_panel.status_message.connect(self.statusBar().showMessage)
+        self.settings.status_message.connect(self.statusBar().showMessage)
 
         self.collection_analysis.failure_selected.connect(
             lambda _occurrence: self.center_tabs.setCurrentWidget(

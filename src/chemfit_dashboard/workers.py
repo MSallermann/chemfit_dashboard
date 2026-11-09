@@ -160,17 +160,26 @@ class TaskRunner(QObject):
     """Run keyed work and report its lifecycle on the GUI thread."""
 
     lifecycle_changed = Signal(object)
+    thread_workers_changed = Signal(int)
+    process_workers_changed = Signal(int)
 
     def __init__(
         self,
         parent: QObject | None = None,
         *,
+        thread_workers: int | None = None,
         process_workers: int | None = None,
     ) -> None:
         """Create a runner with a lazy spawn-based process pool."""
         super().__init__(parent)
+        self.thread_workers = max(
+            1, thread_workers or min(32, (os.cpu_count() or 1) + 4)
+        )
         self.process_workers = max(1, process_workers or min(2, os.cpu_count() or 1))
-        self._thread_pool = ThreadPoolExecutor(thread_name_prefix="chemfit-dashboard")
+        self._thread_pool = ThreadPoolExecutor(
+            max_workers=self.thread_workers,
+            thread_name_prefix="chemfit-dashboard",
+        )
         self._process_pool: ProcessPoolExecutor | None = None
         self._tasks: dict[int, _TaskRecord] = {}
         self._latest: dict[str, int] = {}
@@ -195,6 +204,32 @@ class TaskRunner(QObject):
                 mp_context=get_context("spawn"),
             )
         return self._process_pool
+
+    def set_thread_workers(self, count: int) -> None:
+        """Use a new thread pool size without interrupting already-running work."""
+        count = max(1, count)
+        if self._closed or count == self.thread_workers:
+            return
+        previous = self._thread_pool
+        self.thread_workers = count
+        self._thread_pool = ThreadPoolExecutor(
+            max_workers=count,
+            thread_name_prefix="chemfit-dashboard",
+        )
+        previous.shutdown(wait=False)
+        self.thread_workers_changed.emit(count)
+
+    def set_process_workers(self, count: int) -> None:
+        """Replace the lazily created process pool with the requested size."""
+        count = max(1, count)
+        if self._closed or count == self.process_workers:
+            return
+        previous = self._process_pool
+        self._process_pool = None
+        self.process_workers = count
+        self.process_workers_changed.emit(count)
+        if previous is not None:
+            previous.shutdown(wait=False)
 
     def submit(
         self,

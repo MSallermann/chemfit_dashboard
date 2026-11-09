@@ -91,6 +91,9 @@ class ContextTreePanel(QWidget):
         self.coordinator.selected_context_changed.connect(
             self.on_selected_context_changed
         )
+        self.coordinator.component_label_metadata_key_changed.connect(
+            self._component_labels_changed
+        )
 
         # Initialize from an existing selection, if any.
         self.on_selected_record_changed(self.coordinator.selected_document)
@@ -104,6 +107,11 @@ class ContextTreePanel(QWidget):
         if document is not None:
             # Reveal the first level without eagerly materializing the entire tree.
             self.tree.expand(self.tree_model.index_for_path(()))
+
+    def _component_labels_changed(self, _key: str) -> None:
+        """Refresh the hierarchy after the coordinator changes display labels."""
+        self.tree_model.layoutChanged.emit()
+        self.tree.viewport().update()
 
     def on_selected_context_changed(self, path: NodePath | None):
         if path is None:

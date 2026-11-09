@@ -294,6 +294,11 @@ class Inspector(QWidget):
         self.coordinator.selected_context_changed.connect(
             self.on_selected_context_changed
         )
+        self.coordinator.component_label_metadata_key_changed.connect(
+            lambda _key: self.on_selected_context_changed(
+                self.coordinator.selected_context
+            )
+        )
         self.coordinator.selected_field_changed.connect(self._on_selected_field_changed)
 
     def on_selected_context_changed(self, path: NodePath | None) -> None:

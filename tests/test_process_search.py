@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
+from multiprocessing import get_context
 
 import pytest
 
 from chemfit_dashboard.process_search import (
-    CollectionSearchExecutor,
     CollectionSearchResult,
     SearchBatchResult,
     SearchOptions,
@@ -91,15 +91,16 @@ def _serial_search(source, records, options):
 def test_spawn_process_search_exactly_matches_serial(tmp_path, options):
     source, records = _write_collection(tmp_path)
     expected = _serial_search(source, records, options)
-    executor = CollectionSearchExecutor(max_workers=2)
-    try:
-        actual = executor.search(
+    with ProcessPoolExecutor(
+        max_workers=2, mp_context=get_context("spawn")
+    ) as executor:
+        actual = search_collection(
+            executor,
             records,
             options,
             component_label_key="name",
+            worker_count=2,
         )
-    finally:
-        executor.shutdown(wait_for_workers=True)
 
     assert actual == expected
 
@@ -213,16 +214,6 @@ class _RecordingExecutor(Executor):
 
     def shutdown(self, wait=True, *, cancel_futures=False):
         self.shutdown_calls.append((wait, cancel_futures))
-
-
-def test_executor_shutdown_is_clean_and_idempotent():
-    backend = _RecordingExecutor()
-    executor = CollectionSearchExecutor(max_workers=2, executor=backend)
-
-    executor.shutdown(wait_for_workers=False)
-    executor.shutdown(wait_for_workers=True)
-
-    assert backend.shutdown_calls == [(False, True)]
 
 
 def test_cancelled_before_start_does_not_submit(tmp_path):

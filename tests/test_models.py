@@ -229,57 +229,6 @@ def test_deleting_last_search_character_stays_in_search_workspace():
     assert window.search_scope.currentData() == "collection"
 
 
-def test_status_footer_expands_to_show_concurrent_operations(qapp):
-    window = MainWindow()
-    window.show()
-    window._begin_operation("search", "searching collection")  # noqa: SLF001
-    window.operation_progress.emit("search", 4, 10)
-    window._begin_operation("plot", "loading plot values")  # noqa: SLF001
-    qapp.processEvents()
-
-    assert window.activity.toggle.isVisible()
-    assert "(+1)" in window.activity.status.text()
-    window.activity.toggle.setChecked(True)
-    qapp.processEvents()
-    assert window.activity.panel.isVisible()
-    assert window.activity.panel_layout.count() == 3
-    search_row = window.activity.rows["search"][0]
-    window.operation_progress.emit("search", 5, 10)
-    qapp.processEvents()
-    assert window.activity.panel.isVisible()
-    assert window.activity.rows["search"][0] is search_row
-
-    window._finish_operation("plot")  # noqa: SLF001
-    assert window.activity.progress_values["search"] == (5, 10)
-
-    window._cancel_operation("search")  # noqa: SLF001
-    assert window.activity.toggle.isChecked()
-    assert not window.activity.panel.isVisible()
-    window._begin_operation("search", "searching collection")  # noqa: SLF001
-    qapp.processEvents()
-    assert window.activity.toggle.isChecked()
-    assert window.activity.panel.isVisible()
-
-
-def test_delayed_activity_avoids_short_operation_footer_flash():
-    window = MainWindow()
-
-    quick_token = window._begin_operation(  # noqa: SLF001
-        "document", "loading quick.json", display_delay_ms=200
-    )
-    assert "document" not in window.activity.labels
-    window._finish_operation("document")  # noqa: SLF001
-    window.activity.show_if_current("document", "loading quick.json", quick_token)
-    assert "document" not in window.activity.labels
-
-    slow_token = window._begin_operation(  # noqa: SLF001
-        "document", "loading slow.json", display_delay_ms=200
-    )
-    window.activity.show_if_current("document", "loading slow.json", slow_token)
-    assert window.activity.labels["document"] == "loading slow.json"
-    window._finish_operation("document")  # noqa: SLF001
-
-
 def test_copy_feedback_appears_beside_cursor(monkeypatch, qapp):
     cursor_position = [QPoint(100, 200)]
 

@@ -36,11 +36,7 @@ from PySide6.QtWidgets import (
 from rapidfuzz.fuzz import ratio
 
 from chemfit_dashboard.appearance import active_color_scheme
-from chemfit_dashboard.context_document import (
-    DEFAULT_COMPONENT_LABEL_METADATA_KEY,
-    ContextDocument,
-    RecordRef,
-)
+from chemfit_dashboard.context_document import ContextDocument, RecordRef
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.process_search import (
     CollectionSearchResult,
@@ -236,6 +232,12 @@ class ContextSearchPanel(QWidget):
         )
         self.coordinator.collection_changed.connect(self._collection_changed)
         self.coordinator.operation_failed.connect(self._operation_failed)
+        self.coordinator.component_label_metadata_key_changed.connect(
+            self._component_labels_changed
+        )
+        self.coordinator.task_runner.process_workers_changed.connect(
+            self._process_workers_changed
+        )
 
     def focus_query(self) -> None:
         """Focus and select the query for the application Find action."""
@@ -322,11 +324,7 @@ class ContextSearchPanel(QWidget):
             f"Searching {len(records):,} evaluation"
             f"{'s' if len(records) != 1 else ''} in the background…"
         )
-        component_label_key = (
-            current_document.component_label_metadata_key
-            if current_document is not None
-            else DEFAULT_COMPONENT_LABEL_METADATA_KEY
-        )
+        component_label_key = self.coordinator.component_label_metadata_key
         process_executor = (
             self.coordinator.task_runner.process_executor
             if scope == "collection"
@@ -439,6 +437,15 @@ class ContextSearchPanel(QWidget):
             record.id == pending.record_id for record in records
         ):
             self._clear_pending_hit()
+        if self.scope.currentData() == "collection" and self.query.text().strip():
+            self._schedule_search()
+
+    def _component_labels_changed(self, _key: str) -> None:
+        self._index_cache.clear()
+        if self.query.text().strip():
+            self._schedule_search()
+
+    def _process_workers_changed(self, _count: int) -> None:
         if self.scope.currentData() == "collection" and self.query.text().strip():
             self._schedule_search()
 

@@ -718,6 +718,9 @@ class DataFlowPanel(QWidget):
         self.coordinator.selected_context_changed.connect(
             self.on_selected_context_changed
         )
+        self.coordinator.component_label_metadata_key_changed.connect(
+            self._component_labels_changed
+        )
         self.on_selected_record_changed(self.coordinator.selected_document)
         self.on_selected_context_changed(self.coordinator.selected_context)
 
@@ -737,6 +740,11 @@ class DataFlowPanel(QWidget):
     def on_selected_context_changed(self, path: NodePath | None) -> None:
         """Mirror context selections made in any dashboard feature."""
         self.view.select_path(path)
+
+    def _component_labels_changed(self, _key: str) -> None:
+        """Refresh graph labels and breadcrumbs without changing navigation."""
+        self.view.refresh_labels()
+        self._update_breadcrumbs(self.view.current_path)
 
     def ensure_rendered(self) -> None:
         self.view.ensure_rendered()

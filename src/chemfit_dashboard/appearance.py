@@ -3,7 +3,7 @@ Application color schemes, persistent appearance settings, and Qt stylesheet.
 
 The module is the single source of theme colors used by widgets and custom
 renderers. ``stylesheet_for`` combines a color scheme with style and density
-profiles; ``MainWindow`` applies font scaling afterward.
+profiles; ``DashboardSettingsController`` applies font scaling afterward.
 """
 
 from __future__ import annotations
