@@ -51,6 +51,7 @@ from chemfit_dashboard.search_core import (
 )
 from chemfit_dashboard.traversal import CancellationToken
 from chemfit_dashboard.ui_components import add_clear_action, muted_label, panel_layout
+from chemfit_dashboard.util import format_combined_path
 from chemfit_dashboard.workers import TaskContext
 
 logger = logging.getLogger(__name__)
@@ -845,11 +846,10 @@ def _normalized_with_mapping(value: str) -> tuple[str, list[int | None]]:
 
 
 def _hit_field_path(hit: SearchHit) -> str:
-    section = hit.section or "context"
-    result = section
-    for segment in hit.value_path:
-        result += f"[{segment}]" if isinstance(segment, int) else f"/{segment}"
-    return result
+    return format_combined_path(
+        hit.node_path,
+        _coordinator_field_path(hit) or (),
+    )
 
 
 def _coordinator_field_path(hit: SearchHit) -> tuple[str | int, ...] | None:

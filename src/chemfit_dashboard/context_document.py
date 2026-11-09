@@ -6,6 +6,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from chemfit_dashboard.util import format_node_path
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
@@ -64,7 +66,7 @@ class NodeInfo:
 
     @property
     def path_text(self) -> str:
-        return "root" if not self.path else ".".join(map(str, self.path))
+        return format_node_path(self.path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,8 +117,6 @@ class ContextDocument:
         raw: Any,
         *,
         component_label_metadata_key: str = DEFAULT_COMPONENT_LABEL_METADATA_KEY,
-        name: str | None = None,
-        path: Path | None = None,
         details_cache_capacity: int = DEFAULT_DETAILS_CACHE_CAPACITY,
     ):
         """Index the parsed context hierarchy without changing its values."""
@@ -132,8 +132,6 @@ class ContextDocument:
         self._details_cache_capacity = details_cache_capacity
         self._details_lock = threading.RLock()
         self._component_label_metadata_keys: tuple[str, ...] | None = None
-        self._path = path
-        self._name = name
 
         self._build_index()
 
@@ -147,11 +145,11 @@ class ContextDocument:
 
     @property
     def name(self) -> str:
-        return self._name if self._name is not None else ""
+        return self.record.name
 
     @property
-    def path(self) -> Path | None:
-        return self._path
+    def path(self) -> Path:
+        return self.record.path
 
     @property
     def nodes(self) -> tuple[NodeInfo, ...]:
@@ -183,7 +181,7 @@ class ContextDocument:
         try:
             node = self._nodes[path]
         except KeyError as exc:
-            message = f"Unknown context path: {path!r}"
+            message = f"Unknown context path: {format_node_path(path)}"
             raise ContextDocumentError(message) from exc
 
         value = node.value

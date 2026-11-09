@@ -21,7 +21,11 @@ from chemfit_dashboard.extraction import (
 )
 from chemfit_dashboard.ordered_record_collection import OrderedRecordCollection
 from chemfit_dashboard.source import ContextSource
-from chemfit_dashboard.util import format_combined_path
+from chemfit_dashboard.util import (
+    format_combined_path,
+    format_json_path,
+    format_node_path,
+)
 from chemfit_dashboard.workers import TaskRunner
 
 logger = logging.getLogger(__name__)
@@ -362,7 +366,7 @@ class DashboardCoordinator(QObject):
                 msg = "No document loaded"
                 raise ValueError(msg)
             if not self._selected_document.has_path(path):
-                msg = f"Unknown context path: {path}"
+                msg = f"Unknown context path: {format_node_path(path)}"
                 raise ValueError(msg)
 
         self._preferred_context_path = path if path is not None else ()
@@ -387,7 +391,7 @@ class DashboardCoordinator(QObject):
             msg = "No document loaded"
             raise ValueError(msg)
         if not document.has_path(context_path):
-            msg = f"Unknown context path: {context_path}"
+            msg = f"Unknown context path: {format_node_path(context_path)}"
             raise ValueError(msg)
 
         previous_context = self._selected_context
@@ -453,7 +457,7 @@ class DashboardCoordinator(QObject):
             ExtractionStatus.MISSING_COMPONENT,
             ExtractionStatus.MISSING_FIELD,
         }:
-            msg = f"Invalid field path: {json_path}"
+            msg = f"Invalid field path: {format_json_path(json_path)}"
             raise ValueError(msg)
 
         # The new user-selected path becomes the preferred path

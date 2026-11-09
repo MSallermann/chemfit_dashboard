@@ -299,6 +299,7 @@ class EvaluationPanel(QWidget):
         self.invert_order_button.setEnabled(len(self.coordinator.collection) > 1)
         self.reset_order_button.setEnabled(len(self.coordinator.collection) > 1)
 
+        self.file_list.expandToDepth(0)
         self._focus_selected_record()
 
     def on_selected_record_changed(self) -> None:

@@ -22,6 +22,7 @@ from rapidfuzz.fuzz import ratio
 
 from chemfit_dashboard.context_document import NodePath
 from chemfit_dashboard.source import ContextDocument
+from chemfit_dashboard.util import format_json_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -330,7 +331,7 @@ def _index_document(
                     context_status=node.status,
                     section=section,
                     value_path=value_path,
-                    field_label=_format_value_path(value_path),
+                    field_label=format_json_path(value_path),
                     preview=_value_preview(nested_value),
                     record_id=document.record.id,
                     record_name=document.record.name,
@@ -367,16 +368,6 @@ def _breadcrumb(document: ContextDocument, path: NodePath) -> str:
         document.component_label(path[:depth]) for depth in range(1, len(path) + 1)
     )
     return " / ".join(labels)
-
-
-def _format_value_path(path: tuple[str | int, ...]) -> str:
-    result = ""
-    for segment in path:
-        if isinstance(segment, int):
-            result += f"[{segment}]"
-        else:
-            result += f".{segment}" if result else segment
-    return result
 
 
 def _value_preview(value: Any, limit: int = 80) -> str:

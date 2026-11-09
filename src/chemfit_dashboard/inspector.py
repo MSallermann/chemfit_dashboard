@@ -40,7 +40,11 @@ from chemfit_dashboard.extraction import (
 from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.models import JsonValueModel
 from chemfit_dashboard.ui_components import muted_label
-from chemfit_dashboard.util import format_json_path, format_json_value
+from chemfit_dashboard.util import (
+    format_combined_path,
+    format_json_path,
+    format_json_value,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -63,6 +67,7 @@ class JsonView(QTreeView):
         """Initialize a generic expandable value view."""
         super().__init__(parent)
         self._prefix: JsonPath = prefix
+        self._node_path: NodePath = ()
         self._json_model = JsonValueModel(parent=self)
         self.setModel(self._json_model)
         self.setAlternatingRowColors(True)
@@ -79,6 +84,10 @@ class JsonView(QTreeView):
         """Replace the displayed value and expand its top-level fields."""
         self._json_model.set_value(value)
         self.expandToDepth(0)
+
+    def set_node_path(self, path: NodePath) -> None:
+        """Set the structural path containing the displayed JSON value."""
+        self._node_path = path
 
     def focus_path(self, path: JsonPath) -> bool:
         """Expand, select, and reveal one nested JSON value."""
@@ -123,12 +132,15 @@ class JsonView(QTreeView):
         )
 
     def copy_current_path(self) -> None:
-        """Copy a section-prefixed field path for use elsewhere in the app."""
+        """Copy the complete component and field path."""
         index = self.currentIndex()
         if not index.isValid():
             return
         path = self._json_model.value_path(index)
-        text = format_json_path((*self._prefix, *path))
+        text = format_combined_path(
+            self._node_path,
+            (*self._prefix, *path),
+        )
         QApplication.clipboard().setText(text)
         self.copy_completed.emit("Copied inspector field path")
 
@@ -516,6 +528,8 @@ class Inspector(QWidget):
         self.metadata.set_value({})
         self.structure.set_structure(None)
         self.raw.set_value({})
+        for view in (self.summary, self.metadata, self.structure.raw, self.raw):
+            view.set_node_path(())
         self._populated_tabs = {
             self.summary,
             self.metadata,
@@ -534,6 +548,8 @@ class Inspector(QWidget):
             f"Add the entire {self._component_label} component to Data Extraction."
         )
         info = details.info
+        for view in (self.summary, self.metadata, self.structure.raw, self.raw):
+            view.set_node_path(info.path)
         self.eyebrow.setText(info.kind.upper())
         self.title.setText(self._component_label)
         recorded = "recorded" if info.recorded else "declaration only"

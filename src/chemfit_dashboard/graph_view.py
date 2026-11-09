@@ -52,6 +52,7 @@ from chemfit_dashboard.ui_components import (
     panel_layout,
     set_expand_button_state,
 )
+from chemfit_dashboard.util import format_node_path
 from chemfit_dashboard.workers import GenerationTracker
 
 if TYPE_CHECKING:
@@ -806,11 +807,11 @@ class DataFlowPanel(QWidget):
             return "Root"
         document = self.view.document
         if document is None:
-            return ".".join(map(str, path))
+            return format_node_path(path)
         try:
             document.details(path)
         except ContextSourceError:
-            return ".".join(map(str, path))
+            return format_node_path(path)
         return document.component_label(path)
 
 

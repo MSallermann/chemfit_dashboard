@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from chemfit_dashboard.context_document import NodePath
-
 if TYPE_CHECKING:
+    from chemfit_dashboard.context_document import NodePath
     from chemfit_dashboard.extraction import JsonPath
 
 
@@ -21,14 +20,11 @@ def format_json_path(path: JsonPath) -> str:
 
 
 def format_node_path(path: NodePath) -> str:
-    result = ""
-    for segment in path:
-        result += f"/{segment}"
-    return result
+    return "/" + "/".join(map(str, path))
 
 
 def format_combined_path(node_path: NodePath, json_path: JsonPath) -> str:
-    node = format_node_path(node_path) or "/"
+    node = format_node_path(node_path)
     field = format_json_path(json_path)
     return f"{node} : {field}" if field else node
 
