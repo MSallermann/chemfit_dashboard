@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -596,7 +596,7 @@ class CollectionAnalysisPanel(QWidget):
             )
             return
         self._pending_failure = occurrence
-        self.coordinator.select_record(record)
+        self.coordinator.select_location(record, occurrence.node_path)
 
     def _complete_pending_failure_navigation(
         self, document: ContextDocument | None
@@ -608,7 +608,7 @@ class CollectionAnalysisPanel(QWidget):
         if document is None or document.record.id != occurrence.record_id:
             self._pending_failure = None
             return
-        QTimer.singleShot(0, lambda: self._focus_failure(occurrence))
+        self._focus_failure(occurrence)
 
     def _focus_failure(self, occurrence: FailureOccurrence) -> None:
         """Select a failure context and notify the shell to reveal its feature."""
@@ -625,7 +625,7 @@ class CollectionAnalysisPanel(QWidget):
             return
 
         self._pending_failure = None
-        self.coordinator.select_context(occurrence.node_path)
+        self.coordinator.select_location(document.record, occurrence.node_path)
         self.failure_selected.emit(occurrence)
         self.status_message.emit(
             f"{occurrence.record_name}: {occurrence.exception_type} in "

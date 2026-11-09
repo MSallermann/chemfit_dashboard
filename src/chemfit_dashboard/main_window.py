@@ -38,6 +38,7 @@ from chemfit_dashboard.extraction_ui import DataExtractionPanel
 from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.icons import set_themed_icon
 from chemfit_dashboard.inspector import Inspector
+from chemfit_dashboard.navigation_history import ContextNavigationHistory
 from chemfit_dashboard.search_core import SearchHit
 from chemfit_dashboard.settings_ui import DashboardSettingsController
 from chemfit_dashboard.source import ContextSource, JsonFileSource
@@ -63,6 +64,9 @@ class MainWindow(QMainWindow):
 
         self.coordinator = DashboardCoordinator(source=source)
         self.settings = DashboardSettingsController(
+            coordinator=self.coordinator, parent=self
+        )
+        self.navigation_history = ContextNavigationHistory(
             coordinator=self.coordinator, parent=self
         )
         self._tab_before_search: QWidget | None = None
@@ -101,19 +105,8 @@ class MainWindow(QMainWindow):
         title.setObjectName("brand")
         title_box.addWidget(title)
         header_layout.addLayout(title_box)
-        # self.back_button = QToolButton()
-        # self.back_button.setObjectName("historyBackButton")
-        # self.back_button.setAccessibleName("Back")
-        # self.back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        # self.back_button.setEnabled(False)
-        # self.forward_button = QToolButton()
-        # self.forward_button.setObjectName("historyForwardButton")
-        # self.forward_button.setAccessibleName("Forward")
-        # self.forward_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        # self.forward_button.setEnabled(False)
         header_layout.addSpacing(10)
-        # header_layout.addWidget(self.back_button)
-        # header_layout.addWidget(self.forward_button)
+        self.navigation_history.add_header_controls(header_layout)
         header_layout.addStretch()
         self.settings.add_font_controls(header_layout)
 
@@ -314,6 +307,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.clear_search_action)
 
         navigate_menu = self.menuBar().addMenu("&Navigate")
+        self.navigation_history.populate_menu(navigate_menu)
         destinations = (
             ("Context &Hierarchy", self.context_tree_panel, "Ctrl+1"),
             ("Data &Flow", self.data_flow_panel, "Ctrl+2"),
@@ -361,6 +355,7 @@ class MainWindow(QMainWindow):
             "Ctrl+O             Open a context file\n"
             "Ctrl+Shift+O       Open a context directory\n"
             "Ctrl+W             Close the collection\n"
+            "Alt+Left / Right   Navigate context history\n"
             "Ctrl+Q             Quit\n"
             "F1                 Show this overview",
         )

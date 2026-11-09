@@ -870,7 +870,11 @@ class CollectionPlotPanel(QWidget):
         if document is not None and document.record.id == record_id:
             self._on_record_changed(document)
         else:
-            self.coordinator.select_record(record)
+            self.coordinator.select_location(
+                record,
+                selector.node_path,
+                selector.value_path,
+            )
 
     def _on_record_changed(self, document: ContextDocument) -> None:
         """Synchronize the selection marker and finish pending point navigation."""
@@ -894,8 +898,11 @@ class CollectionPlotPanel(QWidget):
         if not document.has_path(selector.node_path):
             return
 
-        self.coordinator.select_context(selector.node_path)
-        self.coordinator.select_field(selector.value_path)
+        self.coordinator.select_location(
+            document.record,
+            selector.node_path,
+            selector.value_path,
+        )
 
     def _copy_series_path(self, row: int) -> None:
         if not 0 <= row < len(self._data):

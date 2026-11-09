@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import (
     QItemSelection,
-    QSignalBlocker,
+    QItemSelectionModel,
     Qt,
     Signal,
 )
@@ -100,7 +100,6 @@ class ContextTreePanel(QWidget):
 
         # Initialize from an existing selection, if any.
         self.on_selected_record_changed(self.coordinator.selected_document)
-        self.on_selected_context_changed(self.coordinator.selected_context)
 
     def on_selected_record_changed(self, document: ContextDocument | None) -> None:
         """Show the committed document, or clear the hierarchy."""
@@ -111,15 +110,23 @@ class ContextTreePanel(QWidget):
             # Reveal the first level without eagerly materializing the entire tree.
             self.tree.expand(self.tree_model.index_for_path(()))
 
+        self.on_selected_context_changed(self.coordinator.selected_context)
+
     def _component_labels_changed(self, _key: str) -> None:
         """Refresh the hierarchy after the coordinator changes display labels."""
         self.tree_model.layoutChanged.emit()
         self.tree.viewport().update()
 
-    def on_selected_context_changed(self, path: NodePath | None):
+    def on_selected_context_changed(self, _path: NodePath | None):
+        document = self.coordinator.selected_document
+        if self.tree_model.document is not document:
+            self.on_selected_record_changed(document)
+            return
+
+        path = self.coordinator.selected_context
+        selection_model = self.tree.selectionModel()
         if path is None:
-            with QSignalBlocker(self.tree.selectionModel()):
-                self.tree.clearSelection()
+            selection_model.clear()
             return
 
         index = self.tree_model.index_for_path(path)
@@ -131,13 +138,11 @@ class ContextTreePanel(QWidget):
             self.tree.expand(parent)
             parent = parent.parent()
 
-        # Programmatic selection must not overwrite the preferred context path.
-        # When a document lacks the preferred node, the coordinator selects the
-        # nearest ancestor but remembers the original path for later restoration.
-        # Block selectionChanged here so this fallback is not treated as a new
-        # user selection.
-        with QSignalBlocker(self.tree.selectionModel()):
-            self.tree.setCurrentIndex(index)
+        selection_model.setCurrentIndex(
+            index,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
 
         self.tree.scrollTo(index)
 
@@ -150,7 +155,7 @@ class ContextTreePanel(QWidget):
             return
 
         info = self.tree_model.node_info(indexes[0])
-        if info is not None:
+        if info is not None and info.path != self.coordinator.selected_context:
             self.coordinator.select_context(info.path)
 
     def _show_tree_context_menu(self, position) -> None:  # noqa: ANN001

@@ -408,13 +408,7 @@ class ContextSearchPanel(QWidget):
         pending = self._pending_hit
         if pending is not None:
             if document is not None and document.record.id == pending.record_id:
-                # The coordinator emits its restored context and field just
-                # after selected_record_changed. Apply the hit on the next GUI
-                # turn so those restoration signals cannot overwrite it.
-                QTimer.singleShot(
-                    0,
-                    lambda: self._apply_pending_hit(pending, document),
-                )
+                self._apply_pending_hit(pending, document)
             else:
                 # A different committed record supersedes pending navigation.
                 self._clear_pending_hit()
@@ -479,7 +473,11 @@ class ContextSearchPanel(QWidget):
             return
         self._pending_hit = hit
         self._pending_activation = activate
-        self.coordinator.select_record(record)
+        self.coordinator.select_location(
+            record,
+            hit.node_path,
+            _coordinator_field_path(hit),
+        )
 
     def _clear_pending_hit(self) -> None:
         self._pending_hit = None
@@ -506,9 +504,8 @@ class ContextSearchPanel(QWidget):
         if document.record.id != hit.record_id or not document.has_path(hit.node_path):
             return
         try:
-            self.coordinator.select_context(hit.node_path)
             field_path = _coordinator_field_path(hit)
-            self.coordinator.select_field(field_path)
+            self.coordinator.select_location(document.record, hit.node_path, field_path)
         except ValueError:
             self._show_message("The selected search result is no longer available.")
             return

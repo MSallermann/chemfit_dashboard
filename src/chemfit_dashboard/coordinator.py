@@ -36,6 +36,8 @@ class CollectionLoadRequest:
 @dataclass(frozen=True, slots=True)
 class RecordSelectionRequest:
     ref: RecordRef | None
+    context_path: NodePath | None = None
+    field_path: JsonPath | None = None
 
 
 class DashboardCoordinator(QObject):
@@ -258,10 +260,28 @@ class DashboardCoordinator(QObject):
         self.collection_changed.emit(())
         self.collection_order_changed.emit()
 
-    def select_record(self, record: RecordRef | None):
-        """Asynchronously load a record from the configured source."""
+    def select_record(self, record: RecordRef | None) -> None:
+        """Select a record while preserving the preferred in-record location."""
+        self._select_record(RecordSelectionRequest(ref=record))
 
-        request = RecordSelectionRequest(ref=record)
+    def select_location(
+        self,
+        record: RecordRef,
+        context_path: NodePath,
+        field_path: JsonPath | None = None,
+    ) -> None:
+        """Atomically select a record, context, and optional field."""
+        self._select_record(
+            RecordSelectionRequest(
+                ref=record,
+                context_path=context_path,
+                field_path=field_path,
+            )
+        )
+
+    def _select_record(self, request: RecordSelectionRequest) -> None:
+        """Load and commit a requested record selection."""
+        record = request.ref
 
         # Reuse the loaded document and invalidate any pending selection.
         if (
@@ -270,6 +290,11 @@ class DashboardCoordinator(QObject):
             and self._selected_document.record == record
         ):
             self._task_runner.invalidate("record")
+            if request.context_path is not None:
+                self._select_loaded_location(
+                    request.context_path,
+                    request.field_path,
+                )
             return
 
         # Deselect synchronously
@@ -279,10 +304,11 @@ class DashboardCoordinator(QObject):
             self._selected_context = None
             self._preferred_context_path = ()
             self._preferred_field_path = None
+            self._restore_field(emit=False)
 
             self.selected_record_changed.emit(None)
             self.selected_context_changed.emit(None)
-            self._restore_field()
+            self.selected_field_changed.emit(None)
             return
 
         def task() -> ContextDocument:
@@ -293,6 +319,9 @@ class DashboardCoordinator(QObject):
             document.set_component_label_metadata_key(
                 self._component_label_metadata_key
             )
+            if request.context_path is not None:
+                self._preferred_context_path = request.context_path
+                self._preferred_field_path = request.field_path
             path = self._preferred_context_path
 
             # Try to restore the selected context
@@ -302,12 +331,11 @@ class DashboardCoordinator(QObject):
 
             self._selected_document = document
             self._selected_context = path
+            self._restore_field(emit=False)
 
             self.selected_record_changed.emit(document)
-            self.selected_context_changed.emit(path)
-
-            # We also try to restore the selected field within the context
-            self._restore_field()
+            self.selected_context_changed.emit(self._selected_context)
+            self.selected_field_changed.emit(self._selected_field)
 
         def on_error(details: str) -> None:
             self.operation_failed.emit("Record selection", details)
@@ -343,14 +371,38 @@ class DashboardCoordinator(QObject):
             return
 
         self._selected_context = path
-        self.selected_context_changed.emit(path)
-
-        # Here, we deliberately forget the preferred field
-        # path
         self._preferred_field_path = None
-        self._restore_field()
+        self._restore_field(emit=False)
+        self.selected_context_changed.emit(path)
+        self.selected_field_changed.emit(self._selected_field)
 
-    def _restore_field(self) -> None:
+    def _select_loaded_location(
+        self,
+        context_path: NodePath,
+        field_path: JsonPath | None = None,
+    ) -> None:
+        """Atomically select a context and optional field in the loaded record."""
+        document = self._selected_document
+        if document is None:
+            msg = "No document loaded"
+            raise ValueError(msg)
+        if not document.has_path(context_path):
+            msg = f"Unknown context path: {context_path}"
+            raise ValueError(msg)
+
+        previous_context = self._selected_context
+        previous_field = self._selected_field
+        self._preferred_context_path = context_path
+        self._preferred_field_path = field_path
+        self._selected_context = context_path
+        self._restore_field(emit=False)
+
+        if context_path != previous_context:
+            self.selected_context_changed.emit(context_path)
+        if self._selected_field != previous_field or context_path != previous_context:
+            self.selected_field_changed.emit(self._selected_field)
+
+    def _restore_field(self, *, emit: bool = True) -> None:
         """Restore the preferred field in the current evaluation."""
 
         self._selected_field = None
@@ -375,7 +427,8 @@ class DashboardCoordinator(QObject):
                 self._selected_field = self._preferred_field_path
                 self._selected_field_value = value
 
-        self.selected_field_changed.emit(self._selected_field)
+        if emit:
+            self.selected_field_changed.emit(self._selected_field)
 
     def select_field(self, json_path: JsonPath | None) -> None:
         """Select a field within the current context."""
