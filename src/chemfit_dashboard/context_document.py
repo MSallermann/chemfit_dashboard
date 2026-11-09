@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
+    from pathlib import Path
 
 
 def alphanumeric_key(value: str) -> tuple[tuple[int, int | str], ...]:
@@ -45,6 +47,7 @@ class ContextDocumentError(Exception):
 
 NodePath = tuple[int, ...]
 DEFAULT_COMPONENT_LABEL_METADATA_KEY = "name"
+DEFAULT_DETAILS_CACHE_CAPACITY = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +104,8 @@ class ContextDocument:
     """
     Represents one parsed JSON record.
 
-    The document owns decoded JSON, structural node/child indexes and the mutable presentation
+    The document owns decoded JSON, structural node/child indexes, a small
+    thread-safe LRU of computed ``NodeDetails``, and the mutable presentation
     label key. It does not own its source cache and remains valid after eviction.
     """
 
@@ -113,13 +117,20 @@ class ContextDocument:
         component_label_metadata_key: str = DEFAULT_COMPONENT_LABEL_METADATA_KEY,
         name: str | None = None,
         path: Path | None = None,
+        details_cache_capacity: int = DEFAULT_DETAILS_CACHE_CAPACITY,
     ):
         """Index the parsed context hierarchy without changing its values."""
+        if details_cache_capacity < 0:
+            msg = "Details cache capacity cannot be negative"
+            raise ValueError(msg)
         self.record = record
         self.raw = raw
         self._component_label_metadata_key = component_label_metadata_key.strip()
         self._nodes: dict[NodePath, _NodeRecord] = {}
         self._children: dict[NodePath, tuple[NodePath, ...]] = {}
+        self._details_cache: OrderedDict[NodePath, NodeDetails] = OrderedDict()
+        self._details_cache_capacity = details_cache_capacity
+        self._details_lock = threading.RLock()
         self._component_label_metadata_keys: tuple[str, ...] | None = None
         self._path = path
         self._name = name
@@ -163,6 +174,12 @@ class ContextDocument:
     def details(self, path: NodePath) -> NodeDetails:
         """Retrieve node details."""
 
+        with self._details_lock:
+            cached = self._details_cache.get(path)
+            if cached is not None:
+                self._details_cache.move_to_end(path)
+                return cached
+
         try:
             node = self._nodes[path]
         except KeyError as exc:
@@ -187,13 +204,18 @@ class ContextDocument:
             fields = {"value": value}
             raw = fields
 
-        return NodeDetails(
+        details = NodeDetails(
             info=node.info,
             fields=fields,
             metadata=metadata,
             structure=structure,
             raw=raw,
         )
+        with self._details_lock:
+            self._details_cache[path] = details
+            if len(self._details_cache) > self._details_cache_capacity:
+                self._details_cache.popitem(last=False)
+        return details
 
     @property
     def component_label_metadata_key(self) -> str:
