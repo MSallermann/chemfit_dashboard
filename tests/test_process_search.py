@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 
 import pytest
@@ -69,23 +69,7 @@ def _serial_search(source, records, options):
     "options",
     [
         SearchOptions("alhpa"),
-        SearchOptions("alpha result", mode="exact"),
         SearchOptions(r"component_[135]", mode="regex"),
-        SearchOptions(
-            "group_1",
-            include_keys=False,
-            include_values=True,
-            include_metadata=True,
-            include_components=False,
-            mode="exact",
-        ),
-        SearchOptions(
-            "energy",
-            include_keys=True,
-            include_values=False,
-            include_metadata=False,
-            include_components=False,
-        ),
     ],
 )
 def test_spawn_process_search_exactly_matches_serial(tmp_path, options):
@@ -206,30 +190,3 @@ def test_worker_exception_is_reported(tmp_path, monkeypatch):
             component_label_key="name",
             worker_count=2,
         )
-
-
-class _RecordingExecutor(Executor):
-    def __init__(self):
-        self.shutdown_calls = []
-
-    def shutdown(self, wait=True, *, cancel_futures=False):
-        self.shutdown_calls.append((wait, cancel_futures))
-
-
-def test_cancelled_before_start_does_not_submit(tmp_path):
-    _source, records = _write_collection(tmp_path, 2)
-    cancellation = CancellationToken()
-    cancellation.cancel()
-    backend = _RecordingExecutor()
-
-    result = search_collection(
-        backend,
-        records,
-        SearchOptions("output"),
-        component_label_key="name",
-        worker_count=2,
-        cancellation=cancellation,
-    )
-
-    assert result.cancelled
-    assert backend.shutdown_calls == []

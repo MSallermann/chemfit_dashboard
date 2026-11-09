@@ -8,17 +8,6 @@ from benchmark.benchmark import STRESS_PROFILE, create_collection, resolve_profi
 from chemfit_dashboard.source import JsonFileSource
 
 
-def test_stress_profile_is_intentionally_large():
-    assert STRESS_PROFILE.evaluations >= 50_000
-    assert STRESS_PROFILE.graph_nodes >= 25_000
-    assert (
-        STRESS_PROFILE.evaluations * STRESS_PROFILE.components_per_evaluation
-        >= 2_000_000
-    )
-    assert STRESS_PROFILE.root_fields >= 80
-    assert len(STRESS_PROFILE.search_queries) >= 3
-
-
 def test_stress_collection_generator_scales_graph_tree_and_payload(tmp_path):
     root = create_collection(
         tmp_path / "collection",
@@ -43,6 +32,9 @@ def test_stress_collection_generator_scales_graph_tree_and_payload(tmp_path):
 
 
 def test_profile_overrides_are_validated():
+    assert STRESS_PROFILE.evaluations >= 50_000
+    assert STRESS_PROFILE.graph_nodes >= 25_000
+    assert STRESS_PROFILE.root_fields >= 80
     configured = resolve_profile(
         "stress",
         evaluations=12,

@@ -85,7 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         config = load_config(arguments.config)
-        if not config.selectors:
+        if not config.fields:
             message = "Extraction configuration contains no selectors"
             raise ValueError(message)
         source = JsonFileSource()

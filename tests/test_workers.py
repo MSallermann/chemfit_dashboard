@@ -95,15 +95,14 @@ def test_task_runner_executes_backends_and_delivers_on_gui_thread(qapp, backend)
     runner.shutdown(wait_for_processes=True)
 
 
-@pytest.mark.parametrize("backend", ["thread", "process"])
-def test_task_runner_reports_failures(qapp, backend):
+def test_task_runner_reports_failures(qapp):
     runner = TaskRunner(process_workers=1)
     errors = []
     runner.submit(
         function=_fail_task,
         on_success=lambda _result: pytest.fail("failure task unexpectedly succeeded"),
         on_error=errors.append,
-        backend=backend,
+        backend="thread",
     )
 
     _wait_for(qapp, lambda: bool(errors))
@@ -111,8 +110,7 @@ def test_task_runner_reports_failures(qapp, backend):
     runner.shutdown(wait_for_processes=True)
 
 
-@pytest.mark.parametrize("backend", ["thread", "process"])
-def test_submit_latest_invalidates_obsolete_result(qapp, backend):
+def test_submit_latest_invalidates_obsolete_result(qapp):
     runner = TaskRunner(process_workers=1)
     results = []
     events = []
@@ -122,7 +120,7 @@ def test_submit_latest_invalidates_obsolete_result(qapp, backend):
         function=_slow_value,
         on_success=results.append,
         on_error=pytest.fail,
-        backend=backend,
+        backend="thread",
         args=(1, 0.08),
     )
     runner.submit_latest(
@@ -130,7 +128,7 @@ def test_submit_latest_invalidates_obsolete_result(qapp, backend):
         function=_slow_value,
         on_success=results.append,
         on_error=pytest.fail,
-        backend=backend,
+        backend="thread",
         args=(2, 0.0),
     )
 

@@ -5,126 +5,102 @@ import json
 import weakref
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
-from chemfit_dashboard.appearance import active_color_scheme
-from chemfit_dashboard.context_search import (
+from chemfit_dashboard.context_search import ContextSearchPanel
+from chemfit_dashboard.search_core import (
+    ContextSearchCache,
     ContextSearchIndex,
-    ContextSearchPanel,
     SearchHit,
     TopKSearchHits,
-    rank_search_hits,
 )
-from chemfit_dashboard.search_core import ContextSearchCache
 from chemfit_dashboard.source import JsonFileSource
 
 
-def test_fuzzy_search_combines_hierarchy_and_nested_field_name(chemfit_document):
+def test_search_modes_find_nested_fields(chemfit_document):
     index = ContextSearchIndex(chemfit_document)
 
-    hits = index.search("quantites ouput", include_values=False)
+    fuzzy = index.search("quantites ouput", include_values=False)
+    exact = index.search("OUTput", mode="exact", include_values=False)
+    regex = index.search(r"outp.t$", mode="regex", include_values=False)
 
-    assert hits
-    assert hits[0].node_path == (0,)
-    assert hits[0].field_label == "output"
-    assert "compute_quantities" in hits[0].breadcrumb
-
-
-def test_value_search_can_be_toggled_off():
-    source = JsonFileSource()
-    path = Path("examples/context_collection/step_2_ctx_1.json")
-    document = source.load(source.discover([path])[0])
-    index = ContextSearchIndex(document)
-
-    value_hits = index.search("intentional failure", include_values=True)
-    key_hits = index.search("intentional failure", include_values=False)
-
-    assert value_hits
-    assert all("intentional failure" in hit.preview for hit in value_hits)
-    assert key_hits == []
+    assert fuzzy[0].node_path == (0,)
+    assert "compute_quantities" in fuzzy[0].breadcrumb
+    assert exact
+    assert exact[0].field_label == "output"
+    assert regex
+    assert all(hit.field_label == "output" for hit in regex)
 
 
-def test_metadata_search_can_be_toggled_off(chemfit_document):
+def test_search_dimensions_can_exclude_values_metadata_and_components(
+    chemfit_document,
+):
     index = ContextSearchIndex(chemfit_document)
 
-    included = index.search("chemfit.structure", mode="exact", include_values=False)
-    excluded = index.search(
+    assert index.search("chemfit.structure", mode="exact", include_values=False)
+    assert not index.search(
         "chemfit.structure",
         mode="exact",
         include_values=False,
         include_metadata=False,
     )
-
-    assert any(hit.section == "metadata" for hit in included)
-    assert all(hit.section != "metadata" for hit in excluded)
-
-
-def test_component_name_search_can_be_toggled_off(chemfit_document):
-    index = ContextSearchIndex(chemfit_document)
-
-    included = index.search("compute_quantities", mode="exact", include_values=False)
-    excluded = index.search(
+    assert index.search("compute_quantities", mode="exact", include_values=False)
+    assert not index.search(
         "compute_quantities",
         mode="exact",
         include_values=False,
         include_components=False,
     )
 
-    assert included
-    assert excluded == []
+
+def test_value_search_can_be_disabled():
+    source = JsonFileSource()
+    path = Path("examples/context_collection/step_2_ctx_1.json")
+    document = source.load(source.discover([path])[0])
+    index = ContextSearchIndex(document)
+
+    assert index.search("intentional failure", include_values=True)
+    assert not index.search("intentional failure", include_values=False)
 
 
-def test_key_search_can_be_toggled_off(chemfit_document):
-    index = ContextSearchIndex(chemfit_document)
+def test_top_k_results_are_bounded_and_deterministic():
+    hits = [
+        SearchHit((), "root", "complete", "fields", (str(index),), str(index), "", 0.5)
+        for index in range(10)
+    ]
+    collector = TopKSearchHits(3)
 
-    key_hits = index.search("output", include_keys=True, include_values=False)
-    hierarchy_only_hits = index.search(
-        "output", include_keys=False, include_values=False
+    collector.extend(reversed(hits))
+
+    assert len(collector.results()) == 3
+    assert [hit.field_label for hit in collector.results()] == ["0", "1", "2"]
+
+
+def test_search_index_does_not_retain_document(chemfit_json_path):
+    source = JsonFileSource(cache_capacity=0)
+    document = source.load(source.discover([chemfit_json_path])[0])
+    reference = weakref.ref(document)
+
+    index = ContextSearchIndex(document)
+    del document
+    gc.collect()
+
+    assert reference() is None
+    assert index.search("output")
+
+
+def test_search_cache_reuses_indexes_and_honors_zero_capacity(chemfit_document):
+    cache = ContextSearchCache(capacity=1)
+    first = cache.index_for(chemfit_document)
+    assert cache.index_for(chemfit_document) is first
+
+    uncached = ContextSearchCache(capacity=0)
+    assert uncached.index_for(chemfit_document) is not uncached.index_for(
+        chemfit_document
     )
 
-    assert key_hits
-    assert hierarchy_only_hits == []
 
-
-def test_exact_search_is_literal_and_case_insensitive(chemfit_document):
-    index = ContextSearchIndex(chemfit_document)
-
-    exact_hits = index.search("OUTput", mode="exact", include_values=False)
-    typo_hits = index.search("ouput", mode="exact", include_values=False)
-
-    assert exact_hits
-    assert exact_hits[0].field_label == "output"
-    assert typo_hits == []
-
-
-def test_regex_search_matches_keys(chemfit_document):
-    index = ContextSearchIndex(chemfit_document)
-
-    hits = index.search(r"outp.t$", mode="regex", include_values=False)
-
-    assert hits
-    assert all(hit.field_label == "output" for hit in hits)
-
-
-def test_search_panel_ranks_repeated_fields_with_context_labels(chemfit_document):
-    panel = ContextSearchPanel()
-    panel.set_index(ContextSearchIndex(chemfit_document))
-
-    panel.search("output", include_values=False)
-
-    assert panel.results.topLevelItemCount() >= 2
-    first_hit = panel.results.topLevelItem(0)
-    first_label = panel.results.itemWidget(first_hit, 0)
-    assert first_hit.childCount() == 0
-    assert isinstance(first_label, QLabel)
-    assert "Evaluation root" in first_label.text()
-    assert ">output</span>" in first_label.text()
-    assert first_hit.text(2) == "100.0%"
-    assert "best match first" in panel.status.text()
-
-
-def test_search_results_expose_useful_clipboard_formats(qapp):
+def test_search_panel_renders_context_and_copies_canonical_path(coordinator, qapp):
     hit = SearchHit(
         node_path=(1, 0),
         breadcrumb="Evaluation root / optimizer",
@@ -137,11 +113,9 @@ def test_search_results_expose_useful_clipboard_formats(qapp):
         record_id="record-1",
         record_name="step_1.json",
     )
-    panel = ContextSearchPanel()
-    assert panel.results.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
-    activated = []
-    panel.hit_selected.connect(activated.append)
-    panel.show_results(
+    panel = ContextSearchPanel(coordinator=coordinator)
+
+    panel._show_results(  # noqa: SLF001
         [hit],
         "output",
         include_keys=True,
@@ -149,212 +123,24 @@ def test_search_results_expose_useful_clipboard_formats(qapp):
         mode="fuzzy",
     )
     item = panel.results.topLevelItem(0)
-    panel.results.setCurrentItem(item)
-    assert activated == []
-    panel.results.itemDoubleClicked.emit(item, 0)
-    assert activated == [hit]
-    panel._activate_shortcut.activated.emit()  # noqa: SLF001
-    assert activated == [hit, hit]
-    panel._copy_shortcut.activated.emit()  # noqa: SLF001
+    label = panel.results.itemWidget(item, 0)
+    panel._copy_hit_field_path(hit)  # noqa: SLF001
+
+    assert isinstance(label, QLabel)
+    assert "Evaluation root" in label.text()
+    assert panel.status.text().startswith("1 matches")
+    assert qapp.clipboard().text() == "/1/0 : output[0]"
+
+    panel._copy_hit_json(hit)  # noqa: SLF001
     assert json.loads(qapp.clipboard().text())["record_id"] == "record-1"
 
-    panel._copy_hit_value(hit)  # noqa: SLF001
-    assert qapp.clipboard().text() == "3.5"
-    panel._copy_hit_field_path(hit)  # noqa: SLF001
-    assert qapp.clipboard().text() == "fields/output[0]"
-    panel._copy_hit_json(hit)  # noqa: SLF001
 
-    copied = json.loads(qapp.clipboard().text())
-    assert copied["evaluation"] == "step_1.json"
-    assert copied["node_path"] == [1, 0]
-    assert copied["value_path"] == ["output", 0]
-    assert copied["preview"] == "3.5"
+def test_search_panel_reports_invalid_regex_without_starting_work(coordinator):
+    panel = ContextSearchPanel(coordinator=coordinator)
+    panel.query.setText("[unclosed")
+    panel.mode.setCurrentIndex(panel.mode.findData("regex"))
 
-
-def test_search_rows_reserve_height_for_context_detail_text(chemfit_document):
-    panel = ContextSearchPanel()
-    panel.set_index(ContextSearchIndex(chemfit_document))
-
-    panel.search("output", include_values=False)
-
-    item = panel.results.topLevelItem(0)
-    field_label = panel.results.itemWidget(item, 0)
-    assert isinstance(field_label, QLabel)
-    assert item.sizeHint(0).height() >= field_label.sizeHint().height() + 10
-    assert item.sizeHint(1).height() == item.sizeHint(0).height()
-
-
-def test_search_panel_shows_and_highlights_matching_section(chemfit_document):
-    panel = ContextSearchPanel()
-    panel.set_index(ContextSearchIndex(chemfit_document))
-
-    panel.search("metadata", include_values=False)
-
-    first_hit = panel.results.topLevelItem(0)
-    label = panel.results.itemWidget(first_hit, 0)
-    assert isinstance(label, QLabel)
-    assert ">Metadata</span>" in label.text()
-    assert label.text().index("chemfit.structure") < label.text().index(
-        "Evaluation root"
-    )
-
-
-def test_search_panel_highlights_fuzzy_match_in_red_and_bold(chemfit_document):
-    panel = ContextSearchPanel()
-    panel.set_index(ContextSearchIndex(chemfit_document))
-
-    panel.search("ouput", include_values=False)
-
-    matched_label = None
-    for result_index in range(panel.results.topLevelItemCount()):
-        item = panel.results.topLevelItem(result_index)
-        label = panel.results.itemWidget(item, 0)
-        if isinstance(label, QLabel) and ">output</span>" in label.text():
-            matched_label = label
-            break
-    assert isinstance(matched_label, QLabel)
-    assert active_color_scheme().danger in matched_label.text()
-    assert "font-weight: 700" in matched_label.text()
-    assert ">output</span>" in matched_label.text()
-
-
-def test_selected_search_result_does_not_repaint_plain_text(chemfit_document):
-    panel = ContextSearchPanel()
-    panel.set_index(ContextSearchIndex(chemfit_document))
-    panel.search("output", include_values=False)
-    first_hit = panel.results.topLevelItem(0)
-
-    panel.results.setCurrentItem(first_hit)
-
-    assert first_hit.text(0) == ""
-    assert first_hit.text(1) == ""
-    assert isinstance(panel.results.itemWidget(first_hit, 0), QLabel)
-
-
-def test_fuzzy_results_are_sorted_by_descending_score(chemfit_document):
-    hits = ContextSearchIndex(chemfit_document).search("outpt")
-
-    assert hits
-    scores = [hit.score for hit in hits]
-    assert scores == sorted(scores, reverse=True)
-
-
-def test_search_panel_reports_invalid_regex(chemfit_document):
-    panel = ContextSearchPanel()
-    panel.set_index(ContextSearchIndex(chemfit_document))
-
-    panel.search("[unclosed", mode="regex")
+    panel._run_search()  # noqa: SLF001
 
     assert panel.results.topLevelItemCount() == 0
     assert panel.status.text().startswith("Invalid regular expression:")
-
-
-def test_collection_hits_are_globally_ranked_and_show_filename(tmp_path):
-    first_path = tmp_path / "step_2.json"
-    second_path = tmp_path / "step_10.json"
-    first_path.write_text('{"output": 2}', encoding="utf-8")
-    second_path.write_text('{"output": 10}', encoding="utf-8")
-    source = JsonFileSource()
-    records = source.discover([tmp_path])
-    hits = rank_search_hits(
-        [
-            hit
-            for record in records
-            for hit in ContextSearchIndex(source.load(record)).search(
-                "output", include_values=False
-            )
-        ]
-    )
-
-    assert {hit.record_name for hit in hits} == {"step_2.json", "step_10.json"}
-    assert [hit.score for hit in hits] == sorted(
-        (hit.score for hit in hits), reverse=True
-    )
-
-    panel = ContextSearchPanel()
-    panel.show_results(
-        hits,
-        "output",
-        include_keys=True,
-        include_values=False,
-        mode="fuzzy",
-        scope_label="whole collection",
-        searched_records=2,
-    )
-    first_label = panel.results.itemWidget(panel.results.topLevelItem(0), 0)
-    assert isinstance(first_label, QLabel)
-    assert "step_" in first_label.text()
-    assert "files" in panel.status.text()
-
-
-def test_top_k_search_collection_is_bounded_and_deterministic():
-    collector = TopKSearchHits(3)
-    for index in reversed(range(20)):
-        collector.add(
-            SearchHit(
-                (),
-                f"root {index}",
-                "complete",
-                "fields",
-                ("value",),
-                "value",
-                str(index),
-                score=index / 20,
-                record_name=f"record_{index}.json",
-            )
-        )
-
-    assert [hit.score for hit in collector.results()] == [0.95, 0.9, 0.85]
-
-
-def test_search_index_does_not_retain_document(chemfit_json_path):
-    source = JsonFileSource(cache_capacity=0)
-    document = source.load(source.discover([chemfit_json_path])[0])
-    reference = weakref.ref(document)
-    index = ContextSearchIndex(document)
-
-    del document
-    gc.collect()
-
-    assert reference() is None
-    assert index.search("output")
-
-
-def test_search_index_cache_reuses_current_signature_and_label(chemfit_document):
-    cache = ContextSearchCache(capacity=2)
-
-    first = cache.index_for(chemfit_document)
-    reused = cache.index_for(chemfit_document)
-    chemfit_document.set_component_label_metadata_key("component_name")
-    relabeled = cache.index_for(chemfit_document)
-
-    assert reused is first
-    assert relabeled is not first
-
-
-def test_zero_capacity_search_index_cache_does_not_retain_indexes(
-    chemfit_document,
-):
-    cache = ContextSearchCache(capacity=0)
-
-    assert cache.index_for(chemfit_document) is not cache.index_for(chemfit_document)
-
-
-def test_large_background_search_cooperatively_yields(tmp_path, monkeypatch):
-    path = tmp_path / "wide.json"
-    path.write_text(
-        json.dumps({f"field_{index}": index for index in range(300)}),
-        encoding="utf-8",
-    )
-    source = JsonFileSource()
-    document = source.load(source.discover([path])[0])
-    yields: list[int] = []
-    monkeypatch.setattr(
-        "chemfit_dashboard.search_core.time.sleep",
-        lambda _duration: yields.append(1),
-    )
-
-    index = ContextSearchIndex(document, cooperative=True)
-    index.search("field", cooperative=True)
-
-    assert yields

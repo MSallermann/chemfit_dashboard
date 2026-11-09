@@ -8,8 +8,9 @@ import tempfile
 import threading
 import time
 import tracemalloc
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,14 +26,9 @@ from chemfit_dashboard.collection_analysis import analyze_collection
 from chemfit_dashboard.collection_plot import (
     CollectionPlotPanel,
     CollectionSeries,
-    NumberSelector,
     SeriesPoint,
 )
-from chemfit_dashboard.context_search import (
-    ContextSearchIndex,
-    TopKSearchHits,
-    clear_search_caches,
-)
+from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.data_flow import (
     INPUT_NODE,
     OUTPUT_NODE,
@@ -42,6 +38,7 @@ from chemfit_dashboard.data_flow import (
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
     FieldSelector,
+    OutputDescriptor,
     export_csv,
     export_jsonl,
     extract_fields,
@@ -49,7 +46,12 @@ from chemfit_dashboard.extraction import (
 from chemfit_dashboard.graph_layout import data_flow_layout
 from chemfit_dashboard.graph_view import MAX_FLOW_COMPONENTS, DataFlowPanel
 from chemfit_dashboard.models import EvaluationListModel
-from chemfit_dashboard.process_search import CollectionSearchExecutor, SearchOptions
+from chemfit_dashboard.process_search import SearchOptions, search_collection
+from chemfit_dashboard.search_core import (
+    ContextSearchIndex,
+    TopKSearchHits,
+    clear_search_caches,
+)
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import iter_collection
 
@@ -152,9 +154,7 @@ def measure(
         duration = time.perf_counter() - started
         stop_sampling.set()
         sampler.join()
-        process_tree_peak[0] = max(
-            process_tree_peak[0], _process_tree_rss_megabytes()
-        )
+        process_tree_peak[0] = max(process_tree_peak[0], _process_tree_rss_megabytes())
     peak = 0
     if trace_allocations:
         _current, peak = tracemalloc.get_traced_memory()
@@ -163,7 +163,9 @@ def measure(
         process_tree_peak[0],
         resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
     )
-    gui_stall = result.max_stall_ms if isinstance(result, _GuiMeasurementResult) else None
+    gui_stall = (
+        result.max_stall_ms if isinstance(result, _GuiMeasurementResult) else None
+    )
     return Measurement(
         name,
         duration,
@@ -364,29 +366,39 @@ def run(  # noqa: PLR0915
         )
         application = QApplication.instance() or QApplication([])
         for worker_count in (1, 2, 4):
-            executor = CollectionSearchExecutor(max_workers=worker_count)
+            executor = ProcessPoolExecutor(
+                max_workers=worker_count,
+                mp_context=get_context("spawn"),
+            )
             record(
                 f"process search {worker_count}w cold/startup",
-                lambda executor=executor: executor.search(
+                lambda executor=executor, worker_count=worker_count: search_collection(
+                    executor,
                     records,
                     SearchOptions(search_queries[0]),
                     component_label_key="name",
+                    worker_count=worker_count,
                 ),
             )
             record(
                 f"process search {worker_count}w warm",
-                lambda executor=executor: [
-                    executor.search(
+                lambda executor=executor, worker_count=worker_count: [
+                    search_collection(
+                        executor,
                         records,
                         SearchOptions(query),
                         component_label_key="name",
+                        worker_count=worker_count,
                     )
                     for query in search_queries
                 ],
             )
-            executor.shutdown(wait_for_workers=True)
+            executor.shutdown(wait=True)
 
-        responsive_executor = CollectionSearchExecutor(max_workers=2)
+        responsive_executor = ProcessPoolExecutor(
+            max_workers=2,
+            mp_context=get_context("spawn"),
+        )
 
         def responsive_search() -> _GuiMeasurementResult:
             heartbeat_times: list[float] = []
@@ -402,12 +414,14 @@ def run(  # noqa: PLR0915
             timer.setInterval(10)
             timer.timeout.connect(heartbeat)
             timer.start()
-            with ThreadPoolExecutor(max_workers=1) as coordinator:
-                future = coordinator.submit(
-                    responsive_executor.search,
+            with ThreadPoolExecutor(max_workers=1) as search_thread:
+                future = search_thread.submit(
+                    search_collection,
+                    responsive_executor,
                     records,
                     SearchOptions(search_queries[0]),
                     component_label_key="name",
+                    worker_count=2,
                 )
                 while not future.done():
                     application.processEvents()
@@ -418,16 +432,14 @@ def run(  # noqa: PLR0915
             return _GuiMeasurementResult(max(0.0, maximum_interval - 0.010) * 1_000)
 
         record("process search GUI responsiveness", responsive_search)
-        responsive_executor.shutdown(wait_for_workers=True)
+        responsive_executor.shutdown(wait=True)
         selectors = (
-            FieldSelector((), "fields", ("output", "loss"), "loss"),
-            FieldSelector((), "fields", ("input", "parameters"), "parameters"),
+            FieldSelector((), ("output", "loss")),
+            FieldSelector((), ("input", "parameters")),
             *(
                 FieldSelector(
                     (),
-                    "fields",
                     ("metrics", f"metric_{field}"),
-                    f"metric_{field}",
                 )
                 for field in range(root_fields)
             ),
@@ -436,7 +448,15 @@ def run(  # noqa: PLR0915
             "multi-field extraction",
             lambda: sum(1 for _row in extract_fields(source, records, selectors)),
         )
-        config = ExtractionConfig(selectors)
+        config = ExtractionConfig(
+            tuple(
+                (
+                    selector,
+                    OutputDescriptor(str(selector.value_path[-1])),
+                )
+                for selector in selectors
+            )
+        )
         record(
             "CSV export",
             lambda: export_csv(Path(temporary) / "data.csv", source, records, config),
@@ -474,15 +494,26 @@ def run(  # noqa: PLR0915
             lambda: data_flow_layout(flow_nodes, flow_edges),
         )
 
-        model = EvaluationListModel()
-        record("evaluation model build/sort", lambda: model.set_records(records))
+        dashboard_coordinator = DashboardCoordinator(source)
+        dashboard_coordinator.collection.replace(records)
+        models = []
+        record(
+            "evaluation model build/sort",
+            lambda: models.append(
+                EvaluationListModel(coordinator=dashboard_coordinator)
+            ),
+        )
         reverse_ids = [record.id for record in reversed(records)]
         record(
             "evaluation model re-sort",
-            lambda: model.set_record_order(reverse_ids),
+            lambda: dashboard_coordinator.order_records(
+                reverse_ids,
+                "reverse",
+                ascending=False,
+            ),
         )
 
-        selector = NumberSelector((), "fields", ("output", "loss"), "loss")
+        selector = FieldSelector((), ("output", "loss"))
         labels = tuple(record.name for record in records)
         record_ids = tuple(record.id for record in records)
         plot_series = CollectionSeries(
@@ -494,13 +525,18 @@ def run(  # noqa: PLR0915
             ),
             record_ids,
         )
-        plot_panel = CollectionPlotPanel()
-        record("collection plotting", lambda: plot_panel.set_series(plot_series))
+        plot_panel = CollectionPlotPanel(coordinator=dashboard_coordinator)
+        record(
+            "collection plotting",
+            lambda: plot_panel.set_series_collection((plot_series,)),
+        )
 
         def render() -> _GuiMeasurementResult:
-            panel = DataFlowPanel()
-            panel.set_document(document)
-            expected_nodes = graph_nodes + 2 if graph_nodes <= MAX_FLOW_COMPONENTS else 0
+            panel = DataFlowPanel(coordinator=dashboard_coordinator)
+            panel.on_selected_record_changed(document)
+            expected_nodes = (
+                graph_nodes + 2 if graph_nodes <= MAX_FLOW_COMPONENTS else 0
+            )
             finished = False
             heartbeat_times: list[float] = []
             last_heartbeat = time.perf_counter()
@@ -534,6 +570,7 @@ def run(  # noqa: PLR0915
             return _GuiMeasurementResult(max(0.0, maximum_interval - 0.010) * 1_000)
 
         record("data-flow rendering", render)
+        dashboard_coordinator.task_runner.shutdown(wait_for_processes=True)
     return measurements
 
 

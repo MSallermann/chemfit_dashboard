@@ -5,14 +5,21 @@ import json
 
 import pytest
 
-from chemfit_dashboard.extraction import ExtractionConfig, FieldSelector, save_config
+from chemfit_dashboard.extraction import (
+    ExtractionConfig,
+    FieldSelector,
+    OutputDescriptor,
+    save_config,
+)
 from chemfit_dashboard.extraction_cli import main
 
 
 def _config(path) -> None:
     save_config(
         path,
-        ExtractionConfig((FieldSelector((), "fields", ("output",), "result"),)),
+        ExtractionConfig(
+            ((FieldSelector((), ("output",)), OutputDescriptor("result")),)
+        ),
     )
 
 

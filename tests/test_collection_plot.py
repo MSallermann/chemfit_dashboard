@@ -1,951 +1,150 @@
 from __future__ import annotations
 
-import json
+from PySide6.QtCharts import QBarSeries, QLogValueAxis
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QCheckBox, QToolButton
 
-from PySide6.QtCharts import (
-    QBarCategoryAxis,
-    QBarSeries,
-    QLogValueAxis,
-    QScatterSeries,
-)
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QImage
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton, QToolButton
-
-from chemfit_dashboard import main_window as main_window_module
 from chemfit_dashboard.collection_plot import (
+    MAX_RENDERED_POINTS_PER_SERIES,
     CollectionPlotPanel,
     CollectionSeries,
-    NumberSelector,
     SeriesPoint,
-    build_collection_series,
-    ordered_records,
-    selector_for_document,
 )
-from chemfit_dashboard.context_search import SearchHit
-from chemfit_dashboard.extraction import ExtractionConfig, FieldSelector
-from chemfit_dashboard.extraction_ui import DataExtractionPanel
+from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.inspector import Inspector
-from chemfit_dashboard.main_window import MainWindow
-from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.ui_components import ActionRow
 
 
-def test_builds_series_from_nested_intermediate_context_outputs():
-    source = JsonFileSource()
-    records = ordered_records(source.discover(["examples/context_collection"]))
-    documents = [(record, source.load(record)) for record in records]
-    selector = selector_for_document(
-        documents[0][1],
-        NumberSelector(
-            node_path=(1, 0, 0, 0, 0),
-            section="fields",
-            value_path=("output",),
-            label="repulsive_energy · output",
-            value_label="output",
+def _series(
+    field: str = "loss",
+    values: tuple[float, ...] = (2.0, 4.0),
+) -> CollectionSeries:
+    labels = tuple(f"step_{index}.json" for index in range(len(values)))
+    return CollectionSeries(
+        FieldSelector((), (field,)),
+        labels,
+        tuple(
+            SeriesPoint(index, label, value, f"record-{index}")
+            for index, (label, value) in enumerate(zip(labels, values, strict=True))
         ),
+        tuple(f"record-{index}" for index in range(len(values))),
     )
 
-    series = build_collection_series(selector, documents)
 
-    assert series.labels == (
-        "step_0_ctx_0.json",
-        "step_0_ctx_1.json",
-        "step_1_ctx_0.json",
-        "step_1_ctx_1.json",
-        "step_2_ctx_0.json",
-        "step_2_ctx_1.json",
-    )
-    assert len(series.points) == 6
-    assert series.missing_count == 0
-    assert len({point.value for point in series.points}) > 1
+def test_plot_renders_series_and_log_axis(coordinator):
+    panel = CollectionPlotPanel(coordinator=coordinator)
 
-    panel = CollectionPlotPanel()
-    panel.set_series(series)
+    panel.set_series_collection((_series(),))
+
     assert len(panel.chart_view.chart().series()) == 2
-    assert panel.status.text() == "6 of 6 contexts in collection"
-    assert "step_0_ctx_0" not in panel.selection_label.text()
-    assert (
-        panel.chart_view.chart().axes(Qt.Orientation.Vertical)[0].titleText()
-        == "output"
-    )
+    assert panel.selection_label.text() == "Currently plotting: / : loss"
+    assert panel.status.text() == "2 of 2 contexts in collection"
 
     panel.log_y.setChecked(True)
-    log_axis = panel.chart_view.chart().axes(Qt.Orientation.Vertical)[0]
-    assert isinstance(log_axis, QLogValueAxis)
-    assert log_axis.titleText() == "output (log scale)"
-    panel.chart_view.chart().zoom(2)
-    panel.reset_zoom_button.click()
+    axis = panel.chart_view.chart().axes(Qt.Orientation.Vertical)[0]
+    assert isinstance(axis, QLogValueAxis)
 
 
-def test_inspector_requests_plot_for_selected_intermediate_number(
-    chemfit_document,
-):
-    inspector = Inspector()
-    inspector.set_details(chemfit_document.details((1,)))
-    output_index = inspector.summary.model().index(1, 1)
-    requested = []
-    add_requested = []
-    order_requested = []
-    inspector.plot_requested.connect(requested.append)
-    inspector.plot_add_requested.connect(add_requested.append)
-    inspector.order_requested.connect(order_requested.append)
+def test_plot_supports_multiple_series_histograms_and_statistics(coordinator):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    panel.set_series_collection((_series(), _series("runtime", (10.0, 30.0))))
 
-    inspector.summary.setCurrentIndex(output_index)
-    inspector.plot_button.click()
-    inspector.plot_add_button.click()
-    inspector.order_button.click()
-    descending_requested = []
-    inspector.order_descending_requested.connect(descending_requested.append)
-    inspector.order_descending_button.click()
-
-    assert len(requested) == 1
-    assert requested[0].node_path == (1,)
-    assert requested[0].section == "fields"
-    assert requested[0].value_path == ("output",)
-    assert add_requested == requested
-    assert order_requested == requested
-    assert descending_requested == requested
-
-
-def test_inspector_actions_are_compact_grouped_and_explained(chemfit_document):
-    inspector = Inspector()
-    inspector.set_details(chemfit_document.details((1,)))
-
-    assert inspector.plot_button.text() == "Plot"
-    assert inspector.plot_add_button.text() == "+ Series"
-    assert inspector.order_button.text() == ""
-    assert inspector.order_descending_button.text() == ""
-    assert not inspector.order_button.icon().isNull()
-    assert not inspector.order_descending_button.icon().isNull()
-    assert inspector.extract_button.text() == "+ Field"
-    assert inspector.extract_component_button.text() == "+ Component"
-    assert inspector.plot_button.property("primaryAction") == "true"
-    assert inspector.extract_button.property("extractAction") == "true"
-    assert not inspector.order_button.isHidden()
-    assert not inspector.extract_component_button.isHidden()
-
-    output_index = inspector.summary.model().index(1, 1)
-    inspector.summary.setCurrentIndex(output_index)
-
-    assert inspector.plot_selection.text() == "Selected: output"
-    assert inspector.field_selection.text() == "Selected: output"
-    assert inspector.order_button.isEnabled()
-    assert inspector.order_descending_button.isEnabled()
-    assert inspector.extract_component_button.isEnabled()
-    assert "across the collection" in inspector.plot_button.toolTip()
-    assert "Data Extraction" in inspector.extract_button.toolTip()
-
-
-def test_plot_reports_coordinates_and_can_hide_series(qapp):
-    labels = ("step_1.json", "step_2.json")
-    record_ids = ("first", "second")
-    first = CollectionSeries(
-        NumberSelector((), "fields", ("loss",), "loss", "loss"),
-        labels,
-        (SeriesPoint(0, labels[0], 2.0), SeriesPoint(1, labels[1], 4.0)),
-        record_ids,
-    )
-    second = CollectionSeries(
-        NumberSelector((), "fields", ("runtime",), "runtime", "runtime"),
-        labels,
-        (SeriesPoint(0, labels[0], 10.0), SeriesPoint(1, labels[1], 30.0)),
-        record_ids,
-    )
-    panel = CollectionPlotPanel()
-    panel.set_series_collection((first, second))
-    copied = []
-    panel.status_message.connect(copied.append)
-    panel.series_list.setCurrentRow(1)
-    panel._series_copy_shortcut.activated.emit()  # noqa: SLF001
-    assert qapp.clipboard().text() == "Evaluation root / fields/runtime"
-    assert copied[-1] == "Copied plot series field path"
-    panel._copy_series_data(1)  # noqa: SLF001
-    assert qapp.clipboard().text().splitlines() == [
-        "Index,Filename,Record ID,runtime",
-        "0,step_1.json,first,10.0",
-        "1,step_2.json,second,30.0",
-    ]
-
-    panel._cursor_moved(QPointF(0.2, 3.25))  # noqa: SLF001
-    assert "step_1.json" in panel.cursor_coordinates.text()
-    assert "X: 0.2" in panel.cursor_coordinates.text()
-    assert "Y: 3.25" in panel.cursor_coordinates.text()
-
-    second_row = panel.series_list.itemWidget(panel.series_list.item(1))
-    assert second_row is not None
-    second_visibility = second_row.findChild(QCheckBox, "seriesVisibility")
-    assert second_visibility is not None
-    second_visibility.setChecked(False)
-    assert len(panel.chart_view.chart().series()) == 2
-    assert not panel.chart_view.chart().legend().isVisible()
-    assert second_row.findChild(QLabel, "seriesColorSwatch") is not None
-
-    first_row = panel.series_list.itemWidget(panel.series_list.item(0))
-    assert first_row is not None
-    first_visibility = first_row.findChild(QCheckBox, "seriesVisibility")
-    assert first_visibility is not None
-    first_visibility.setChecked(False)
-    assert panel.status.text().startswith("All series are hidden")
-
-    removed = []
-    panel.remove_series_requested.connect(removed.append)
-    remove = second_row.findChild(QToolButton, "removeSeriesAction")
-    assert remove is not None
-    remove.click()
-    assert removed == [second.selector]
-
-
-def test_histogram_series_colors_stay_stable_when_visibility_changes():
-    labels = ("step_1.json", "step_2.json")
-    first = CollectionSeries(
-        NumberSelector((), "fields", ("loss",), "loss", "loss"),
-        labels,
-        (SeriesPoint(0, labels[0], 2.0), SeriesPoint(1, labels[1], 4.0)),
-    )
-    second = CollectionSeries(
-        NumberSelector((), "fields", ("runtime",), "runtime", "runtime"),
-        labels,
-        (SeriesPoint(0, labels[0], 10.0), SeriesPoint(1, labels[1], 30.0)),
-    )
-    panel = CollectionPlotPanel()
-    panel.set_series_collection((first, second))
-    line_colors = {
-        series.name(): series.color().rgb()
-        for series in panel.chart_view.chart().series()
-        if isinstance(series, QScatterSeries)
-    }
+    assert panel.series_list.count() == 2
     panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("histogram"))
-    bars = next(
-        series
-        for series in panel.chart_view.chart().series()
-        if isinstance(series, QBarSeries)
+    assert any(
+        isinstance(series, QBarSeries) for series in panel.chart_view.chart().series()
     )
-    original_colors = {
-        bar_set.label(): bar_set.color().rgba() for bar_set in bars.barSets()
-    }
-    assert {
-        bar_set.label(): bar_set.color().rgb() for bar_set in bars.barSets()
-    } == line_colors
-    horizontal_axis = panel.chart_view.chart().axes(Qt.Orientation.Horizontal)[0]
-    assert isinstance(horizontal_axis, QBarCategoryAxis)
-    original_categories = horizontal_axis.categories()
-    first_row = panel.series_list.itemWidget(panel.series_list.item(0))
-    assert first_row is not None
-    first_visibility = first_row.findChild(QCheckBox, "seriesVisibility")
-    assert first_visibility is not None
-
-    first_visibility.setChecked(False)
-
-    bars = next(
-        series
-        for series in panel.chart_view.chart().series()
-        if isinstance(series, QBarSeries)
-    )
-    remaining = bars.barSets()
-    assert len(remaining) == 1
-    assert remaining[0].label() == "runtime"
-    assert remaining[0].color().rgba() == original_colors["runtime"]
-    horizontal_axis = panel.chart_view.chart().axes(Qt.Orientation.Horizontal)[0]
-    assert isinstance(horizontal_axis, QBarCategoryAxis)
-    assert horizontal_axis.categories() == original_categories
-
-
-def test_interactive_item_rows_share_one_action_row_contract():
-    labels = ("step_1.json",)
-    plot = CollectionPlotPanel()
-    plot.set_series(
-        CollectionSeries(
-            NumberSelector((), "fields", ("loss",), "loss", "loss"),
-            labels,
-            (SeriesPoint(0, labels[0], 2.0),),
-        )
-    )
-    extraction = DataExtractionPanel()
-    extraction.add_selector(FieldSelector((), "fields", ("loss",), "loss"))
-
-    plot_row = plot.series_list.itemWidget(plot.series_list.item(0))
-    extraction_row = extraction.selections.cellWidget(0, 2)
-
-    assert isinstance(plot_row, ActionRow)
-    assert isinstance(extraction_row, ActionRow)
-    plot_remove = plot_row.findChild(QToolButton, "removeSeriesAction")
-    extraction_remove = extraction_row.findChild(QToolButton, "removeAction")
-    assert plot_remove is not None
-    assert extraction_remove is not None
-    assert plot_remove.text() == extraction_remove.text() == ""
-    assert not plot_remove.icon().isNull()
-    assert not extraction_remove.icon().isNull()
-    assert plot_remove.width() == extraction_remove.width() == 28
-    assert plot_remove.autoRaise()
-    assert extraction_remove.autoRaise()
-    assert plot_remove.accessibleName() == plot_remove.toolTip()
-    assert extraction_remove.accessibleName() == extraction_remove.toolTip()
-
-
-def test_plot_supports_histograms_statistics_and_bounded_large_rendering():
-    count = 5_000
-    labels = tuple(f"step_{index}.json" for index in range(count))
-    data = CollectionSeries(
-        NumberSelector((), "fields", ("loss",), "loss", "loss"),
-        labels,
-        tuple(
-            SeriesPoint(index, labels[index], float(index)) for index in range(count)
-        ),
-    )
-    panel = CollectionPlotPanel()
-    panel.set_series(data)
-
-    scatter = next(
-        series
-        for series in panel.chart_view.chart().series()
-        if isinstance(series, QScatterSeries)
-    )
-    assert scatter.count() <= 4_000
-
-    panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("histogram"))
-    chart = panel.chart_view.chart()
-    bars = next(series for series in chart.series() if isinstance(series, QBarSeries))
-    assert panel.normalize.isEnabled()
-    assert not panel.histogram_opacity.isHidden()
-    assert bars.barSets()[0].color().alpha() == 178
-    assert all(
-        axis.gridLineColor().name() == panel._scheme.border  # noqa: SLF001
-        for axis in chart.axes()
-    )
-    assert "bins" in panel.status.text()
-
-    panel.histogram_opacity.setValue(25)
-    bars = next(
-        series
-        for series in panel.chart_view.chart().series()
-        if isinstance(series, QBarSeries)
-    )
-
-    assert bars.barSets()[0].color().alpha() == 64
-    assert bars.barSets()[0].borderColor().alpha() == 225
-
-    panel.normalize.setChecked(True)
-    chart = panel.chart_view.chart()
-    vertical_axis = chart.axes(Qt.Orientation.Vertical)[0]
-    bars = next(series for series in chart.series() if isinstance(series, QBarSeries))
-    probabilities = bars.barSets()[0]
-
-    assert vertical_axis.titleText() == "Probability"
-    assert (
-        abs(sum(probabilities.at(index) for index in range(probabilities.count())) - 1)
-        < 1e-12
-    )
-    assert "sums to probability 1" in panel.status.text()
-    assert "sum to 1" in panel.normalize.toolTip()
-
-    panel.histogram_bins.setValue(1)
-
-    assert panel.histogram_bins.minimum() == 1
-    assert "1 equal-width bin" in panel.status.text()
 
     panel.plot_mode.setCurrentIndex(panel.plot_mode.findData("statistics"))
-    assert not panel.histogram_opacity.isVisible()
-    assert panel.statistics_table.rowCount() == 1
-    assert panel.statistics_table.item(0, 1).text() == "5,000"
+    assert panel.statistics_table.rowCount() == 2
 
 
-def test_plot_can_expand_into_window_and_return(qapp):
-    window = MainWindow()
-    window.show()
-    qapp.processEvents()
-    window.hierarchy_tabs.setCurrentWidget(window.collection_plot)
+def test_plot_series_rows_hide_and_remove_values(coordinator):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    loss = _series()
+    runtime = _series("runtime", (10.0, 30.0))
+    panel._set_requested_selectors((loss.selector, runtime.selector))  # noqa: SLF001
+    panel.set_series_collection((loss, runtime))
 
-    window.collection_plot.expand_button.click()
-    qapp.processEvents()
+    row = panel.series_list.itemWidget(panel.series_list.item(1))
+    assert isinstance(row, ActionRow)
+    visibility = row.findChild(QCheckBox, "seriesVisibility")
+    remove = row.findChild(QToolButton, "removeSeriesAction")
+    assert visibility is not None
+    assert remove is not None
 
-    dialog = window._plot_detachment.dialog  # noqa: SLF001
-    assert dialog is not None
-    assert window.hierarchy_tabs.indexOf(window.collection_plot) == -1
-    placeholder = window._plot_detachment.placeholder  # noqa: SLF001
-    assert placeholder is not None
-    message = placeholder.findChild(QLabel, "plotDetachedMessage")
-    assert message is not None
-    assert "detached window" in message.text()
-    assert window.collection_plot.expand_button.text() == ""
-    assert "Return Plot" in window.collection_plot.expand_button.toolTip()
+    visibility.setChecked(False)
+    assert len(panel.chart_view.chart().series()) == 2
 
-    return_button = placeholder.findChild(QPushButton, "returnPlotButton")
-    assert return_button is not None
-    return_button.click()
-    qapp.processEvents()
-
-    assert window._plot_detachment.dialog is None  # noqa: SLF001
-    assert window.hierarchy_tabs.indexOf(window.collection_plot) == 2
-    assert window.collection_plot.expand_button.text() == ""
-    assert "Open Plot" in window.collection_plot.expand_button.toolTip()
-    window.close()
+    remove.click()
+    assert panel.series_list.count() == 1
+    assert panel._data == (loss,)  # noqa: SLF001
 
 
-def test_multi_series_plot_normalizes_exports_and_selects_context(
-    tmp_path, monkeypatch
-):
-    selector_a = NumberSelector((), "fields", ("loss",), "loss", "loss")
-    selector_b = NumberSelector((), "fields", ("runtime",), "runtime", "runtime")
-    labels = ("step_1.json", "step_2.json")
-    record_ids = ("first", "second")
-    first = CollectionSeries(
-        selector_a,
-        labels,
-        (
-            SeriesPoint(0, labels[0], 2.0, record_ids[0]),
-            SeriesPoint(1, labels[1], 4.0, record_ids[1]),
-        ),
-        record_ids,
+def test_plot_copies_canonical_series_path(coordinator, qapp):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    data = CollectionSeries(
+        FieldSelector((1, 0), ("output", "energy")),
+        ("step.json",),
+        (SeriesPoint(0, "step.json", 3.5),),
     )
-    second = CollectionSeries(
-        selector_b,
-        labels,
-        (
-            SeriesPoint(0, labels[0], 10.0, record_ids[0]),
-            SeriesPoint(1, labels[1], 30.0, record_ids[1]),
-        ),
-        record_ids,
+    messages = []
+    panel.status_message.connect(messages.append)
+    panel.set_series_collection((data,))
+    panel.series_list.setCurrentRow(0)
+
+    panel._series_copy_shortcut.activated.emit()  # noqa: SLF001
+
+    assert qapp.clipboard().text() == "/1/0 : output.energy"
+    assert messages == ["Copied plot series field path"]
+
+
+def test_plot_bounds_rendered_points_for_large_series(coordinator):
+    count = MAX_RENDERED_POINTS_PER_SERIES * 2
+    panel = CollectionPlotPanel(coordinator=coordinator)
+
+    panel.set_series_collection((_series(values=tuple(map(float, range(count)))),))
+
+    markers = max(
+        panel.chart_view.chart().series(),
+        key=lambda item: item.count(),
     )
-    panel = CollectionPlotPanel()
-    selected = []
-    selected_points = []
-    panel.context_selected.connect(selected.append)
-    panel.point_selected.connect(
-        lambda record_id, selector: selected_points.append((record_id, selector))
-    )
-
-    panel.set_series_collection((first, second))
-    assert panel.series_list.count() == 2
-    assert panel.chart_view.chart().legend().isVisible()
-
-    panel.normalize.setChecked(True)
-    y_axis = panel.chart_view.chart().axes(Qt.Orientation.Vertical)[0]
-    assert y_axis.titleText() == "Normalized value (0-1)"
-    assert not panel.log_y.isEnabled()
-
-    panel.normalize.setChecked(False)
-    panel.select_record("second")
-    assert len(panel.chart_view.chart().series()) == 5
-    plotted_marker = next(
-        series
-        for series in panel.chart_view.chart().series()
-        if isinstance(series, QScatterSeries) and series is not panel._selection_series  # noqa: SLF001
-    )
-    plotted_marker.clicked.emit(QPointF(0, 0))
-    assert selected == ["first"]
-
-    selection_marker = panel._selection_series  # noqa: SLF001
-    assert selection_marker is not None
-    hovered = []
-    monkeypatch.setattr(
-        panel,
-        "_point_hovered",
-        lambda series, point, state, label="": hovered.append(
-            (series, point, state, label)
-        ),
-    )
-    selection_marker.hovered.emit(QPointF(1, 30), True)  # noqa: FBT003
-    selection_marker.clicked.emit(QPointF(1, 30))
-
-    assert selected == ["first", "second"]
-    assert selected_points == [("first", selector_a), ("second", selector_b)]
-    assert hovered[0][:3] == (selection_marker, QPointF(1, 30), True)
-    assert hovered[0][3] == "runtime"
-
-    export_path = tmp_path / "plot.csv"
-    panel.export_csv(export_path)
-    exported = export_path.read_text(encoding="utf-8")
-    assert "loss,runtime" in exported
-    assert "step_2.json,second,4.0,30.0" in exported
-
-    custom_export_path = tmp_path / "custom_plot.csv"
-    panel.export_csv(
-        custom_export_path,
-        ("iteration", "evaluation", "context_key", "objective", "wall_time"),
-    )
-    custom_export = custom_export_path.read_text(encoding="utf-8")
-    assert custom_export.startswith(
-        "iteration,evaluation,context_key,objective,wall_time\n"
-    )
-
-    png_path = tmp_path / "plot.png"
-    svg_path = tmp_path / "plot.svg"
-    panel.export_image(png_path)
-    panel.export_image(svg_path)
-    assert png_path.stat().st_size > 0
-    assert svg_path.stat().st_size > 0
+    assert markers.count() <= MAX_RENDERED_POINTS_PER_SERIES
 
 
-def test_png_plot_export_is_rendered_at_300_dpi(tmp_path):
-    selector = NumberSelector((), "fields", ("loss",), "loss", "loss")
-    panel = CollectionPlotPanel()
+def test_plot_exports_png(coordinator, tmp_path):
+    panel = CollectionPlotPanel(coordinator=coordinator)
     panel.resize(640, 480)
-    panel.set_series(
-        CollectionSeries(
-            selector,
-            ("one.json", "two.json"),
-            (
-                SeriesPoint(0, "one.json", 1.0, "one"),
-                SeriesPoint(1, "two.json", 2.0, "two"),
-            ),
-            ("one", "two"),
-        )
-    )
-    panel.show()
-    QApplication.processEvents()
-    png_path = tmp_path / "high-resolution.png"
+    panel.set_series_collection((_series(),))
+    destination = tmp_path / "plot.png"
 
-    panel.export_image(png_path)
+    panel.export_image(destination)
 
-    exported_image = QImage(str(png_path))
-    viewport = panel.chart_view.viewport()
-    assert exported_image.width() == round(viewport.width() * (300 / 96))
-    assert exported_image.height() == round(viewport.height() * (300 / 96))
-    assert abs(exported_image.dotsPerMeterX() - round(300 / 0.0254)) <= 1
-    assert abs(exported_image.dotsPerMeterY() - round(300 / 0.0254)) <= 1
-
-    # The lower-right portion must contain rendered chart details rather than
-    # being an unused single-color area outside an unscaled upper-left render.
-    colors = {
-        exported_image.pixelColor(x, y).rgba()
-        for x in range(exported_image.width() * 2 // 3, exported_image.width(), 4)
-        for y in range(exported_image.height() * 2 // 3, exported_image.height(), 4)
-    }
-    assert len(colors) > 1
+    assert destination.read_bytes().startswith(b"\x89PNG")
 
 
-def test_plot_rectangle_drag_changes_visible_axis_ranges():
-    selector = NumberSelector((), "fields", ("loss",), "loss", "loss")
-    labels = tuple(f"step_{index}.json" for index in range(10))
-    data = CollectionSeries(
-        selector,
-        labels,
-        tuple(
-            SeriesPoint(index, label, float(index), str(index))
-            for index, label in enumerate(labels)
-        ),
-        tuple(map(str, range(10))),
-    )
-    panel = CollectionPlotPanel()
-    panel.resize(900, 600)
-    panel.set_series(data)
-    panel.show()
-    QApplication.processEvents()
-    chart = panel.chart_view.chart()
-    horizontal = chart.axes(Qt.Orientation.Horizontal)[0]
-    vertical = chart.axes(Qt.Orientation.Vertical)[0]
-    original_x_span = horizontal.max() - horizontal.min()
-    original_y_span = vertical.max() - vertical.min()
-    plot_area = chart.plotArea().toRect()
-    start = (
-        plot_area.topLeft()
-        + QPointF(plot_area.width() * 0.2, plot_area.height() * 0.2).toPoint()
-    )
-    end = (
-        plot_area.topLeft()
-        + QPointF(plot_area.width() * 0.7, plot_area.height() * 0.8).toPoint()
-    )
-
-    QTest.mousePress(
-        panel.chart_view.viewport(),
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-        start,
-    )
-    QTest.mouseMove(panel.chart_view.viewport(), end, 20)
-    QTest.mouseRelease(
-        panel.chart_view.viewport(),
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-        end,
-    )
-    QApplication.processEvents()
-
-    assert horizontal.max() - horizontal.min() < original_x_span
-    assert vertical.max() - vertical.min() < original_y_span
-
-
-def test_plot_markers_receive_real_single_clicks_through_zoom_rubber_band():
-    selector = NumberSelector((), "fields", ("loss",), "loss", "loss")
-    labels = ("one.json", "two.json", "three.json")
-    record_ids = ("one", "two", "three")
-    data = CollectionSeries(
-        selector,
-        labels,
-        tuple(
-            SeriesPoint(index, label, float(index + 1), record_ids[index])
-            for index, label in enumerate(labels)
-        ),
-        record_ids,
-    )
-    panel = CollectionPlotPanel()
-    panel.resize(900, 600)
-    panel.set_series(data)
-    panel.show()
-    QApplication.processEvents()
-    selected = []
-    panel.context_selected.connect(selected.append)
-    chart = panel.chart_view.chart()
-    markers = next(
-        series
-        for series in chart.series()
-        if isinstance(series, QScatterSeries) and series.name() == "loss"
-    )
-
-    for point in data.points:
-        chart_position = chart.mapToPosition(QPointF(point.index, point.value), markers)
-        viewport_position = panel.chart_view.mapFromScene(chart_position)
-        QTest.mouseClick(
-            panel.chart_view.viewport(),
-            Qt.MouseButton.LeftButton,
-            Qt.KeyboardModifier.NoModifier,
-            viewport_position,
-        )
-        QApplication.processEvents()
-
-    panel.select_record("two")
-    QApplication.processEvents()
-    selection = panel._selection_series  # noqa: SLF001
-    assert selection is not None
-    selected_position = panel.chart_view.mapFromScene(
-        chart.mapToPosition(QPointF(1, 2), selection)
-    )
-    QTest.mouseClick(
-        panel.chart_view.viewport(),
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-        selected_position,
-    )
-    QApplication.processEvents()
-
-    assert selected == ["one", "two", "three", "two"]
-
-
-def test_main_window_orders_collection_by_selected_numeric_value(tmp_path, monkeypatch):
-    for name in ("step_1.json", "step_2.json", "step_10.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    source = JsonFileSource()
-    records = source.discover([tmp_path])
-    window = MainWindow(source=source)
-    window.file_model.set_records(records)
-
-    selector = NumberSelector((), "fields", ("loss",), "Evaluation root / loss")
-    data = CollectionSeries(
-        selector=selector,
-        labels=tuple(record.name for record in records),
-        points=(
-            SeriesPoint(0, records[0].name, 5.0),
-            SeriesPoint(2, records[2].name, 1.0),
-        ),
-    )
-
-    generation = window._generations.advance(  # noqa: SLF001
-        main_window_module._RequestKind.ORDER  # noqa: SLF001
-    )
-
-    window._order_loaded(generation, records, data)  # noqa: SLF001
-
-    # Ascending numeric order; missing values last.
-    assert [record.name for record in window.file_model.records] == [
-        "step_10.json",
-        "step_1.json",
-        "step_2.json",
-    ]
-    assert "missing placed last" in window.statusBar().currentMessage()
-
-    sort_indicator_invalidations = []
-    monkeypatch.setattr(
-        window.extraction,
-        "clear_collection_sort",
-        lambda: sort_indicator_invalidations.append(True),
-    )
-
-    # Reverse numeric order without clearing the extraction sort indicator.
-    window.reverse_order_button.click()
-    assert len(sort_indicator_invalidations) == 0
-    assert [record.name for record in window.file_model.records] == [
-        "step_1.json",
-        "step_10.json",
-        "step_2.json",
-    ]
-    assert window.order_status.text().endswith("↓")
-
-    # Reset to natural filename order, clearing the sort indicator.
-    window.reset_order_button.click()
-    assert len(sort_indicator_invalidations) == 1
-    assert [record.name for record in window.file_model.records] == [
-        "step_1.json",
-        "step_2.json",
-        "step_10.json",
-    ]
-
-    # With no numeric criterion active, reverse filename order.
-    window.reverse_order_button.click()
-    assert [record.name for record in window.file_model.records] == [
-        "step_10.json",
-        "step_2.json",
-        "step_1.json",
-    ]
-
-
-def test_reversing_collection_rebuilds_the_active_plot(tmp_path, monkeypatch):
-    for index, name in enumerate(("step_1.json", "step_2.json", "step_10.json")):
-        (tmp_path / name).write_text(json.dumps({"loss": index + 1}), encoding="utf-8")
-    source = JsonFileSource()
-    window = MainWindow(source=source)
-    window.file_model.set_records(source.discover([tmp_path]))
-    window.reverse_order_button.setEnabled(True)
-    monkeypatch.setattr(
-        window.tasks,
-        "submit",
-        lambda function, on_success, _on_error: on_success(function()),
-    )
-    selector = NumberSelector((), "fields", ("loss",), "Evaluation root / loss")
-
-    window._plot_requested(selector)  # noqa: SLF001
-    assert window.collection_plot._labels == (  # noqa: SLF001
-        "step_1.json",
-        "step_2.json",
-        "step_10.json",
-    )
-
-    window.reverse_order_button.click()
-
-    assert window.collection_plot._labels == (  # noqa: SLF001
-        "step_10.json",
-        "step_2.json",
-        "step_1.json",
-    )
-
-
-def test_main_window_adds_plot_series_and_plot_click_selects_evaluation(
-    tmp_path, monkeypatch
+def test_inspector_emits_shared_field_selector_for_plot_and_order(
+    loaded_coordinator,
+    monkeypatch,
 ):
-    for index, name in enumerate(("step_1.json", "step_2.json")):
-        (tmp_path / name).write_text(
-            json.dumps({"loss": index + 1, "runtime": (index + 1) * 10}),
-            encoding="utf-8",
-        )
-    source = JsonFileSource()
-    records = source.discover([tmp_path])
-    window = MainWindow(source=source)
-    window.file_model.set_records(records)
-    window._current_document = source.load(records[0])  # noqa: SLF001
+    inspector = Inspector(coordinator=loaded_coordinator)
+    loaded_coordinator.select_context((1,))
+    inspector.on_selected_context_changed((1,))
+    output = inspector.summary.model().index_for_value_path(("output",))
+    inspector.summary.setCurrentIndex(output.siblingAtColumn(1))
+    plotted = []
+    ordered = []
+    inspector.plot_requested.connect(plotted.append)
     monkeypatch.setattr(
-        window.tasks,
-        "submit",
-        lambda function, on_success, _on_error: on_success(function()),
+        loaded_coordinator,
+        "sort_records_by_field",
+        lambda **request: ordered.append(request),
     )
 
-    window._plot_requested(  # noqa: SLF001
-        NumberSelector((), "fields", ("loss",), "loss", "loss")
-    )
-    window._plot_add_requested(  # noqa: SLF001
-        NumberSelector((), "fields", ("runtime",), "runtime", "runtime")
-    )
+    inspector.plot_button.click()
+    inspector.order_ascending_button.click()
 
-    assert len(window._plot_selection.selectors) == 2  # noqa: SLF001
-    assert window.collection_plot.series_list.count() == 2
-
-    plotted_markers = [
-        series
-        for series in window.collection_plot.chart_view.chart().series()
-        if isinstance(series, QScatterSeries)
-        and series is not window.collection_plot._selection_series  # noqa: SLF001
+    assert plotted == [FieldSelector((1,), ("output",))]
+    assert ordered == [
+        {"field_selector": plotted[0], "ascending": True},
     ]
-    plotted_markers[1].clicked.emit(QPointF(1, 20))
-
-    assert window._selected_record_id() == records[1].id  # noqa: SLF001
-    assert window._current_document is not None  # noqa: SLF001
-    assert window._current_document.record.id == records[1].id  # noqa: SLF001
-    assert window.inspector.title.text() == "step_2"
-    assert window.inspector.plot_selection.text() == "Selected: runtime"
-    assert window.inspector.summary.currentIndex().data() == "20"
-
-
-def test_whole_collection_search_is_dispatched_to_worker(tmp_path, monkeypatch):
-    for name in ("step_1.json", "step_2.json"):
-        (tmp_path / name).write_text('{"output": 1}', encoding="utf-8")
-    source = JsonFileSource()
-    window = MainWindow(source=source)
-    assert not window.search_components.isChecked()
-    window.file_model.set_records(source.discover([tmp_path]))
-    window.search_scope.setCurrentIndex(window.search_scope.findData("collection"))
-    window.field_search.setText("output")
-    submitted = []
-    progress_updates = []
-    window.operation_progress.connect(
-        lambda name, value, total: progress_updates.append((name, value, total))
-    )
-    monkeypatch.setattr(
-        window.tasks,
-        "submit",
-        lambda function, on_success, on_error: submitted.append(
-            (function, on_success, on_error)
-        ),
-    )
-
-    window._run_field_search()  # noqa: SLF001
-
-    assert len(submitted) == 1
-    assert "in the background" in window.search_panel.status.text()
-    function, _on_success, _on_error = submitted[0]
-    hits, failed_records, cancelled = function()
-    assert hits
-    assert failed_records == 0
-    assert not cancelled
-    assert progress_updates == [("search", 0, 2), ("search", 2, 2)]
-    window.collection_search.shutdown(wait_for_workers=True)
-
-
-def test_known_collection_operations_publish_record_progress(tmp_path, monkeypatch):
-    for index in range(2):
-        (tmp_path / f"step_{index}.json").write_text(
-            json.dumps({"loss": index + 1}), encoding="utf-8"
-        )
-    source = JsonFileSource()
-    records = source.discover([tmp_path])
-    window = MainWindow(source=source)
-    window.file_model.set_records(records)
-    submitted = []
-    monkeypatch.setattr(
-        window.tasks,
-        "submit",
-        lambda function, _on_success, _on_error: submitted.append(function),
-    )
-    updates = []
-    window.operation_progress.connect(
-        lambda name, value, total: updates.append((name, value, total))
-    )
-
-    window._refresh_collection_analysis(force=True)  # noqa: SLF001
-    submitted.pop()()
-    window._load_collection_plot(  # noqa: SLF001
-        NumberSelector((), "fields", ("loss",), "loss", "loss"),
-        activate=False,
-    )
-    submitted.pop()()
-    window._refresh_extraction_preview(  # noqa: SLF001
-        (FieldSelector((), "fields", ("loss",), "loss"),)
-    )
-    submitted.pop()()
-    window._export_extraction(  # noqa: SLF001
-        str(tmp_path / "progress.jsonl"),
-        "jsonl",
-        ExtractionConfig((FieldSelector((), "fields", ("loss",), "loss"),)),
-    )
-    submitted.pop()()
-
-    assert updates == [
-        ("analysis", 0, 2),
-        ("analysis", 2, 2),
-        ("plot", 0, 2),
-        ("plot", 2, 2),
-        ("extraction_preview", 0, 2),
-        ("extraction_preview", 2, 2),
-        ("extraction_export", 0, 2),
-        ("extraction_export", 2, 2),
-    ]
-    window.collection_search.shutdown(wait_for_workers=False)
-
-
-def test_superseded_collection_search_cannot_replace_current_results():
-    window = MainWindow()
-    window._generations.advance(  # noqa: SLF001
-        main_window_module._RequestKind.SEARCH  # noqa: SLF001
-    )
-    window._generations.advance(  # noqa: SLF001
-        main_window_module._RequestKind.SEARCH  # noqa: SLF001
-    )
-    window.search_panel.show_message("Current collection has no search yet")
-    stale_hit = SearchHit(
-        (),
-        "Evaluation root",
-        "complete",
-        "fields",
-        ("output",),
-        "output",
-        "1",
-        score=1.0,
-        record_id="old-record",
-        record_name="old.json",
-    )
-
-    window._search_loaded(  # noqa: SLF001
-        1,
-        ([stale_hit], 0, False),
-        query="output",
-        include_keys=True,
-        include_values=True,
-        include_metadata=True,
-        include_components=True,
-        mode="fuzzy",
-        scope_label="whole collection",
-        searched_records=1,
-    )
-
-    assert window.search_panel.results.topLevelItemCount() == 0
-    assert window.search_panel.status.text() == "Current collection has no search yet"
-    window.collection_search.shutdown(wait_for_workers=False)
-
-
-def test_series_follows_component_identity_when_runtime_tree_shifts(tmp_path):
-    first_path = tmp_path / "step_0_ctx_0.json"
-    second_path = tmp_path / "step_1_ctx_0.json"
-    first_path.write_text(
-        json.dumps(
-            {
-                "children": [
-                    {"output": 1, "meta": {"component_name": "upstream"}},
-                    {"output": 2, "meta": {"component_name": "target"}},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    second_path.write_text(
-        json.dumps(
-            {
-                "children": [
-                    {"output": 3, "meta": {"component_name": "target"}},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    source = JsonFileSource()
-    records = source.discover([tmp_path])
-    documents = [(record, source.load(record)) for record in records]
-    selector = selector_for_document(
-        documents[0][1],
-        NumberSelector(
-            node_path=(1,),
-            section="fields",
-            value_path=("output",),
-            label="target · output",
-        ),
-    )
-
-    series = build_collection_series(selector, documents)
-
-    assert [point.value for point in series.points] == [2, 3]
-
-
-def test_root_selector_is_collection_scoped_not_named_after_current_file(
-    chemfit_document,
-):
-    selector = selector_for_document(
-        chemfit_document,
-        NumberSelector(
-            node_path=(),
-            section="fields",
-            value_path=("output",),
-            label=f"{chemfit_document.root.label} · output",
-            value_label="output",
-        ),
-    )
-
-    assert selector.label == "Evaluation root / output"

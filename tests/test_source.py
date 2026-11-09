@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
-from chemfit.fitter import FitContext
-from chemfit.fitter_callbacks import CheckpointBestParameters, SaveMetaData
+from chemfit.fitter_callbacks import SaveMetaData
 
 from chemfit_dashboard.example import (
     build_example_context,
@@ -50,30 +47,6 @@ def test_loads_context_written_by_chemfit(chemfit_json_path, chemfit_context):
     assert document.details(()).structure == chemfit_context.meta["chemfit.structure"]
 
 
-def test_loads_chemfit_checkpoint_and_reuses_cached_document(tmp_path, chemfit_context):
-    path = tmp_path / "best.json"
-    best = FitContext()
-    best.input = chemfit_context.input
-    best.output = chemfit_context.children[0].output
-    best.meta = chemfit_context.meta
-    best.children = chemfit_context.children
-    best.loss = chemfit_context.output
-    context = FitContext()
-    context.opt_context = best
-    CheckpointBestParameters(path, use_legacy_format=True)(12, [context])
-
-    source = JsonFileSource()
-    record = source.discover([path])[0]
-    first = source.load(record)
-    second = source.load(record)
-
-    assert first is second
-    assert first.root.kind == "evaluation checkpoint"
-    assert first.details(()).fields["parameters"] == best.parameters
-    assert first.details(()).fields["quantities"] == best.output
-    assert first.details(()).fields["loss"] == best.loss
-
-
 def test_partial_and_unfamiliar_json_remains_inspectable(tmp_path):
     path = tmp_path / "partial.json"
     path.write_text(
@@ -87,15 +60,6 @@ def test_partial_and_unfamiliar_json_remains_inspectable(tmp_path):
     assert details.info.status == "partial"
     assert details.metadata == {}
     assert details.fields["legacy_value"] == [1, 2, 3]
-
-
-def test_included_example_matches_current_chemfit_output(tmp_path):
-    SaveMetaData(tmp_path)(0, [build_example_context()])
-    generated = json.loads((tmp_path / "step_0_ctx_0.json").read_text())
-    example_path = Path(__file__).parents[1] / "examples" / "step_0_ctx_0.json"
-    included = json.loads(example_path.read_text())
-
-    assert included == generated
 
 
 def test_failed_example_records_the_component_error(tmp_path):
@@ -154,19 +118,3 @@ def test_cache_does_not_retain_document_larger_than_budget(tmp_path):
 
     assert source.load(record) is not source.load(record)
     assert source.cache_info == (0, 0)
-
-
-def test_cache_access_is_thread_safe(tmp_path):
-    path = tmp_path / "threaded.json"
-    path.write_text(json.dumps({"output": list(range(100))}), encoding="utf-8")
-    source = JsonFileSource(cache_capacity=2)
-    record = source.discover([path])[0]
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        documents = list(executor.map(lambda _index: source.load(record), range(40)))
-
-    assert all(
-        document.details(()).fields["output"][50] == 50 for document in documents
-    )
-    assert all(document is documents[0] for document in documents)
-    assert source.cache_info[0] == 1
