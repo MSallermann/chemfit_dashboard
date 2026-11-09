@@ -36,6 +36,7 @@ from chemfit_dashboard.appearance import (
     set_active_color_scheme,
     stylesheet_for,
 )
+from chemfit_dashboard.collection_analysis import CollectionAnalysisPanel
 from chemfit_dashboard.collection_plot import CollectionPlotPanel
 from chemfit_dashboard.context_hierarchy_panel import ContextTreePanel
 from chemfit_dashboard.context_search import ContextSearchPanel
@@ -175,6 +176,14 @@ class MainWindow(QMainWindow):
         )
 
         #########################
+        # Collection overview
+        #########################
+
+        self.collection_analysis = CollectionAnalysisPanel(
+            coordinator=self.coordinator, parent=self
+        )
+
+        #########################
         # Context inspector
         #########################
 
@@ -201,6 +210,7 @@ class MainWindow(QMainWindow):
         self.center_tabs.addTab(self.search_panel, "Context Search")
         self.center_tabs.addTab(self.extraction_panel, "Data Extraction")
         self.center_tabs.addTab(self.collection_plot, "Collection Plot")
+        self.center_tabs.addTab(self.collection_analysis, "Collection Overview")
         self._data_flow_detachment = DetachablePanelController(
             self,
             self.center_tabs,
@@ -421,6 +431,13 @@ class MainWindow(QMainWindow):
 
         self.extraction_panel.record_selected.connect(self.open_extraction_record)
         self.extraction_panel.status_message.connect(self.statusBar().showMessage)
+
+        self.collection_analysis.failure_selected.connect(
+            lambda _occurrence: self.center_tabs.setCurrentWidget(
+                self.context_tree_panel
+            )
+        )
+        self.collection_analysis.status_message.connect(self.statusBar().showMessage)
 
         self.inspector.plot_requested.connect(self.plot_field)
         self.inspector.plot_add_requested.connect(self.add_plot_series)

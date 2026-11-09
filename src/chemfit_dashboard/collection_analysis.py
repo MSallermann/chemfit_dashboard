@@ -11,12 +11,13 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import math
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -35,8 +36,10 @@ from PySide6.QtWidgets import (
 )
 
 from chemfit_dashboard.context_document import NodePath
+from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.icons import make_icon_only
 from chemfit_dashboard.source import ContextDocument
+from chemfit_dashboard.traversal import iter_collection
 from chemfit_dashboard.ui_components import muted_label
 
 if TYPE_CHECKING:
@@ -45,6 +48,9 @@ if TYPE_CHECKING:
     from chemfit_dashboard.source import RecordRef
 
 MAX_FAILURE_TREE_ITEMS = 1_000
+AUTO_ANALYSIS_RECORD_LIMIT = 5_000
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,9 +236,14 @@ class CollectionAnalysisPanel(QWidget):
     refresh_requested = Signal()
     status_message = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):  # noqa: PLR0915
+    def __init__(  # noqa: PLR0915
+        self,
+        coordinator: DashboardCoordinator | None = None,
+        parent: QWidget | None = None,
+    ):
         """Initialize the summary tables and failure navigation controls."""
         super().__init__(parent)
+        self.coordinator = coordinator
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -246,9 +257,7 @@ class CollectionAnalysisPanel(QWidget):
         heading.addWidget(self.summary_label, 1)
         self.refresh_button = QPushButton("Refresh")
         make_icon_only(self.refresh_button, "refresh", "Refresh collection analysis")
-        self.refresh_button.clicked.connect(
-            lambda _checked=False: self.refresh_requested.emit()
-        )
+        self.refresh_button.clicked.connect(self._refresh_clicked)
         heading.addWidget(self.refresh_button)
         layout.addLayout(heading)
 
@@ -333,6 +342,67 @@ class CollectionAnalysisPanel(QWidget):
         layout.addWidget(self.failure_tree, 1)
         self._occurrences: tuple[FailureOccurrence, ...] = ()
         self._current_occurrence = -1
+        self._pending_failure: FailureOccurrence | None = None
+
+        if self.coordinator is not None:
+            self.coordinator.collection_changed.connect(self._collection_changed)
+            self.coordinator.selected_record_changed.connect(
+                self._complete_pending_failure_navigation
+            )
+            self.coordinator.operation_failed.connect(self._operation_failed)
+            self._collection_changed(tuple(self.coordinator.collection))
+
+    def _refresh_clicked(self, _checked: bool = False) -> None:
+        """Refresh through the coordinator when the panel is application-owned."""
+        if self.coordinator is None:
+            self.refresh_requested.emit()
+            return
+        self.refresh_collection_analysis(force=True)
+
+    def _collection_changed(self, _records: object) -> None:
+        """Discard stale navigation and rebuild after collection changes."""
+        self._pending_failure = None
+        self.refresh_collection_analysis()
+
+    def refresh_collection_analysis(self, *, force: bool = False) -> None:
+        """Build the collection overview, deferring very large scans by default."""
+        if self.coordinator is None:
+            return
+        records = tuple(self.coordinator.collection)
+        if not records:
+            self.coordinator.task_runner.invalidate("collection_analysis")
+            self.clear()
+            return
+        if not force and len(records) > AUTO_ANALYSIS_RECORD_LIMIT:
+            self.coordinator.task_runner.invalidate("collection_analysis")
+            self.show_deferred(len(records))
+            return
+
+        self.show_loading(len(records))
+
+        def task(*, task_context):  # noqa: ANN001
+            items = iter_collection(
+                self.coordinator.source,
+                records,
+                cancellation=task_context,
+                progress=lambda completed, _record: task_context.report_progress(
+                    completed, len(records)
+                ),
+            )
+            return analyze_collection((item.record, item.document) for item in items)
+
+        def failed(details: str) -> None:
+            logger.error("Could not analyze context collection\n%s", details)
+            self.show_error("Could not build the collection summary.")
+
+        self.coordinator.task_runner.submit_latest(
+            key="collection_analysis",
+            function=task,
+            on_success=self.set_summary,
+            on_error=failed,
+            label="Analyzing collection",
+            with_context=True,
+        )
 
     def show_loading(self, count: int) -> None:
         """Replace summary content with a collection-size loading state."""
@@ -495,7 +565,75 @@ class CollectionAnalysisPanel(QWidget):
             self._current_occurrence = self._occurrences.index(occurrence)
         except ValueError:
             self._current_occurrence = -1
+        self._select_failure(occurrence)
+
+    def _select_failure(self, occurrence: FailureOccurrence) -> None:
+        """Select an occurrence through the shared coordinator."""
+        if self.coordinator is None:
+            self.failure_selected.emit(occurrence)
+            return
+
+        document = self.coordinator.selected_document
+        if document is not None and document.record.id == occurrence.record_id:
+            self._focus_failure(occurrence)
+            return
+
+        record = next(
+            (
+                item
+                for item in self.coordinator.collection
+                if item.id == occurrence.record_id
+            ),
+            None,
+        )
+        if record is None:
+            self.status_message.emit(
+                "The selected failure is no longer in the collection."
+            )
+            return
+        self._pending_failure = occurrence
+        self.coordinator.select_record(record)
+
+    def _complete_pending_failure_navigation(
+        self, document: ContextDocument | None
+    ) -> None:
+        """Finish navigation after the requested document becomes authoritative."""
+        occurrence = self._pending_failure
+        if occurrence is None:
+            return
+        if document is None or document.record.id != occurrence.record_id:
+            self._pending_failure = None
+            return
+        QTimer.singleShot(0, lambda: self._focus_failure(occurrence))
+
+    def _focus_failure(self, occurrence: FailureOccurrence) -> None:
+        """Select a failure context and notify the shell to reveal its feature."""
+        if self.coordinator is None:
+            return
+        document = self.coordinator.selected_document
+        if (
+            document is None
+            or document.record.id != occurrence.record_id
+            or not document.has_path(occurrence.node_path)
+        ):
+            if self._pending_failure == occurrence:
+                self._pending_failure = None
+            return
+        if self._pending_failure is not None and self._pending_failure != occurrence:
+            return
+
+        self._pending_failure = None
+        self.coordinator.select_context(occurrence.node_path)
         self.failure_selected.emit(occurrence)
+        self.status_message.emit(
+            f"{occurrence.record_name}: {occurrence.exception_type} in "
+            f"{occurrence.component}"
+        )
+
+    def _operation_failed(self, operation: str, _details: str) -> None:
+        """Discard navigation waiting on a record that failed to load."""
+        if operation == "Record selection":
+            self._pending_failure = None
 
     def _show_numeric_context_menu(self, position) -> None:  # noqa: ANN001
         item = self.numeric_table.itemAt(position)
@@ -580,7 +718,7 @@ class CollectionAnalysisPanel(QWidget):
         self._current_occurrence = (self._current_occurrence + direction) % len(
             self._occurrences
         )
-        self.failure_selected.emit(self._occurrences[self._current_occurrence])
+        self._select_failure(self._occurrences[self._current_occurrence])
 
 
 def _numeric_leaves(
