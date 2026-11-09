@@ -4,6 +4,7 @@ from PySide6.QtCore import (
     QItemSelection,
     QSignalBlocker,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -26,6 +27,8 @@ from chemfit_dashboard.ui_components import muted_label
 
 class ContextTreePanel(QWidget):
     """Display the hierarchy of the currently selected evaluation."""
+
+    status_message = Signal(str)
 
     def __init__(
         self,
@@ -164,6 +167,7 @@ class ContextTreePanel(QWidget):
 
         if selected is copy_name:
             text = document.component_label(info.path)
+            message = "Copied component name"
         elif selected is copy_path:
             # The visible breadcrumb needs only the labels of its ancestors.
             text = (
@@ -173,15 +177,19 @@ class ContextTreePanel(QWidget):
                 )
                 or "Evaluation root"
             )
+            message = "Copied component path"
         elif selected is copy_structural_path:
             text = info.path_text
+            message = "Copied structural path"
         else:
             return
 
         QApplication.clipboard().setText(text)
+        self.status_message.emit(message)
 
     def _copy_current_tree_component(self) -> None:
         info = self.tree_model.node_info(self.tree.currentIndex())
         document = self.coordinator.selected_document
         if info is not None and document is not None:
             QApplication.clipboard().setText(document.component_label(info.path))
+            self.status_message.emit("Copied component name")

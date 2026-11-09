@@ -162,13 +162,18 @@ class DetachablePanelController(QObject):
         if self._dialog is not None:
             return
         current_index = self._tabs.indexOf(self._panel)
+        display_label = self._tab_label
+        tooltip = ""
         if current_index >= 0:
             self._tab_index = current_index
+            display_label = self._tabs.tabText(current_index)
+            tooltip = self._tabs.tabToolTip(current_index)
             self._tabs.removeTab(current_index)
 
         placeholder = self._build_placeholder()
         self._placeholder = placeholder
-        self._tabs.insertTab(self._tab_index, placeholder, self._tab_label)
+        self._tabs.insertTab(self._tab_index, placeholder, display_label)
+        self._tabs.setTabToolTip(self._tab_index, tooltip)
         self._tabs.setCurrentWidget(placeholder)
 
         dialog = QDialog(self._owner, Qt.WindowType.Window)
@@ -203,6 +208,8 @@ class DetachablePanelController(QObject):
             layout.removeWidget(self._panel)
 
         placeholder = self._placeholder
+        display_label = self._tab_label
+        tooltip = ""
         placeholder_was_current = (
             placeholder is not None and self._tabs.currentWidget() is placeholder
         )
@@ -210,12 +217,15 @@ class DetachablePanelController(QObject):
             placeholder_index = self._tabs.indexOf(placeholder)
             if placeholder_index >= 0:
                 self._tab_index = placeholder_index
+                display_label = self._tabs.tabText(placeholder_index)
+                tooltip = self._tabs.tabToolTip(placeholder_index)
                 self._tabs.removeTab(placeholder_index)
             placeholder.deleteLater()
         self._placeholder = None
 
         insert_at = min(self._tab_index, self._tabs.count())
-        self._tab_index = self._tabs.insertTab(insert_at, self._panel, self._tab_label)
+        self._tab_index = self._tabs.insertTab(insert_at, self._panel, display_label)
+        self._tabs.setTabToolTip(self._tab_index, tooltip)
         if placeholder_was_current:
             self._tabs.setCurrentWidget(self._panel)
         if self._expanded_changed is not None:
@@ -240,6 +250,47 @@ class DetachablePanelController(QObject):
         layout.addWidget(return_button, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch()
         return placeholder
+
+
+class TabCountBadgeController:
+    """Maintain a capped item count in one tab label and tooltip."""
+
+    def __init__(
+        self,
+        tabs: QTabWidget,
+        panel: QWidget,
+        *,
+        label: str,
+        item_name: str,
+        plural_item_name: str | None = None,
+        alternate_panel: Callable[[], QWidget | None] | None = None,
+    ) -> None:
+        """Bind a count badge to one panel's tab entry."""
+        self._tabs = tabs
+        self._panel = panel
+        self._label = label
+        self._item_name = item_name
+        self._plural_item_name = plural_item_name or f"{item_name}s"
+        self._alternate_panel = alternate_panel
+        self.set_count(0)
+
+    def set_count(self, count: int) -> None:
+        index = self._tabs.indexOf(self._panel)
+        if index < 0 and self._alternate_panel is not None:
+            alternate = self._alternate_panel()
+            index = self._tabs.indexOf(alternate) if alternate is not None else -1
+        if index < 0:
+            return
+        count_label = "20+" if count > 20 else str(count)
+        label = f"{self._label} ({count_label})" if count else self._label
+        self._tabs.setTabText(index, label)
+        item_name = self._item_name if count == 1 else self._plural_item_name
+        tooltip = (
+            f"{count:,} {item_name} queued"
+            if count
+            else f"No {self._item_name}s queued"
+        )
+        self._tabs.setTabToolTip(index, tooltip)
 
 
 def muted_label(

@@ -41,7 +41,10 @@ from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.search_core import SearchHit
 from chemfit_dashboard.settings_ui import DashboardSettingsController
 from chemfit_dashboard.source import ContextSource, JsonFileSource
-from chemfit_dashboard.ui_components import DetachablePanelController
+from chemfit_dashboard.ui_components import (
+    DetachablePanelController,
+    TabCountBadgeController,
+)
 
 
 class MainWindow(QMainWindow):
@@ -75,7 +78,7 @@ class MainWindow(QMainWindow):
         self.build_menu()
         self.connect_signals()
 
-    def build_ui(self):
+    def build_ui(self):  # noqa: PLR0915
         """Build the main UI."""
 
         # OVerall container
@@ -176,7 +179,9 @@ class MainWindow(QMainWindow):
         #########################
 
         self.extraction_panel = DataExtractionPanel(
-            parent=self, coordinator=self.coordinator
+            parent=self,
+            coordinator=self.coordinator,
+            settings=self.settings.store,
         )
 
         #########################
@@ -192,6 +197,19 @@ class MainWindow(QMainWindow):
             self.collection_plot, "Collection Plot"
         )
         self.center_tabs.addTab(self.collection_analysis, "Collection Overview")
+        self._extraction_badge = TabCountBadgeController(
+            self.center_tabs,
+            self.extraction_panel,
+            label="Data Extraction",
+            item_name="field",
+        )
+        self._plot_badge = TabCountBadgeController(
+            self.center_tabs,
+            self.collection_plot,
+            label="Collection Plot",
+            item_name="series",
+            plural_item_name="series",
+        )
         self._data_flow_detachment = DetachablePanelController(
             self,
             self.center_tabs,
@@ -302,10 +320,14 @@ class MainWindow(QMainWindow):
             ("Context &Search", self.search_panel, "Ctrl+3"),
             ("Data &Extraction", self.extraction_panel, "Ctrl+4"),
             ("Collection &Plot", self.collection_plot, "Ctrl+5"),
+            ("Collection &Overview", self.collection_analysis, "Ctrl+6"),
         )
         for label, widget, shortcut in destinations:
             action = QAction(label, self)
-            action.setShortcut(QKeySequence(shortcut))
+            shortcuts = [QKeySequence(shortcut)]
+            if widget is self.extraction_panel:
+                shortcuts.append(QKeySequence("Ctrl+D"))
+            action.setShortcuts(shortcuts)
             action.triggered.connect(
                 lambda _checked=False, target=widget: self._show_workspace(target)
             )
@@ -332,7 +354,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Keyboard shortcuts",
-            "Ctrl+1 … Ctrl+5    Open a workspace tab\n"
+            "Ctrl+1 … Ctrl+6    Open a workspace tab\n"
+            "Ctrl+D             Open Data Extraction\n"
             "Ctrl+F             Search contexts\n"
             "Esc                Clear search and return\n"
             "Ctrl+O             Open a context file\n"
@@ -350,6 +373,14 @@ class MainWindow(QMainWindow):
 
         self.extraction_panel.record_selected.connect(self.open_extraction_record)
         self.extraction_panel.status_message.connect(self.statusBar().showMessage)
+        self.extraction_panel.selectors_changed.connect(
+            lambda fields: self._extraction_badge.set_count(len(fields))
+        )
+        self.evaluation_panel.status_message.connect(self.statusBar().showMessage)
+        self.context_tree_panel.status_message.connect(self.statusBar().showMessage)
+        self.inspector.status_message.connect(self.statusBar().showMessage)
+        self.collection_plot.status_message.connect(self.statusBar().showMessage)
+        self.collection_plot.series_count_changed.connect(self._plot_badge.set_count)
         self.settings.status_message.connect(self.statusBar().showMessage)
 
         self.collection_analysis.failure_selected.connect(

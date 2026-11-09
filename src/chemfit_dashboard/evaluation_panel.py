@@ -3,6 +3,7 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     Qt,
     QUrl,
+    Signal,
 )
 from PySide6.QtGui import (
     QDesktopServices,
@@ -31,6 +32,8 @@ from chemfit_dashboard.ui_components import ActionRow, add_clear_action, muted_l
 
 
 class EvaluationPanel(QWidget):
+    status_message = Signal(str)
+
     def __init__(  # noqa: PLR0915
         self,
         coordinator: DashboardCoordinator,
@@ -349,10 +352,10 @@ class EvaluationPanel(QWidget):
         selected = menu.exec(self.file_list.viewport().mapToGlobal(position))
         if selected is copy_name:
             QApplication.clipboard().setText(record.name)
-            # self._clipboard_copied("Copied evaluation filename")
+            self.status_message.emit("Copied evaluation filename")
         elif selected is copy_path:
             QApplication.clipboard().setText(str(record.path))
-            # self._clipboard_copied("Copied evaluation path")
+            self.status_message.emit("Copied evaluation path")
         elif selected is open_folder:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(record.path.parent)))
 
@@ -375,12 +378,14 @@ class EvaluationPanel(QWidget):
         document = self.coordinator.selected_document
         if document is not None:
             QApplication.clipboard().setText(document.record.name)
+            self.status_message.emit("Copied evaluation filename")
 
     def _copy_current_evaluation_path(self) -> None:
         document = self.coordinator.selected_document
         if document is None:
             return
         QApplication.clipboard().setText(str(document.record.path))
+        self.status_message.emit("Copied evaluation path")
 
     def _open_current_evaluation_folder(self) -> None:
         document = self.coordinator.selected_document

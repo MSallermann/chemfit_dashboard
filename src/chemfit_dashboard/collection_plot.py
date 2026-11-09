@@ -81,7 +81,7 @@ from chemfit_dashboard.ui_components import (
 from chemfit_dashboard.util import format_combined_path
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
 JsonPath = tuple[str | int, ...]
 RASTER_EXPORT_DPI = 300
@@ -177,6 +177,7 @@ class CollectionPlotPanel(QWidget):
     point_selected = Signal(str, object)
     expand_requested = Signal()
     status_message = Signal(str)
+    series_count_changed = Signal(int)
 
     def __init__(  # noqa: PLR0915
         self, *, coordinator: DashboardCoordinator, parent: QWidget | None = None
@@ -342,7 +343,7 @@ class CollectionPlotPanel(QWidget):
     def remove_series(self, selector: FieldSelector) -> None:
         """Remove a series."""
 
-        self._requested_selectors = tuple(
+        self._set_requested_selectors(
             s for s in self._requested_selectors if s != selector
         )
 
@@ -374,7 +375,7 @@ class CollectionPlotPanel(QWidget):
         """Extract multiple numeric series in a single collection traversal."""
 
         selectors = tuple(selectors)
-        self._requested_selectors = selectors
+        self._set_requested_selectors(selectors)
 
         records = tuple(self.coordinator.collection)
 
@@ -624,7 +625,7 @@ class CollectionPlotPanel(QWidget):
         """Remove every plotted series and restore the empty state."""
 
         self.coordinator.task_runner.invalidate("collection_plot")
-        self._requested_selectors = ()
+        self._set_requested_selectors(())
 
         self._data = ()
         self._hidden_selectors.clear()
@@ -636,6 +637,11 @@ class CollectionPlotPanel(QWidget):
         self.status.setText("Select a numeric field in the inspector to plot it.")
         self.cursor_coordinates.setText("Cursor: —")
         self._set_empty_chart("Collection plot")
+
+    def _set_requested_selectors(self, selectors: Iterable[FieldSelector]) -> None:
+        """Update requested plot series and publish their tab-badge count."""
+        self._requested_selectors = tuple(selectors)
+        self.series_count_changed.emit(len(self._requested_selectors))
 
     def set_expanded(self, expanded: bool) -> None:
         """Reflect whether the plot is hosted in the expanded window."""
