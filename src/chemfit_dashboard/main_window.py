@@ -188,7 +188,9 @@ class MainWindow(QMainWindow):
         data_flow_tab_index = self.center_tabs.addTab(self.data_flow_panel, "Data Flow")
         self.center_tabs.addTab(self.search_panel, "Context Search")
         self.center_tabs.addTab(self.extraction_panel, "Data Extraction")
-        self.center_tabs.addTab(self.collection_plot, "Collection Plot")
+        plot_tab_index = self.center_tabs.addTab(
+            self.collection_plot, "Collection Plot"
+        )
         self.center_tabs.addTab(self.collection_analysis, "Collection Overview")
         self._data_flow_detachment = DetachablePanelController(
             self,
@@ -200,6 +202,16 @@ class MainWindow(QMainWindow):
             tab_index=data_flow_tab_index,
             expanded_changed=self.data_flow_panel.set_expanded,
             detached=self.data_flow_panel.ensure_rendered,
+        )
+        self._plot_detachment = DetachablePanelController(
+            self,
+            self.center_tabs,
+            self.collection_plot,
+            tab_label="Collection Plot",
+            window_title="ChemFit Collection Plot",
+            object_prefix="plot",
+            tab_index=plot_tab_index,
+            expanded_changed=self.collection_plot.set_expanded,
         )
 
         #########################
@@ -352,6 +364,7 @@ class MainWindow(QMainWindow):
 
         self.center_tabs.currentChanged.connect(self._center_tab_changed)
         self.data_flow_panel.expand_requested.connect(self._data_flow_detachment.toggle)
+        self.collection_plot.expand_requested.connect(self._plot_detachment.toggle)
         self.search_panel.copy_completed.connect(self.statusBar().showMessage)
         self.search_panel.hit_previewed.connect(self._preview_search_hit)
         self.search_panel.hit_selected.connect(self._show_search_hit)
@@ -383,6 +396,10 @@ class MainWindow(QMainWindow):
             self.focus_context_search()
             return
         self._tab_before_search = None
+        if widget is self.data_flow_panel and self._data_flow_detachment.show():
+            return
+        if widget is self.collection_plot and self._plot_detachment.show():
+            return
         self.center_tabs.setCurrentWidget(widget)
 
     def clear_context_search(self) -> None:
@@ -419,12 +436,12 @@ class MainWindow(QMainWindow):
     def plot_field(self, selector: FieldSelector) -> None:
         """Plot the selected field and switch to the plot tab."""
         self.collection_plot.build_series((selector,))
-        self.center_tabs.setCurrentWidget(self.collection_plot)
+        self._show_workspace(self.collection_plot)
 
     def add_plot_series(self, selector: FieldSelector) -> None:
         """Plot the selected field and switch to the plot tab."""
         self.collection_plot.add_series(selector)
-        self.center_tabs.setCurrentWidget(self.collection_plot)
+        self._show_workspace(self.collection_plot)
 
     def open_extraction_record(self, record_id: str) -> None:
         """Open a previewed evaluation in the Inspector."""
