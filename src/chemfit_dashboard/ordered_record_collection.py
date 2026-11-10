@@ -22,7 +22,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
     mechanisms used to compute sorting criteria. It only manages
     references and their ordering.
 
-    Mutations are coordinated externally by DashboardState, which is
+    Mutations are coordinated externally by ``DashboardCoordinator``, which is
     responsible for emitting the corresponding change signals.
     """
 
@@ -57,7 +57,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         natural order, typically the alphanumeric filename order established
         by ContextSource.discover().
 
-        This method does not emit signals. DashboardState is responsible
+        This method does not emit signals. ``DashboardCoordinator`` is responsible
         for notifying observers after the replacement has been committed.
         """
         new_refs = {}
@@ -95,7 +95,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         last occurrence determining the stored reference. Each newly
         encountered ID is added to the active ordering only once.
 
-        This method does not emit signals. DashboardState is responsible
+        This method does not emit signals. ``DashboardCoordinator`` is responsible
         for notifying observers after the collection has been updated.
         """
         updated = dict(self._refs)
@@ -141,7 +141,8 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         values. Those responsibilities belong to the caller, which may
         perform asynchronous processing before providing the final order.
 
-        DashboardState is responsible for emitting collection_order_changed
+        ``DashboardCoordinator`` is responsible for emitting
+        ``collection_order_changed``
         after a new ordering has been successfully committed.
 
         """
@@ -175,7 +176,8 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         resetting always restores the default order of the complete
         current collection.
 
-        DashboardState is responsible for emitting collection_order_changed
+        ``DashboardCoordinator`` is responsible for emitting
+        ``collection_order_changed``
         if the active ordering actually changes.
         """
         self._order = self._natural_order
@@ -188,6 +190,11 @@ class OrderedRecordCollection(Sequence[RecordRef]):
             label=self._order_label,
             ascending=not self._order_ascending,
         )
+
+    def get(self, record_id: str) -> RecordRef | None:
+        """Return the collection's canonical reference for a stable ID."""
+
+        return self._refs.get(record_id)
 
     @property
     def natural_order(self) -> tuple[str, ...]:

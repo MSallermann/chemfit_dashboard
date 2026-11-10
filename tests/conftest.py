@@ -60,6 +60,7 @@ def loaded_coordinator(chemfit_document, qapp):
     instance = DashboardCoordinator(JsonFileSource())
     changed = []
     instance.selected_record_changed.connect(changed.append)
+    instance.collection.replace((chemfit_document.record,))
     instance.select_record(chemfit_document.record)
     deadline = time.monotonic() + 2
     while not changed and time.monotonic() < deadline:

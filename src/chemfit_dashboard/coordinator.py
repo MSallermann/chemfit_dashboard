@@ -287,7 +287,21 @@ class DashboardCoordinator(QObject):
         """Load and commit a requested record selection."""
         record = request.ref
 
-        # Reuse the loaded document and invalidate any pending selection.
+        # make sure the requested record id is part of the currently loaded collection
+        if record is not None:
+            canonical_record = self._collection.get(record.id)
+            if canonical_record is None:
+                message = f"Record is not part of the current collection: {record.id}"
+                raise ValueError(message)
+            record = canonical_record
+            request = RecordSelectionRequest(
+                ref=record,
+                context_path=request.context_path,
+                field_path=request.field_path,
+            )
+
+        # If the requested record is already loaded, we reuse the loaded document
+        # and invalidate any other pending selection.
         if (
             record is not None
             and self._selected_document is not None
@@ -320,6 +334,8 @@ class DashboardCoordinator(QObject):
             return self._source.load(record)
 
         def on_success(document: ContextDocument) -> None:
+            if self._collection.get(document.record.id) is None:
+                return
             document.set_component_label_metadata_key(
                 self._component_label_metadata_key
             )
@@ -437,13 +453,16 @@ class DashboardCoordinator(QObject):
     def select_field(self, json_path: JsonPath | None) -> None:
         """Select a field within the current context."""
 
-        if json_path == self._selected_field:
-            return
-
         if json_path is None:
+            self._preferred_field_path = None
+            if self._selected_field is None and self._selected_field_value is None:
+                return
             self._selected_field = None
             self._selected_field_value = None
             self.selected_field_changed.emit(None)
+            return
+
+        if json_path == self._selected_field:
             return
 
         if self.selected_document is None or self.selected_context is None:
