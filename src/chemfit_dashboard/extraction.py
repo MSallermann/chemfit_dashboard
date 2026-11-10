@@ -8,14 +8,14 @@ module contains no Qt code and is shared by the dashboard and headless CLI.
 
 from __future__ import annotations
 
-# ruff: noqa: EM101, EM102, PLR0911
+# ruff: noqa: EM101, PLR0911
 import csv
 import json
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pydictnest
 
@@ -26,7 +26,11 @@ from chemfit_dashboard.context_document import (
 )
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import CancellationToken, iter_collection
-from chemfit_dashboard.util import format_combined_path, format_json_path
+from chemfit_dashboard.util import (
+    format_combined_path,
+    format_json_path,
+    format_named_node_path,
+)
 
 get_nested = pydictnest.get_nested
 _pydictnest_get_path = getattr(pydictnest, "get_path", None)
@@ -38,9 +42,9 @@ if TYPE_CHECKING:
     from chemfit_dashboard.workers import TaskContext
 
 JsonPath = tuple[str | int, ...]
-CONFIG_VERSION = 3
-MAX_FLATTENED_COLUMNS = 512
-MAX_EXPANDED_ROWS = 1_000_000
+NodePathSelection = tuple[int | Literal["*"], ...]
+NODE_WILDCARD: Literal["*"] = "*"
+CONFIG_VERSION = 6
 _MISSING = object()
 
 
@@ -84,11 +88,14 @@ def export_file_atomically(
     ) as stream:
         temporary = Path(stream.name)
 
-    total = len(records)
+    passes = 1
+    if any(selector.has_wildcard for selector, _output in config.fields):
+        passes += 1
     if format_name == "csv" and any(
         output.flatten or output.array_expansion_depth for _, output in config.fields
     ):
-        total *= 2
+        passes += 1
+    total = len(records) * passes
     highest_progress = 0
 
     def progress(completed: int, _record: RecordRef) -> None:
@@ -146,9 +153,36 @@ class FieldSelector:
     """A reusable component/value path independent of any collection."""
 
     # Describes the where the context sits within the record context hierarchy
-    node_path: NodePath
+    node_path: NodePathSelection
     # Describes where in the context dict the required field is
     value_path: JsonPath = ()
+
+    def __post_init__(self) -> None:
+        invalid = tuple(
+            part
+            for part in self.node_path
+            if not isinstance(part, int) and part != NODE_WILDCARD
+        )
+        if invalid:
+            message = (
+                "Selector node paths may contain only integer indexes and '*' "
+                f"wildcards, not {invalid[0]!r}"
+            )
+            raise ValueError(message)
+
+    @property
+    def has_wildcard(self) -> bool:
+        """Whether this selector expands to matching concrete component paths."""
+
+        return NODE_WILDCARD in self.node_path
+
+    @property
+    def concrete_node_path(self) -> NodePath:
+        """Return the exact path, rejecting an unresolved wildcard selection."""
+
+        if self.has_wildcard:
+            raise ValueError("Wildcard selector has no single concrete node path")
+        return cast("NodePath", self.node_path)
 
     def format(self) -> str:
         return format_combined_path(self.node_path, self.value_path)
@@ -158,8 +192,8 @@ class FieldSelector:
 class OutputDescriptor:
     """A reusable output description for extractions."""
 
-    # the column label to be used
-    column: str = "value"
+    # optional explicit column label; None uses the selector's complete path
+    column: str | None = None
     # if a dict shaped field should be flattened
     flatten: bool = False
     # to what level arrya fields should be expanded
@@ -168,6 +202,17 @@ class OutputDescriptor:
     excluded_paths: tuple[JsonPath, ...] = ()
     # if any of the flattened columns should be renamed
     flattened_column_names: tuple[tuple[JsonPath, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedField:
+    """One concrete extraction field derived from a configured field."""
+
+    selector: FieldSelector
+    output: OutputDescriptor
+    source_index: int
+    configured_output: OutputDescriptor
+    include_node_path: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +250,7 @@ class ExtractionConfig:
     fields: tuple[tuple[FieldSelector, OutputDescriptor], ...]
 
     include_identifiers: bool = True
-    include_status_columns: bool = True
+    include_node_paths: bool = True
     version: int = CONFIG_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,7 +258,7 @@ class ExtractionConfig:
         return {
             "version": self.version,
             "include_identifiers": self.include_identifiers,
-            "include_status_columns": self.include_status_columns,
+            "include_node_paths": self.include_node_paths,
             "fields": [
                 field_to_dict(selector, output) for selector, output in self.fields
             ],
@@ -223,7 +268,7 @@ class ExtractionConfig:
     def from_dict(cls, value: Mapping[str, Any]) -> ExtractionConfig:
         """Validate and construct a configuration from decoded JSON."""
         version = value.get("version")
-        if version not in {3}:
+        if version not in {3, 4, 5, CONFIG_VERSION}:
             message = f"Unsupported extraction configuration version: {version!r}"
             raise ValueError(message)
 
@@ -234,8 +279,84 @@ class ExtractionConfig:
         return cls(
             fields=tuple(_field_from_dict(item) for item in raw_fields),
             include_identifiers=bool(value.get("include_identifiers", True)),
-            include_status_columns=bool(value.get("include_status_columns", True)),
+            include_node_paths=bool(value.get("include_node_paths", True)),
         )
+
+
+def resolve_fields(
+    source: ContextSource,
+    records: Sequence[RecordRef],
+    fields: Sequence[tuple[FieldSelector, OutputDescriptor]],
+    *,
+    include_node_paths: bool = True,
+    cancellation: CancellationToken | None = None,
+    progress: Callable[[int, RecordRef], None] | None = None,
+) -> tuple[ResolvedField, ...]:
+    """Expand wildcard selectors to the union of concrete paths in records."""
+
+    wildcard_indexes = {
+        index
+        for index, (selector, _output) in enumerate(fields)
+        if selector.has_wildcard
+    }
+    if not wildcard_indexes:
+        return tuple(
+            ResolvedField(
+                selector,
+                _resolved_output(
+                    output,
+                    selector,
+                    include_node_path=include_node_paths,
+                ),
+                index,
+                output,
+                include_node_paths,
+            )
+            for index, (selector, output) in enumerate(fields)
+        )
+
+    matches: dict[int, set[NodePath]] = {
+        index: (set() if index in wildcard_indexes else {selector.concrete_node_path})
+        for index, (selector, _output) in enumerate(fields)
+    }
+    for item in iter_collection(
+        source,
+        records,
+        cancellation=cancellation,
+        progress=progress,
+    ):
+        if item.document is None:
+            continue
+        for index, (selector, _output) in enumerate(fields):
+            concrete_paths = (
+                _matching_node_paths(item.document, selector.node_path)
+                if selector.has_wildcard
+                else (
+                    (selector.concrete_node_path,)
+                    if item.document.has_path(selector.concrete_node_path)
+                    else ()
+                )
+            )
+            matches[index].update(concrete_paths)
+
+    resolved: list[ResolvedField] = []
+    for index, (selector, output) in enumerate(fields):
+        for node_path in sorted(matches[index]):
+            concrete = FieldSelector(node_path, selector.value_path)
+            resolved.append(
+                ResolvedField(
+                    concrete,
+                    _resolved_output(
+                        output,
+                        concrete,
+                        include_node_path=include_node_paths,
+                    ),
+                    index,
+                    output,
+                    include_node_paths,
+                )
+            )
+    return tuple(resolved)
 
 
 def extract_fields(
@@ -249,6 +370,12 @@ def extract_fields(
     """Incrementally extract arbitrary values from a collection of records."""
 
     selected = tuple(selectors)
+    if any(selector.has_wildcard for selector in selected):
+        message = (
+            "Wildcard selectors must be resolved against a collection with "
+            "resolve_fields() before extraction"
+        )
+        raise ValueError(message)
 
     for index, item in enumerate(
         iter_collection(source, records, cancellation=cancellation)
@@ -277,7 +404,7 @@ def extract_value(
     """Extract one value from a context."""
 
     try:
-        details = document.details(selector.node_path)
+        details = document.details(selector.concrete_node_path)
     except ContextDocumentError:
         return ExtractionValue(None, ExtractionStatus.MISSING_COMPONENT)
 
@@ -301,6 +428,108 @@ def extract_value(
     return ExtractionValue(value, ExtractionStatus.AVAILABLE)
 
 
+def _matching_node_paths(
+    document: ContextDocument,
+    pattern: NodePathSelection,
+) -> tuple[NodePath, ...]:
+    candidates: tuple[NodePath, ...] = ((),)
+    for part in pattern:
+        if part == NODE_WILDCARD:
+            candidates = tuple(
+                child.path
+                for parent in candidates
+                for child in document.children(parent)
+            )
+        else:
+            child_index = cast("int", part)
+            candidates = tuple(
+                (*parent, child_index)
+                for parent in candidates
+                if document.has_path((*parent, child_index))
+            )
+        if not candidates:
+            break
+    return candidates
+
+
+def _resolved_output(
+    output: OutputDescriptor,
+    selector: FieldSelector,
+    *,
+    include_node_path: bool = True,
+) -> OutputDescriptor:
+    return replace(
+        output,
+        column=_qualified_output_column(
+            output.column,
+            selector,
+            include_node_path=include_node_path,
+        ),
+    )
+
+
+def _qualified_output_column(
+    column: str | None,
+    selector: FieldSelector,
+    *,
+    include_node_path: bool,
+) -> str:
+    if column is None:
+        selector_name = (
+            format_combined_path(
+                selector.concrete_node_path,
+                selector.value_path,
+            )
+            if include_node_path
+            else (format_json_path(selector.value_path) or "value")
+        )
+    else:
+        selector_name = (
+            format_named_node_path(column, selector.concrete_node_path)
+            if include_node_path
+            else column
+        )
+    return selector_name
+
+
+def resolved_flattened_column_name(
+    field: ResolvedField,
+    path: JsonPath,
+) -> str:
+    """Name one flattened column using its resolved field's naming policy."""
+
+    configured = field.configured_output
+    renamed = dict(configured.flattened_column_names).get(path)
+    suffix = format_json_path(path)
+    column = (
+        renamed
+        if renamed is not None
+        else (
+            _append_json_suffix(configured.column, suffix)
+            if configured.column is not None and suffix
+            else configured.column
+        )
+    )
+    selector = FieldSelector(
+        field.selector.concrete_node_path,
+        (
+            field.selector.value_path
+            if renamed is not None or configured.column is not None
+            else (*field.selector.value_path, *path)
+        ),
+    )
+    return _qualified_output_column(
+        column,
+        selector,
+        include_node_path=field.include_node_path,
+    )
+
+
+def _append_json_suffix(column: str, suffix: str) -> str:
+    separator = "" if suffix.startswith("[") else "."
+    return f"{column}{separator}{suffix}"
+
+
 def export_jsonl(
     path: str | Path,
     source: ContextSource,
@@ -312,17 +541,36 @@ def export_jsonl(
 ) -> int:
     """Stream one extraction row per evaluation to JSON Lines."""
 
-    selectors = tuple(selector for selector, _ in config.fields)
+    record_list = list(records)
     _validate_output_descriptors([o for _, o in config.fields])
+    needs_resolution_pass = any(selector.has_wildcard for selector, _ in config.fields)
+    resolved = resolve_fields(
+        source,
+        record_list,
+        config.fields,
+        include_node_paths=config.include_node_paths,
+        cancellation=cancellation,
+        progress=progress,
+    )
+    resolved_fields = tuple((field.selector, field.output) for field in resolved)
+    selectors = tuple(field.selector for field in resolved)
+    _validate_output_descriptors([field.output for field in resolved], resolved=True)
+
+    def export_progress(completed: int, record: RecordRef) -> None:
+        if progress is not None:
+            progress(
+                (len(record_list) if needs_resolution_pass else 0) + completed,
+                record,
+            )
 
     count = 0
     with Path(path).open("w", encoding="utf-8") as stream:
         for row in extract_fields(
             source,
-            records,
+            record_list,
             selectors,
             cancellation=cancellation,
-            progress=progress,
+            progress=export_progress,
         ):
             payload = {}
 
@@ -336,16 +584,16 @@ def export_jsonl(
                 )
 
             payload["values"] = {
-                descriptor.column: extracted.value
+                _resolved_column(descriptor): extracted.value
                 for (_, descriptor), extracted in zip(
-                    config.fields, row.values, strict=True
+                    resolved_fields, row.values, strict=True
                 )
             }
 
             payload["status"] = {
-                descriptor.column: extracted.status.value
+                _resolved_column(descriptor): extracted.status.value
                 for (_, descriptor), extracted in zip(
-                    config.fields, row.values, strict=True
+                    resolved_fields, row.values, strict=True
                 )
             }
 
@@ -363,25 +611,40 @@ def export_csv(
     *,
     cancellation: CancellationToken | None = None,
     progress: Callable[[int, RecordRef], None] | None = None,
-    max_flattened_columns: int = MAX_FLATTENED_COLUMNS,
 ) -> int:
     """Stream extraction rows to CSV, expanding dictionaries and arrays into columns."""
 
     record_list = list(records)
-    selectors = tuple(selector for selector, _ in config.fields)
     _validate_output_descriptors([o for _, o in config.fields])
+    needs_resolution_pass = any(selector.has_wildcard for selector, _ in config.fields)
+    resolved = resolve_fields(
+        source,
+        record_list,
+        config.fields,
+        include_node_paths=config.include_node_paths,
+        cancellation=cancellation,
+        progress=progress,
+    )
+    resolved_fields = tuple((field.selector, field.output) for field in resolved)
+    selectors = tuple(field.selector for field in resolved)
+    _validate_output_descriptors([field.output for field in resolved], resolved=True)
+
+    discovery_offset = len(record_list) if needs_resolution_pass else 0
+
+    def discovery_progress(completed: int, record: RecordRef) -> None:
+        if progress is not None:
+            progress(discovery_offset + completed, record)
 
     # First pass: discover the columns needed for flattened or expanded values.
     flat_paths = _collect_flat_paths(
         source,
         record_list,
-        config.fields,
+        resolved_fields,
         cancellation=cancellation,
-        progress=progress,
-        maximum=max_flattened_columns,
+        progress=discovery_progress,
     )
 
-    completed_offset = len(record_list) if flat_paths else 0
+    completed_offset = discovery_offset + (len(record_list) if flat_paths else 0)
 
     def export_progress(completed: int, record: RecordRef) -> None:
         if progress is not None:
@@ -390,18 +653,18 @@ def export_csv(
     # Build the output columns: (selector index, relative value path, column name).
     value_columns: list[tuple[int, JsonPath | None, str]] = []
 
-    for index, (_, descriptor) in enumerate(config.fields):
+    for index, (_, descriptor) in enumerate(resolved_fields):
         if descriptor.flatten or descriptor.array_expansion_depth:
             value_columns.extend(
                 (
                     index,
                     nested_path,
-                    flattened_column_name(descriptor, nested_path),
+                    resolved_flattened_column_name(resolved[index], nested_path),
                 )
                 for nested_path in flat_paths.get(index, ())
             )
         else:
-            value_columns.append((index, None, descriptor.column))
+            value_columns.append((index, None, _resolved_column(descriptor)))
 
     # Build and validate the CSV header.
     headers = (
@@ -411,11 +674,6 @@ def export_csv(
     )
 
     headers.extend(column for _, _, column in value_columns)
-
-    if config.include_status_columns:
-        headers.extend(
-            f"{descriptor.column}__status" for _, descriptor in config.fields
-        )
 
     if len({header.casefold() for header in headers}) != len(headers):
         raise ValueError("Extraction column names are not unique")
@@ -449,9 +707,6 @@ def export_csv(
 
                 output.append(_csv_value(value, extracted.status))
 
-            if config.include_status_columns:
-                output.extend(extracted.status.value for extracted in row.values)
-
             writer.writerow(output)
             count += 1
 
@@ -478,7 +733,14 @@ def flattened_column_name(
 ) -> str:
     """Return the configured name for a flattened output column."""
     renamed = dict(descriptor.flattened_column_names).get(path)
-    return renamed or f"{descriptor.column}.{format_json_path(path)}"
+    if renamed is not None:
+        return renamed
+    nested = format_json_path(path)
+    if descriptor.column is None:
+        return nested or "value"
+    return (
+        _append_json_suffix(descriptor.column, nested) if nested else descriptor.column
+    )
 
 
 def _get_json_path(root: Any, path: JsonPath, default: Any) -> Any:
@@ -516,7 +778,6 @@ def _collect_flat_paths(
     *,
     cancellation: CancellationToken | None,
     progress: Callable[[int, RecordRef], None] | None,
-    maximum: int,
 ) -> dict[int, tuple[JsonPath, ...]]:
     """Discover the output paths needed to flatten or expand extracted values."""
 
@@ -553,11 +814,6 @@ def _collect_flat_paths(
                     array_depth=descriptor.array_expansion_depth,
                 )
             )
-
-            if sum(map(len, discovered.values())) > maximum:
-                raise ValueError(
-                    f"Column expansion exceeds the {maximum:,}-column safeguard"
-                )
 
     return {
         index: tuple(
@@ -604,22 +860,45 @@ def column_paths_for_value(
     yield path
 
 
-def _validate_output_descriptors(outputs: Sequence[OutputDescriptor]) -> None:
-    columns = [output.column.casefold() for output in outputs]
-    if any(not output.column.strip() for output in outputs):
+def _validate_output_descriptors(
+    outputs: Sequence[OutputDescriptor],
+    *,
+    resolved: bool = False,
+) -> None:
+    columns = [
+        output.column.casefold() for output in outputs if output.column is not None
+    ]
+    if any(
+        output.column is not None and not output.column.strip() for output in outputs
+    ):
         raise ValueError("Extraction column names cannot be empty")
+    if resolved and any(output.column is None for output in outputs):
+        raise ValueError("Resolved extraction fields must have column names")
     if len(columns) != len(set(columns)):
-        raise ValueError("Extraction column names must be unique")
+        message = (
+            "Resolved extraction column names are not unique; enable node paths "
+            "for wildcard selections or choose unique explicit names"
+            if resolved
+            else "Extraction column names must be unique"
+        )
+        raise ValueError(message)
     if any(output.array_expansion_depth < 0 for output in outputs):
         raise ValueError("Array expansion depth cannot be negative")
 
 
+def _resolved_column(output: OutputDescriptor) -> str:
+    column = output.column
+    if column is None:
+        raise ValueError("Resolved extraction field has no column name")
+    return column
+
+
 def _csv_value(value: Any, status: ExtractionStatus) -> str | int | float | bool:
-    if value is _MISSING or status not in {
-        ExtractionStatus.AVAILABLE,
-        ExtractionStatus.EXPLICIT_NULL,
-        ExtractionStatus.SERIALIZED_EXCEPTION,
-    }:
+    if (
+        value is _MISSING
+        or status != ExtractionStatus.AVAILABLE
+        or _contains_serialized_exception(value)
+    ):
         return ""
     if value is None:
         return "null"
@@ -630,6 +909,16 @@ def _csv_value(value: Any, status: ExtractionStatus) -> str | int | float | bool
     if isinstance(value, bool):
         return "true" if value else "false"
     return value
+
+
+def _contains_serialized_exception(value: Any) -> bool:
+    if _is_serialized_exception(value):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_serialized_exception(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_serialized_exception(item) for item in value)
+    return False
 
 
 def field_to_dict(
@@ -675,9 +964,13 @@ def _field_from_dict(value: Any) -> tuple[FieldSelector, OutputDescriptor]:
     )
 
     raw_names = raw_output.get("flattened_column_names", ())
+    raw_column = raw_output.get("column")
+    if raw_column is not None and not isinstance(raw_column, str):
+        msg = "Output column must be a string or null"
+        raise ValueError(msg)
 
     output = OutputDescriptor(
-        column=str(raw_output.get("column", "value")),
+        column=raw_column,
         flatten=bool(raw_output.get("flatten", False)),
         array_expansion_depth=int(raw_output.get("array_expansion_depth", 0)),
         excluded_paths=tuple(

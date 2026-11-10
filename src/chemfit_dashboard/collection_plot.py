@@ -873,7 +873,7 @@ class CollectionPlotPanel(QWidget):
         else:
             self.coordinator.select_location(
                 record,
-                selector.node_path,
+                selector.concrete_node_path,
                 selector.value_path,
             )
 
@@ -896,12 +896,12 @@ class CollectionPlotPanel(QWidget):
         if document.record.id != record_id:
             return
 
-        if not document.has_path(selector.node_path):
+        if not document.has_path(selector.concrete_node_path):
             return
 
         self.coordinator.select_location(
             document.record,
-            selector.node_path,
+            selector.concrete_node_path,
             selector.value_path,
         )
 

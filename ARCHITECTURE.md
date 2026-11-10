@@ -154,13 +154,25 @@ cross-panel destinations such as opening a plot point or extraction row.
   `CollectionSeries`. Plotting, ordering, and point-to-record navigation share
   that selector rather than storing raw widget indexes.
 - **Extraction:** Inspector emits a `(FieldSelector, OutputDescriptor)` pair.
-  `FieldSelector` stores a direct component `node_path` and raw-JSON
-  `value_path`; missing paths become explicit extraction statuses.
+  `FieldSelector` stores a component `NodePathSelection` and raw-JSON
+  `value_path`. Concrete document/navigation `NodePath` values remain
+  `tuple[int, ...]`; only extraction selections may contain `"*"`. The
+  Inspector's sibling actions replace the selected component's final segment
+  with that single-level wildcard. `resolve_fields` scans the bounded preview
+  or complete export collection, takes the union of matching concrete paths,
+  and assigns one virtual output field to each match. Output naming follows one
+  rule for exact and wildcard selectors. The canonical field-first form is
+  `output.force@/2/0`; disabling `include_node_paths` produces `output.force`.
+  An explicit `column="force"` override produces `force@/2/0` or `force`,
+  respectively. Component labels remain presentation metadata for the
+  inspector and hierarchy and do not affect extraction names. Missing concrete
+  paths in individual evaluations become explicit `missing_component` statuses.
   `OutputDescriptor` owns naming and CSV shaping. Object flattening and
   per-selector array depth both derive output columns through
   `column_paths_for_value`, shared by preview and CSV export. They never
-  multiply evaluation rows. Preview reads at most 200 rows, while export
-  streams the complete collection and does not depend on the preview model.
+  multiply evaluation rows and have no fixed column-count ceiling. Preview
+  reads at most 200 rows, while export streams the complete collection and does
+  not depend on the preview model.
   GUI exports write a temporary sibling and atomically replace the requested
   destination only after success. Local `JsonFileSource` collections with at
   least 200 records use the spawned process pool; smaller or source-specific
@@ -206,7 +218,8 @@ Large local exports use one job in the same pool because parsing and
 serialization would otherwise contend with the GUI under the GIL. The worker
 reconstructs a `JsonFileSource` from serializable `RecordRef` values and streams
 directly to the temporary output. Flattened/expanded CSV uses two traversals—one
-to discover columns and one to write—while ordinary CSV and JSONL use one.
+to discover columns and one to write. Wildcards add a selector-resolution
+traversal; ordinary exact-path CSV and JSONL use one.
 
 ## State and cache ownership
 

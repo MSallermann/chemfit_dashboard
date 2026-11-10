@@ -49,7 +49,7 @@ def test_cli_exports_gui_configuration_to_csv(tmp_path, capsys):
 
     with output.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
-    assert [row["result"] for row in rows] == ["4", "7"]
+    assert [row["result@/"] for row in rows] == ["4", "7"]
     assert "Wrote 2 rows" in capsys.readouterr().out
 
 
@@ -65,7 +65,7 @@ def test_cli_infers_jsonl_and_excludes_config_inside_input_directory(tmp_path, c
         json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()
     ]
     assert len(payloads) == 1
-    assert payloads[0]["values"]["result"] == 4
+    assert payloads[0]["values"]["result@/"] == 4
     assert "Wrote 1 row" in capsys.readouterr().out
 
 

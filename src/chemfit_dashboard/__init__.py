@@ -6,11 +6,14 @@ from chemfit_dashboard.extraction import (
     ExtractionStatus,
     ExtractionValue,
     FieldSelector,
+    NodePathSelection,
     OutputDescriptor,
+    ResolvedField,
     export_csv,
     export_jsonl,
     extract_fields,
     load_config,
+    resolve_fields,
     save_config,
 )
 
@@ -20,11 +23,14 @@ __all__ = [
     "ExtractionStatus",
     "ExtractionValue",
     "FieldSelector",
+    "NodePathSelection",
     "OutputDescriptor",
+    "ResolvedField",
     "export_csv",
     "export_jsonl",
     "extract_fields",
     "load_config",
+    "resolve_fields",
     "save_config",
 ]
 

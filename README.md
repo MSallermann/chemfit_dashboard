@@ -214,11 +214,24 @@ By default, each evaluation contributes one row and each selected value contribu
 
 The extraction follows the selected fields across the entire collection, rather than requiring you to select the same values separately in every evaluation.
 
+When the selected component has siblings, the Inspector also offers **+ Sibling
+Fields** and **+ Sibling Components**. These create a wildcard selector for all
+children of the same parent. For example, selecting component `/2/7` creates
+`/2/*`; the exporter discovers every matching concrete path in the collection
+and gives each match its own path-qualified column, such as
+`output.energy@/2/0`, `output.energy@/2/1`, and so on. If a particular
+evaluation lacks one of those
+children, that cell has the `missing_component` status.
+
 ### Working with structured values
 
 The extraction interface also supports nested data:
 
 - **+ Component** adds an entire component, including its fields and metadata.
+- **Include node paths** controls whether every output name includes its
+  concrete component path. Automatic names use the complete JSON and node path:
+  `output.force@/2/0` by default or `output.force` with node paths disabled. An
+  explicit rename uses `force@/2/0` or simply `force`, respectively.
 - **Flatten objects** converts nested dictionary values into separate columns.
 - **Expand arrays** is configured independently for every selected field. When
   enabled, its **Levels** control chooses how many dimensions become columns;
@@ -245,11 +258,16 @@ runs the export in a spawned worker process. Smaller collections and sources
 that cannot safely be reconstructed in another process use a background thread.
 Both paths keep file parsing and serialization away from the GUI thread.
 
-The status footer shows export progress. CSV exports that flatten objects or
-expand arrays require two collection passes: the first discovers the complete
-set of output columns and the second writes the rows. The progress total covers
-both passes. CSV exports without expanded columns and all JSONL exports need one
-pass.
+The status footer shows export progress. Wildcard selectors require a discovery
+pass to find the union of matching component paths. CSV exports that flatten
+objects or expand arrays use another discovery pass for their nested output
+columns; the final pass writes the rows. The progress total covers every pass.
+
+There is no fixed limit on flattened or expanded CSV columns. Every path
+discovered in the collection is included unless it is explicitly excluded in
+the field configuration. Very wide exports can require substantial memory,
+storage, and processing time, and spreadsheet applications may impose their own
+column limits.
 
 GUI exports are published atomically. Data is first written to a temporary file
 beside the selected destination, and the destination is replaced only after the
@@ -305,9 +323,11 @@ The next time you open another collection, use **Load configuration** to restore
 
 A configuration is a small JSON file describing **what to extract**, not a copy of the extracted results.
 
-Component selections store their integer node path. A saved configuration can
-therefore be reused with collections that have the same component structure;
-an evaluation where the selected path does not exist receives the explicit
+Component selections store a `NodePathSelection`: integer segments select exact
+components and `"*"` segments select every immediate child at that hierarchy
+level. A saved configuration can therefore target either a stable concrete path
+or a varying set of sibling components. An evaluation where a concrete path
+from the collection-wide wildcard union does not exist receives the explicit
 `missing_component` status.
 
 ## Using the extraction API from Python
@@ -332,9 +352,9 @@ from chemfit_dashboard.source import JsonFileSource
 source = JsonFileSource()
 records = source.discover(["examples/context_collection/"])
 
-# Select a value, then describe how it should appear in an export.
+# Select a value. The default output name is the selector's complete path.
 loss_selector = FieldSelector(node_path=(), value_path=("output",))
-loss_output = OutputDescriptor(column="loss")
+loss_output = OutputDescriptor()
 config = ExtractionConfig(fields=((loss_selector, loss_output),))
 
 # Inspect the values
@@ -350,27 +370,35 @@ export_csv("losses.csv", source, records, config)
 The `FieldSelector` identifies the value to extract:
 
 - `node_path=()` selects the root evaluation context. Nested components use
-  integer paths such as `(0, 2)`.
+  integer paths such as `(0, 2)`. A `"*"` segment matches every immediate child,
+  so `(0, "*")` selects all children below component `0`.
 - `value_path=("output",)` traverses the selected context's raw JSON value.
   String dictionary keys and integer list indexes can be combined in this tuple.
 
 `OutputDescriptor` controls only the exported representation:
 
-- `column="loss"` sets the base output-column name.
+- `column=None` (the default) uses the complete selector path, such as
+  `output.force@/2/0`. `column="force"` explicitly renames it to
+  `force@/2/0` while node paths are enabled.
 - `flatten=True` expands nested dictionaries into CSV columns.
 - `array_expansion_depth=N` expands up to `N` list dimensions into CSV columns.
 - `excluded_paths` omits selected flattened paths.
 - `flattened_column_names` renames individual flattened paths.
 
 `ExtractionConfig.fields` pairs each selector with one output descriptor. Its
-`include_identifiers` and `include_status_columns` flags control the additional
-CSV columns. Configuration files written by `save_config()` use the current
-version 3 schema and can be loaded by the GUI, `chemfit-extract`, or
-`load_config()`.
+`include_identifiers` flag controls the additional CSV identity columns, while
+`include_node_paths` controls path qualification. Missing or unavailable CSV
+values are empty cells; JSONL retains a separate `status` object with the exact
+reason. Configuration files written by `save_config()` use the current version
+6 schema and can be loaded by the GUI, `chemfit-extract`, or `load_config()`.
+Existing version 3, 4, and 5 configurations remain supported.
 
 To extract additional quantities, append more `(FieldSelector,
-OutputDescriptor)` pairs to `ExtractionConfig.fields`. Pass just the selectors
-to `extract_fields()` when no file export is required.
+OutputDescriptor)` pairs to `ExtractionConfig.fields`. Exact selectors can be
+passed directly to `extract_fields()`. For wildcard selectors, call
+`resolve_fields(source, records, config.fields, ...)` first and extract the
+concrete selectors from the returned fields. CSV and JSONL export do this
+automatically and apply the configuration's naming options.
 
 The `extract_fields()` function returns an iterator, allowing results to be
 processed without loading the complete extracted collection into memory. Each

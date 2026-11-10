@@ -37,7 +37,7 @@ def test_plot_renders_series_and_log_axis(coordinator):
     panel.set_series_collection((_series(),))
 
     assert len(panel.chart_view.chart().series()) == 2
-    assert panel.selection_label.text() == "Currently plotting: / : loss"
+    assert panel.selection_label.text() == "Currently plotting: loss@/"
     assert panel.status.text() == "2 of 2 contexts in collection"
 
     panel.log_y.setChecked(True)
@@ -95,7 +95,7 @@ def test_plot_copies_canonical_series_path(coordinator, qapp):
 
     panel._series_copy_shortcut.activated.emit()  # noqa: SLF001
 
-    assert qapp.clipboard().text() == "/1/0 : output.energy"
+    assert qapp.clipboard().text() == "output.energy@/1/0"
     assert messages == ["Copied plot series field path"]
 
 

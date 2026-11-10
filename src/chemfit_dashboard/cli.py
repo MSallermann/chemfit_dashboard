@@ -53,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"could not load extraction configuration {config_path}: {error}"
             )
     try:
-        from chemfit_dashboard.app import run  # noqa: PLC0415
+        from chemfit_dashboard.app import run  # noqa: PLC0415, RUF100
     except ImportError as exc:
         missing_gui_dependency = exc.name == "rapidfuzz" or (
             exc.name == "PySide6" or (exc.name and exc.name.startswith("PySide6."))

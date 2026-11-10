@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from chemfit_dashboard.context_document import NodeDetails
 from chemfit_dashboard.coordinator import DashboardCoordinator, NodePath
 from chemfit_dashboard.extraction import (
+    NODE_WILDCARD,
     FieldSelector,
     JsonPath,
     OutputDescriptor,
@@ -416,6 +417,28 @@ class Inspector(QWidget):
             self._request_component_extraction
         )
         action_layout.addWidget(self.extract_component_button, 3, 2)
+
+        self.extract_sibling_fields_button = QPushButton("+ Sibling Fields")
+        self.extract_sibling_fields_button.setProperty("extractAction", "true")
+        self.extract_sibling_fields_button.setEnabled(False)
+        self.extract_sibling_fields_button.setToolTip(
+            "Add this field from every sibling component to Data Extraction."
+        )
+        self.extract_sibling_fields_button.clicked.connect(
+            self._request_sibling_fields_extraction
+        )
+        action_layout.addWidget(self.extract_sibling_fields_button, 3, 3)
+
+        self.extract_sibling_components_button = QPushButton("+ Sibling Components")
+        self.extract_sibling_components_button.setProperty("extractAction", "true")
+        self.extract_sibling_components_button.setEnabled(False)
+        self.extract_sibling_components_button.setToolTip(
+            "Add every sibling component to Data Extraction."
+        )
+        self.extract_sibling_components_button.clicked.connect(
+            self._request_sibling_components_extraction
+        )
+        action_layout.addWidget(self.extract_sibling_components_button, 3, 4)
         action_layout.setColumnStretch(6, 1)
         layout.addWidget(actions)
 
@@ -477,11 +500,16 @@ class Inspector(QWidget):
 
         # Extraction controls
         self.extract_button.setEnabled(has_field)
+        has_siblings = bool(selector and selector.node_path)
+        self.extract_sibling_fields_button.setEnabled(has_field and has_siblings)
         self.field_selection.setText(
             f"Selected: {label}" if has_field else "No field selected"
         )
         self.field_selection.setToolTip(label if has_field else "")
         self.extract_button.setToolTip(f"Add this field to Data Extraction.{selected}")
+        self.extract_sibling_fields_button.setToolTip(
+            "Add this field from every sibling component to Data Extraction." + selected
+        )
 
         # Plotting and sorting controls
         self.plot_button.setEnabled(is_numeric)
@@ -518,6 +546,8 @@ class Inspector(QWidget):
         self._details = None
         self._component_label = ""
         self.extract_component_button.setEnabled(False)
+        self.extract_sibling_fields_button.setEnabled(False)
+        self.extract_sibling_components_button.setEnabled(False)
         self.extract_component_button.setToolTip(
             "Add the entire selected component to Data Extraction."
         )
@@ -544,6 +574,7 @@ class Inspector(QWidget):
         self._details = details
         self._component_label = component_label or details.info.label
         self.extract_component_button.setEnabled(True)
+        self.extract_sibling_components_button.setEnabled(bool(details.info.path))
         self.extract_component_button.setToolTip(
             f"Add the entire {self._component_label} component to Data Extraction."
         )
@@ -618,9 +649,7 @@ class Inspector(QWidget):
         if selector is None:
             return
 
-        column = str(selector.value_path[-1]) if selector.value_path else "value"
-
-        self.extraction_requested.emit((selector, OutputDescriptor(column=column)))
+        self.extraction_requested.emit((selector, OutputDescriptor()))
 
     def _request_component_extraction(self) -> None:
         context = self.coordinator.selected_context
@@ -630,7 +659,28 @@ class Inspector(QWidget):
         self.component_extraction_requested.emit(
             (
                 FieldSelector(node_path=context),
-                OutputDescriptor(column=self._component_label or "component"),
+                OutputDescriptor(),
+            )
+        )
+
+    def _request_sibling_fields_extraction(self) -> None:
+        selector = self.coordinator.current_field_selector
+        if selector is None or not selector.node_path:
+            return
+        sibling_selector = FieldSelector(
+            node_path=(*selector.node_path[:-1], NODE_WILDCARD),
+            value_path=selector.value_path,
+        )
+        self.extraction_requested.emit((sibling_selector, OutputDescriptor()))
+
+    def _request_sibling_components_extraction(self) -> None:
+        context = self.coordinator.selected_context
+        if not context:
+            return
+        self.component_extraction_requested.emit(
+            (
+                FieldSelector(node_path=(*context[:-1], NODE_WILDCARD)),
+                OutputDescriptor(),
             )
         )
 

@@ -129,7 +129,7 @@ def test_search_panel_renders_context_and_copies_canonical_path(coordinator, qap
     assert isinstance(label, QLabel)
     assert "Evaluation root" in label.text()
     assert panel.status.text().startswith("1 matches")
-    assert qapp.clipboard().text() == "/1/0 : output[0]"
+    assert qapp.clipboard().text() == "output[0]@/1/0"
 
     panel._copy_hit_json(hit)  # noqa: SLF001
     assert json.loads(qapp.clipboard().text())["record_id"] == "record-1"
