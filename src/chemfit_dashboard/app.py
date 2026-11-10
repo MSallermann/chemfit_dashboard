@@ -21,15 +21,22 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import FrameType
 
+    from chemfit_dashboard.extraction import ExtractionConfig
 
-def run(paths: Sequence[str | Path] | None = None) -> int:
+
+def run(
+    paths: Sequence[str | Path] | None = None,
+    *,
+    extraction_config: ExtractionConfig | None = None,
+) -> int:
+    """Start the dashboard with optional locations and extraction selections."""
     instance = QApplication.instance()
     application = (
         instance if isinstance(instance, QApplication) else QApplication(sys.argv)
     )
     application.setApplicationName("ChemFit Context Inspector")
     application.setOrganizationName("ChemFit")
-    window = MainWindow()
+    window = MainWindow(extraction_config=extraction_config)
     if paths:
         window.coordinator.load_collection(paths)
     window.show()

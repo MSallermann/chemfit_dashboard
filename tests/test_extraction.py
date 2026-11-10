@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import runpy
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
@@ -35,6 +37,30 @@ def _field(
     **options,
 ):
     return FieldSelector(path, value_path), OutputDescriptor(column, **options)
+
+
+def test_readme_extraction_api_example_uses_current_public_api(tmp_path, monkeypatch):
+    readme = Path(__file__).parents[1] / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    marked = text.split("<!-- extraction-api-example:start -->", 1)[1].split(
+        "<!-- extraction-api-example:end -->", 1
+    )[0]
+    code = marked.split("```python", 1)[1].split("```", 1)[0]
+
+    collection = tmp_path / "examples" / "context_collection"
+    collection.mkdir(parents=True)
+    (collection / "step_0.json").write_text(
+        json.dumps({"output": 1.25}), encoding="utf-8"
+    )
+    script = tmp_path / "readme_extraction_example.py"
+    script.write_text(code, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    runpy.run_path(str(script), run_name="__main__")
+
+    rows = list(csv.reader((tmp_path / "losses.csv").open(encoding="utf-8")))
+    assert rows[0][3:5] == ["loss", "loss__status"]
+    assert rows[1][3:5] == ["1.25", "available"]
 
 
 def test_extraction_reports_null_missing_failure_and_available_values(tmp_path):

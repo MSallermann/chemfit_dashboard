@@ -10,7 +10,11 @@ from chemfit_dashboard.appearance import (
     FONT_SCALE_SETTING,
 )
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
-from chemfit_dashboard.extraction import FieldSelector, OutputDescriptor
+from chemfit_dashboard.extraction import (
+    ExtractionConfig,
+    FieldSelector,
+    OutputDescriptor,
+)
 from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.models import (
     ContextTreeModel,
@@ -27,7 +31,7 @@ from chemfit_dashboard.settings_ui import (
 from chemfit_dashboard.source import JsonFileSource
 
 
-def _isolated_main_window(tmp_path, monkeypatch):
+def _isolated_main_window(tmp_path, monkeypatch, **kwargs):
     settings = QSettings(
         str(tmp_path / "dashboard.ini"),
         QSettings.Format.IniFormat,
@@ -36,7 +40,23 @@ def _isolated_main_window(tmp_path, monkeypatch):
         "chemfit_dashboard.settings_ui.application_settings",
         lambda: settings,
     )
-    return MainWindow()
+    return MainWindow(**kwargs)
+
+
+def test_main_window_preloads_extraction_configuration(tmp_path, monkeypatch):
+    config = ExtractionConfig(
+        ((FieldSelector((), ("output", "loss")), OutputDescriptor("loss")),)
+    )
+
+    window = _isolated_main_window(
+        tmp_path,
+        monkeypatch,
+        extraction_config=config,
+    )
+
+    assert window.extraction_panel.config == config
+    extraction_index = window.center_tabs.indexOf(window.extraction_panel)
+    assert window.center_tabs.tabText(extraction_index) == "Data Extraction (1)"
 
 
 def test_evaluation_model_uses_coordinator_order_and_folder_hierarchy(

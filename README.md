@@ -67,6 +67,19 @@ chemfit-dashboard path/to/context.json
 chemfit-dashboard path/to/results/
 ```
 
+Preload a saved extraction configuration when opening the GUI with
+`-c`/`--extraction-config`:
+
+```bash
+chemfit-dashboard path/to/results/ \
+  --extraction-config extraction.json
+```
+
+The configuration is validated before the window opens. Its fields, column
+names, flattening/array options, and identifier/status settings are installed in
+the **Data Extraction** tab; once the collection finishes loading, its preview
+is built normally.
+
 Multiple files and directories can be provided together. A directory contributes only
 its immediate JSON files; subdirectories are never opened automatically. Use **File →
 Add files to collection** to actively combine additional results with the open collection.
@@ -97,9 +110,9 @@ Components can be identified using a configurable metadata field, making it easi
 When working with a collection, evaluations can also be ordered by the value of a selected numerical field.
 
 Major views are directly accessible with **Ctrl+1** through **Ctrl+6**:
-Context Explorer, Data Flow, Plot, Collection Overview, Search, and Data
-Extraction respectively. Press **F1** in the dashboard for the complete shortcut
-list.
+Context Hierarchy, Data Flow, Context Search, Data Extraction, Collection Plot,
+and Collection Overview respectively. **Ctrl+D** also opens Data Extraction.
+Press **F1** in the dashboard for the complete shortcut list.
 
 ### Data Flow
 
@@ -175,9 +188,10 @@ The plotting interface supports:
 
 Plots can be exported as PNG or SVG images.
 
-**Export CSV** saves the plotted data as a table, with one column per series and customizable column names. Missing values are preserved as missing entries.
-
-The dashboard follows the logical identity of a selected component across evaluations, including collections with skipped or missing components.
+Plot selectors reuse the selected component's integer node path and field path
+across the collection. Evaluations where that path is missing or not numeric are
+counted as missing points. Use Data Extraction when the underlying values or
+explicit missing-value statuses are needed as CSV or JSONL.
 
 ## Data extraction
 
@@ -291,18 +305,24 @@ The next time you open another collection, use **Load configuration** to restore
 
 A configuration is a small JSON file describing **what to extract**, not a copy of the extracted results.
 
-Component selections retain structural identity information, allowing the same configuration to be reused across evaluations with corresponding component structures.
+Component selections store their integer node path. A saved configuration can
+therefore be reused with collections that have the same component structure;
+an evaluation where the selected path does not exist receives the explicit
+`missing_component` status.
 
 ## Using the extraction API from Python
 
 The extraction functionality can also be used directly from Python without opening the dashboard.
 
-For example, the following script extracts the root objective value from each evaluation in the included example collection:
+For example, the following script extracts the root `output` value from each
+evaluation in the included example collection:
 
+<!-- extraction-api-example:start -->
 ```python
 from chemfit_dashboard import (
     ExtractionConfig,
     FieldSelector,
+    OutputDescriptor,
     export_csv,
     extract_fields,
 )
@@ -312,40 +332,51 @@ from chemfit_dashboard.source import JsonFileSource
 source = JsonFileSource()
 records = source.discover(["examples/context_collection/"])
 
-# Select the root context's output value
-loss = FieldSelector(
-    node_path=(),
-    section="fields",
-    value_path=("output",),
-    column="loss",
-)
+# Select a value, then describe how it should appear in an export.
+loss_selector = FieldSelector(node_path=(), value_path=("output",))
+loss_output = OutputDescriptor(column="loss")
+config = ExtractionConfig(fields=((loss_selector, loss_output),))
 
 # Inspect the values
-for row in extract_fields(source, records, (loss,)):
+for row in extract_fields(source, records, (loss_selector,)):
     result = row.values[0]
     print(row.filename, result.value, result.status.value)
 
 # Export all evaluations
-export_csv(
-    "losses.csv",
-    source,
-    records,
-    ExtractionConfig((loss,)),
-)
+export_csv("losses.csv", source, records, config)
 ```
+<!-- extraction-api-example:end -->
 
 The `FieldSelector` identifies the value to extract:
 
-- `node_path=()` selects the root evaluation context.
-- `section="fields"` selects its regular fields.
-- `value_path=("output",)` selects the recorded output.
-- `column="loss"` names the exported column.
+- `node_path=()` selects the root evaluation context. Nested components use
+  integer paths such as `(0, 2)`.
+- `value_path=("output",)` traverses the selected context's raw JSON value.
+  String dictionary keys and integer list indexes can be combined in this tuple.
 
-To extract additional quantities, create more `FieldSelector` instances and pass them together as a tuple.
+`OutputDescriptor` controls only the exported representation:
 
-For nested components, `selector_for_document()` from `chemfit_dashboard.extraction` can attach the component's structural identity to a selector so that it can be reused across evaluations.
+- `column="loss"` sets the base output-column name.
+- `flatten=True` expands nested dictionaries into CSV columns.
+- `array_expansion_depth=N` expands up to `N` list dimensions into CSV columns.
+- `excluded_paths` omits selected flattened paths.
+- `flattened_column_names` renames individual flattened paths.
 
-The `extract_fields()` function returns an iterator, allowing results to be processed without loading the entire extracted collection into memory.
+`ExtractionConfig.fields` pairs each selector with one output descriptor. Its
+`include_identifiers` and `include_status_columns` flags control the additional
+CSV columns. Configuration files written by `save_config()` use the current
+version 3 schema and can be loaded by the GUI, `chemfit-extract`, or
+`load_config()`.
+
+To extract additional quantities, append more `(FieldSelector,
+OutputDescriptor)` pairs to `ExtractionConfig.fields`. Pass just the selectors
+to `extract_fields()` when no file export is required.
+
+The `extract_fields()` function returns an iterator, allowing results to be
+processed without loading the complete extracted collection into memory. Each
+`ExtractionValue` includes an `ExtractionStatus` such as `available`,
+`explicit_null`, `missing_component`, `missing_field`, `skipped_component`, or
+`unreadable_evaluation`.
 
 The extraction API does not require Pandas or NumPy.
 

@@ -1,9 +1,9 @@
 """
 Reusable field extraction, configuration persistence, and streaming exports.
 
-Semantic ``FieldSelector`` objects resolve across differing evaluations while
-preserving explicit missing/skipped/failure statuses. This module contains no
-Qt code and is shared by the dashboard and the headless extraction CLI.
+Path-based ``FieldSelector`` objects address values consistently across a
+collection while preserving explicit missing/skipped/failure statuses. This
+module contains no Qt code and is shared by the dashboard and headless CLI.
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ class ExtractionStatus(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class FieldSelector:
-    """A reusable semantic field selection independent of any collection."""
+    """A reusable component/value path independent of any collection."""
 
     # Describes the where the context sits within the record context hierarchy
     node_path: NodePath

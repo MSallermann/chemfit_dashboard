@@ -267,8 +267,8 @@ class Inspector(QWidget):
     Present all details and actions for the currently selected context node.
 
     The inspector owns only the selected ``NodeDetails`` and per-tab view state.
-    Plot, order, and extraction actions are emitted as semantic selectors so
-    MainWindow can apply them to the active collection.
+    Plot, order, and extraction actions are emitted as path-based selectors so
+    the coordinator and feature panels can apply them to the active collection.
     """
 
     plot_requested = Signal(object)

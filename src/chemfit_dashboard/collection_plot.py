@@ -1,9 +1,10 @@
 """
 Collection-series construction and interactive Qt chart presentation.
 
-Selectors identify numeric leaves semantically across evaluations. The pure
-series builders resolve those selectors; ``CollectionPlotPanel`` renders line,
-histogram, and statistics modes and emits record-selection requests.
+Selectors identify numeric leaves by component and value path across
+evaluations. The pure series builders apply those selectors;
+``CollectionPlotPanel`` renders line, histogram, and statistics modes and emits
+record-selection requests.
 """
 
 from __future__ import annotations

@@ -31,6 +31,7 @@ from chemfit_dashboard.context_search import ContextSearchPanel
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.evaluation_panel import EvaluationPanel
 from chemfit_dashboard.extraction import (
+    ExtractionConfig,
     FieldSelector,
     OutputDescriptor,
 )
@@ -50,13 +51,15 @@ from chemfit_dashboard.ui_components import (
 
 
 class MainWindow(QMainWindow):
-    """todo."""
+    """Coordinate the dashboard's shared state and feature panels."""
 
     def __init__(
         self,
         source: ContextSource | None = None,
+        *,
+        extraction_config: ExtractionConfig | None = None,
     ):
-        """Initialize the dashboard around a replaceable context source."""
+        """Initialize the dashboard and optionally preload extraction fields."""
         super().__init__()
 
         # set up the coordinator
@@ -90,6 +93,8 @@ class MainWindow(QMainWindow):
         self.activity = ActivityStatus(self)
         self.build_menu()
         self.connect_signals()
+        if extraction_config is not None:
+            self.extraction_panel.set_config(extraction_config)
         self._center_tab_changed(self.center_tabs.currentIndex())
 
     def build_ui(self):  # noqa: PLR0915

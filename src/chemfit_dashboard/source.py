@@ -1,8 +1,8 @@
 """
 Context discovery, JSON loading, and indexed document access.
 
-``JsonFileSource`` discovers immediate JSON files, materializes GIO-backed
-remote locations, and owns a bounded thread-safe document cache.
+``JsonFileSource`` discovers immediate local JSON files and owns a bounded,
+thread-safe document cache.
 ``ContextDocument`` interprets ChemFit's serialized context hierarchy and is
 the data boundary consumed by every feature.
 """
