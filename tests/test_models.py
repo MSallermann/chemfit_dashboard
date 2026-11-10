@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QMainWindow, QSplitter, QTabWidget, QWidget
@@ -100,6 +101,34 @@ def test_automatic_evaluation_sync_preserves_filter_and_focus(loaded_coordinator
     assert panel.search.text() == "step_8"
     assert panel.search.hasFocus()
     assert not panel.file_list.hasFocus()
+
+
+def test_automatic_evaluation_sync_clears_selection_when_record_is_filtered(
+    tmp_path, loaded_coordinator, qapp
+):
+    path = tmp_path / "other.json"
+    path.write_text("{}", encoding="utf-8")
+    record = JsonFileSource().discover([path])[0]
+    loaded_coordinator.collection.extend((record,))
+    panel = EvaluationPanel(loaded_coordinator)
+    panel.search.setText("step_8")
+    qapp.processEvents()
+    assert panel.file_list.selectionModel().selectedIndexes()
+
+    loaded_coordinator.select_record(record)
+    deadline = time.monotonic() + 2
+    while (
+        loaded_coordinator.selected_document is None
+        or loaded_coordinator.selected_document.record.id != record.id
+    ) and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    qapp.processEvents()
+
+    assert loaded_coordinator.selected_document is not None
+    assert loaded_coordinator.selected_document.record.id == record.id
+    assert panel.search.text() == "step_8"
+    assert panel.file_list.selectionModel().selectedIndexes() == []
 
 
 def test_interactive_evaluation_focus_clears_filter_and_focuses_tree(

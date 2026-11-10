@@ -20,6 +20,14 @@ produced by `FitContext.to_record()` by default. Pass `--record-format legacy`
 to benchmark legacy context-summary input instead. The historical measurements
 below used the legacy shape; include that flag for direct comparisons with them.
 
+The full benchmark can use either individual JSON files or a single trajectory.
+The JSONL path exercises line discovery, byte-offset lookup, versioned-envelope
+normalization, process search, extraction, export, plotting, and rendering:
+
+```bash
+PYTHONPATH=src python benchmark/benchmark.py --profile standard --input-format jsonl
+```
+
 Use a second run for Python allocation peaks:
 
 ```bash

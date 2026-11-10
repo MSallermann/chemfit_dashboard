@@ -454,6 +454,12 @@ PYTHONPATH=src python benchmark/benchmark.py --profile standard
 
 The generated workload uses the versioned `to_record` shape by default. Use
 `--record-format legacy` to compare it with legacy context-summary files.
+To run the complete workload against a ChemFit trajectory instead of individual
+JSON files, use:
+
+```bash
+PYTHONPATH=src python benchmark/benchmark.py --profile standard --input-format jsonl
+```
 
 A larger stress profile tests scaling to 50,000 evaluation files, millions of recorded component contexts, wide exports, and a 25,000-node graph layout:
 

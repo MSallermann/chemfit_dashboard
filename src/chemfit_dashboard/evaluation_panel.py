@@ -417,6 +417,7 @@ class EvaluationPanel(QWidget):
 
         proxy_index = self.file_proxy.mapFromSource(source_index)
         if not proxy_index.isValid():
+            self.file_list.selectionModel().clearSelection()
             return
 
         parent = proxy_index.parent()
