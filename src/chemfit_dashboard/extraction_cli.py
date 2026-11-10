@@ -31,7 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
         "paths",
         nargs="+",
         metavar="PATH",
-        help="Context JSON file or directory; only immediate JSON files are used.",
+        help=(
+            "Context JSON file, JSONL trajectory, or directory; only immediate "
+            "JSON and JSONL files are used."
+        ),
     )
     parser.add_argument(
         "-c",
@@ -93,7 +96,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_path = arguments.config.expanduser().resolve()
         records = [record for record in records if record.path.resolve() != config_path]
         if not records:
-            message = "No context JSON files were found in the supplied paths"
+            message = (
+                "No context JSON or JSONL records were found in the supplied paths"
+            )
             raise ValueError(message)
         output.parent.mkdir(parents=True, exist_ok=True)
         exporter = export_csv if output_format == "csv" else export_jsonl

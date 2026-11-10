@@ -87,3 +87,54 @@ def test_failed_process_export_does_not_replace_destination(tmp_path, qapp):
     assert destination.read_text(encoding="utf-8") == "keep me"
     assert not tuple(tmp_path.glob(".values.txt.*.tmp"))
     runner.shutdown(wait_for_processes=True)
+
+
+def test_process_export_reads_jsonl_records_by_offset(tmp_path, qapp):
+    def record(step: int) -> dict:
+        return {
+            "step": step,
+            "slot": 0,
+            "record": {
+                "format": "chemfit.evaluate_context",
+                "schema_version": 1,
+                "chemfit_version": "4.0.0",
+                "root": {
+                    "context_type": "fit",
+                    "input": {},
+                    "output": step * 2,
+                    "meta": {},
+                    "status": "success",
+                    "path": [],
+                    "children": [],
+                },
+            },
+        }
+
+    trajectory = tmp_path / "trajectory.jsonl"
+    trajectory.write_text(
+        "\n".join(json.dumps(record(step)) for step in range(3)) + "\n",
+        encoding="utf-8",
+    )
+    records = tuple(JsonFileSource().discover([trajectory]))
+    destination = tmp_path / "values.csv"
+    config = ExtractionConfig(
+        ((FieldSelector((), ("output",)), OutputDescriptor("value")),)
+    )
+    runner = TaskRunner(process_workers=1)
+    results = []
+    errors = []
+    runner.submit(
+        function=export_json_file_process,
+        on_success=results.append,
+        on_error=errors.append,
+        backend="process",
+        args=(str(destination), "csv", records, config),
+        with_context=True,
+    )
+
+    _wait_for(qapp, lambda: bool(results or errors))
+
+    assert not errors
+    assert results == [3]
+    assert "value@/" in destination.read_text(encoding="utf-8")
+    runner.shutdown(wait_for_processes=True)

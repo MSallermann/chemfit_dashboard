@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from chemfit.fitter_callbacks import SaveMetaData
 
 from chemfit_dashboard.example import (
     build_example_context,
     build_failed_example_context,
+    write_example_collection,
 )
-from chemfit_dashboard.source import JsonFileSource
+from chemfit_dashboard.source import ContextSourceError, JsonFileSource
 
 
 def test_folder_discovery_orders_records_alphanumerically_by_filename(tmp_path):
@@ -45,6 +47,157 @@ def test_loads_context_written_by_chemfit(chemfit_json_path, chemfit_context):
     assert document.details(()).fields["output"] == chemfit_context.output
     assert document.details((0,)).fields["output"] == chemfit_context.children[0].output
     assert document.details(()).structure == chemfit_context.meta["chemfit.structure"]
+
+
+def test_loads_versioned_context_record(tmp_path, chemfit_context):
+    path = tmp_path / "record.json"
+    path.write_text(json.dumps(chemfit_context.to_record()), encoding="utf-8")
+    source = JsonFileSource()
+
+    document = source.load(source.discover([path])[0])
+
+    assert document.node_count == 3
+    assert document.root.status == "complete"
+    assert document.details(()).fields["context_type"] == "generic"
+    assert document.details(()).fields["input"] == chemfit_context.input
+    assert document.details(()).fields["output"] == chemfit_context.output
+    assert [node.label for node in document.children(())] == [
+        "compute_quantities",
+        "compute_loss",
+    ]
+
+
+def test_example_collection_is_written_as_versioned_records(tmp_path):
+    write_example_collection(tmp_path)
+
+    payloads = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(tmp_path.glob("*.json"))
+    ]
+
+    assert len(payloads) == 6
+    assert {payload["format"] for payload in payloads} == {"chemfit.evaluate_context"}
+    assert {payload["schema_version"] for payload in payloads} == {1}
+
+
+def test_jsonl_trajectory_is_discovered_as_one_collection(tmp_path, chemfit_context):
+    path = tmp_path / "trajectory.jsonl"
+    record = chemfit_context.to_record()
+    path.write_text(
+        "\n".join(
+            (
+                json.dumps({"step": 4, "slot": 0, "record": record}),
+                "",
+                json.dumps({"step": 5, "slot": 1, "record": record}),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+
+    records = source.discover([path])
+    documents = [source.load(record_ref) for record_ref in records]
+
+    assert [record_ref.position_in_file for record_ref in records] == [1, 3]
+    assert [record_ref.name for record_ref in records] == [
+        "trajectory.jsonl:1",
+        "trajectory.jsonl:3",
+    ]
+    assert len({record_ref.id for record_ref in records}) == 2
+    assert [document.details(()).fields["step"] for document in documents] == [4, 5]
+    assert [document.details(()).fields["slot"] for document in documents] == [0, 1]
+
+
+def test_versioned_exception_and_unrecorded_children_keep_their_semantics(tmp_path):
+    context = build_failed_example_context()
+    path = tmp_path / "failed.json"
+    path.write_text(json.dumps(context.to_record()), encoding="utf-8")
+    source = JsonFileSource()
+
+    document = source.load(source.discover([path])[0])
+
+    assert document.root.status == "failed"
+    assert document.details(()).fields["output"].startswith("RuntimeError:")
+    failed_term = document.details((2, 0, 2))
+    assert failed_term.info.status == "failed"
+    assert failed_term.fields["output"] == (
+        "RuntimeError: intentional failure in the structure loss term"
+    )
+
+
+def test_versioned_unrecorded_child_remains_declared_but_unexecuted(tmp_path):
+    no_output = {"__type__": "no_output"}
+    path = tmp_path / "partial.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "chemfit.evaluate_context",
+                "schema_version": 1,
+                "chemfit_version": "4.0.0",
+                "root": {
+                    "context_type": "generic",
+                    "input": {},
+                    "output": no_output,
+                    "meta": {
+                        "chemfit.structure": {
+                            "children": [{"index": 0, "name": "pending_term"}]
+                        }
+                    },
+                    "status": "no_output",
+                    "path": [],
+                    "children": [
+                        {
+                            "context_type": None,
+                            "input": no_output,
+                            "output": no_output,
+                            "meta": {},
+                            "status": "not_recorded",
+                            "path": [0],
+                            "children": [],
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+
+    document = source.load(source.discover([path])[0])
+
+    child = document.children(())[0]
+    assert child.label == "pending_term"
+    assert child.status == "not recorded"
+    assert not child.recorded
+
+
+def test_unsupported_record_schema_reports_the_jsonl_line(tmp_path):
+    path = tmp_path / "trajectory.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "step": 0,
+                "slot": 0,
+                "record": {
+                    "format": "chemfit.evaluate_context",
+                    "schema_version": 999,
+                    "chemfit_version": "future",
+                    "root": {},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source = JsonFileSource()
+    record = source.discover([path])[0]
+
+    with pytest.raises(
+        ContextSourceError,
+        match=r"trajectory\.jsonl line 1.*schema version: 999",
+    ):
+        source.load(record)
 
 
 def test_partial_and_unfamiliar_json_remains_inspectable(tmp_path):

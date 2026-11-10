@@ -8,7 +8,10 @@ A desktop application for exploring, visualizing, and extracting evaluation data
 
 ChemFit records inputs, outputs, metadata, intermediate results, and errors in structured evaluation contexts. ChemFit Dashboard makes this information accessible without having to inspect JSON files manually.
 
-Built with Python and PySide6, the dashboard works directly with serialized evaluation contexts from ChemFit 4.0.0. It runs locally, does not modify the original data, and can be used independently of ChemFit and the simulation software that produced the results.
+Built with Python and PySide6, the dashboard works directly with legacy ChemFit
+context summaries and the versioned `chemfit.evaluate_context` record format.
+It runs locally, does not modify the original data, and can be used independently
+of ChemFit and the simulation software that produced the results.
 
 ![ChemFit Dashboard screenshot](res/screenshot.png)
 
@@ -64,6 +67,7 @@ Open an evaluation file or a directory containing serialized contexts through th
 
 ```bash
 chemfit-dashboard path/to/context.json
+chemfit-dashboard path/to/trajectory.jsonl
 chemfit-dashboard path/to/results/
 ```
 
@@ -76,15 +80,18 @@ chemfit-dashboard path/to/results/ \
 ```
 
 The configuration is validated before the window opens. Its fields, column
-names, flattening/array options, and identifier/status settings are installed in
+names, flattening/array options, and identifier settings are installed in
 the **Data Extraction** tab; once the collection finishes loading, its preview
 is built normally.
 
-Multiple files and directories can be provided together. A directory contributes only
-its immediate JSON files; subdirectories are never opened automatically. Use **File →
-Add files to collection** to actively combine additional results with the open collection.
+Multiple files and directories can be provided together. A JSON file contributes
+one evaluation; a JSONL trajectory contributes one evaluation per nonblank line.
+A directory contributes its immediate `.json` and `.jsonl` files; subdirectories
+are never opened automatically. Use **File → Add files to collection** to
+actively combine additional results with the open collection.
 
-The repository also includes example evaluation data:
+The repository also includes example evaluation data written with ChemFit's
+versioned `FitContext.to_record()` format:
 
 ```bash
 # Open a single evaluation
@@ -191,7 +198,8 @@ Plots can be exported as PNG or SVG images.
 Plot selectors reuse the selected component's integer node path and field path
 across the collection. Evaluations where that path is missing or not numeric are
 counted as missing points. Use Data Extraction when the underlying values or
-explicit missing-value statuses are needed as CSV or JSONL.
+explicit missing-value statuses are needed; CSV leaves unavailable cells empty,
+while JSONL retains the exact statuses.
 
 ## Data extraction
 
@@ -286,9 +294,9 @@ chemfit-extract path/to/results/ \
   --output values.csv
 ```
 
-Input paths may be individual context JSON files or directories. Directories contribute
-their immediate JSON files only. Multiple input paths can be supplied. JSONL output is supported in the
-same way:
+Input paths may be individual context JSON files, ChemFit JSONL trajectories, or
+directories. Directories contribute their immediate JSON and JSONL files only.
+Multiple input paths can be supplied. JSONL output is supported in the same way:
 
 ```bash
 chemfit-extract run-a/ run-b/ -c extraction.json -f jsonl -o values.jsonl
@@ -306,7 +314,9 @@ Every evaluation still contributes exactly one CSV row.
 
 **JSONL** preserves nested JSON objects and arrays. Each line represents an extracted row and includes the selected values and their extraction statuses.
 
-Both formats distinguish available values from missing fields, skipped or unexecuted components, unreadable evaluations, and recorded exceptions.
+CSV writes only available values and leaves every unavailable cell empty. JSONL
+distinguishes missing fields, skipped or unexecuted components, unreadable
+evaluations, explicit nulls, and recorded exceptions through its `status` object.
 
 Exports are processed incrementally to avoid retaining the complete extracted dataset in memory.
 The process/thread selection, activity progress, and atomic publication described
@@ -441,6 +451,9 @@ Run the standard benchmark with:
 ```bash
 PYTHONPATH=src python benchmark/benchmark.py --profile standard
 ```
+
+The generated workload uses the versioned `to_record` shape by default. Use
+`--record-format legacy` to compare it with legacy context-summary files.
 
 A larger stress profile tests scaling to 50,000 evaluation files, millions of recorded component contexts, wide exports, and a 25,000-node graph layout:
 

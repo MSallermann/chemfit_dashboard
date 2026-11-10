@@ -56,7 +56,7 @@ def export_json_file_process(
     *,
     task_context: TaskContext,
 ) -> int:
-    """Export local JSON records atomically inside one worker process."""
+    """Export local JSON or JSONL records atomically in one worker process."""
 
     return export_file_atomically(
         path,

@@ -60,7 +60,11 @@ local file / folder
 
 ### Data and identity
 
-- `source.py`: local discovery, JSON loading, and bounded document caching.
+- `source.py`: local JSON/JSONL discovery, lazy record loading, and bounded
+  document caching. JSONL records retain byte offsets for direct access.
+- `record_format.py`: validation and normalization of versioned
+  `chemfit.evaluate_context` records and `SaveTrajectory` line envelopes into
+  the context shape consumed by `ContextDocument`.
 - `context_document.py`: indexed ChemFit hierarchy, lazy node details, and
   lightweight `RecordRef` metadata.
 - `models.py`: lazy Qt models for records, context nodes, and nested JSON.
@@ -90,13 +94,16 @@ local file / folder
 
 1. `DashboardCoordinator.load_collection` submits `ContextSource.discover` as a
    latest-only task. Discovery is non-recursive: a directory contributes only
-   its immediate JSON files.
+   its immediate JSON and JSONL files. Each nonblank JSONL line becomes a
+   separate `RecordRef` with its line number and byte offset.
 2. The coordinator commits discovered `RecordRef` objects to
    `OrderedRecordCollection`. `EvaluationListModel` observes collection/order
    signals and rebuilds its folder/file presentation.
 3. Selecting a record submits `JsonFileSource.load` as another latest-only
    task; superseded results are invalidated before they can update state.
-4. `JsonFileSource` decodes JSON and creates or reuses a bounded cached
+4. `JsonFileSource` decodes the selected JSON document or seeks directly to the
+   selected JSONL line. `record_format` unwraps and normalizes versioned ChemFit
+   records before the source creates or reuses a bounded cached
    `ContextDocument`. The document indexes structural node paths and summaries;
    full `NodeDetails` are produced lazily.
 5. A successful GUI-thread callback commits the document to the coordinator,
@@ -112,10 +119,12 @@ it only after panel signals and tab badges exist. Collection discovery remains
 asynchronous; the extraction panel refreshes its preview when the collection is
 committed.
 
-ChemFit 4.0.0 serializes executed children in `children` and declared structure
-in `meta["chemfit.structure"]`. `ContextDocument` merges both: an unexecuted
-declaration still appears as a node with `recorded=False`. Status handling for
-skipped, failed, incomplete, and missing components originates here and is
+ChemFit serializes executed children in `children` and declared structure in
+`meta["chemfit.structure"]`. Versioned records also place explicit unrecorded
+child placeholders in `children`; `record_format` removes those placeholders
+before `ContextDocument` merges the hierarchy with its declarations. An
+unexecuted declaration therefore still appears as a node with `recorded=False`.
+Status handling for skipped, failed, incomplete, and missing components is
 preserved by analysis and extraction.
 
 ## Selection and navigation

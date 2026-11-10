@@ -26,7 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
         "paths",
         nargs="*",
         metavar="PATH",
-        help="JSON file or directory to open; multiple paths load multiple locations.",
+        help=(
+            "JSON record, JSONL trajectory, or directory to open; multiple paths "
+            "load multiple locations."
+        ),
     )
     parser.add_argument(
         "-c",

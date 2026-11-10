@@ -93,9 +93,10 @@ class RecordRef:
     id: str  # unique id
     name: str  # name of the evaluation
     path: Path  # path to the document .json or .jsonl
-    size: int  # size (from os.stat)
+    size: int  # serialized record size in bytes
     modified: datetime  # modification time
-    position_in_file: int  # position of this record in it's file (for .json this is always 1, for .jsonl it is the line number)
+    position_in_file: int  # 1 for JSON; the source line number for JSONL
+    byte_offset: int = 0  # byte offset of a JSONL record; zero for JSON files
 
     @property
     def location(self) -> str:
@@ -386,6 +387,19 @@ class ContextDocument:
             return "not recorded"
         if not isinstance(value, dict):
             return "value"
+        record_status = value.get("status")
+        if record_status in {
+            "success",
+            "exception",
+            "skipped",
+            "no_output",
+        }:
+            return {
+                "success": "complete",
+                "exception": "failed",
+                "skipped": "skipped",
+                "no_output": "no output",
+            }[record_status]
         if (
             isinstance(value.get("output"), dict)
             and value["output"].get("skipped") is True

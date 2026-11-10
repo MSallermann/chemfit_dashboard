@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,6 +54,8 @@ from chemfit_dashboard.search_core import (
 )
 from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import iter_collection
+
+RecordFormat = Literal["versioned", "legacy"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +209,11 @@ def create_collection(
     *,
     components_per_evaluation: int = 0,
     root_fields: int = 0,
+    record_format: RecordFormat = "versioned",
 ) -> Path:
+    if record_format not in {"versioned", "legacy"}:
+        message = f"unsupported record format: {record_format!r}"
+        raise ValueError(message)
     directory.mkdir(parents=True, exist_ok=True)
     structure = {
         "children": [
@@ -235,7 +241,7 @@ def create_collection(
     }
     for index in range(count):
         child_count = graph_nodes if index == 0 else components_per_evaluation
-        value = {
+        context = {
             "input": {"parameters": [index, index + 1]},
             "output": {"loss": index / max(1, count), "tags": ["synthetic", index]},
             "metrics": {
@@ -262,10 +268,42 @@ def create_collection(
                 for child in range(child_count)
             ],
         }
+        value = (
+            _to_versioned_record(context, index=index)
+            if record_format == "versioned"
+            else context
+        )
         (directory / f"step_{index}_ctx_0.json").write_text(
             json.dumps(value, separators=(",", ":")), encoding="utf-8"
         )
     return directory
+
+
+def _to_versioned_record(context: dict[str, Any], *, index: int) -> dict[str, Any]:
+    root = {key: value for key, value in context.items() if key != "children"}
+    output = context["output"]
+    root.update(
+        context_type="fit",
+        status="success",
+        path=[],
+        fit={"loss": output["loss"], "n_evals": index + 1},
+        children=[
+            {
+                **child,
+                "context_type": "generic",
+                "status": "success",
+                "path": [child_index],
+                "children": [],
+            }
+            for child_index, child in enumerate(context["children"])
+        ],
+    )
+    return {
+        "format": "chemfit.evaluate_context",
+        "schema_version": 1,
+        "chemfit_version": "synthetic-benchmark",
+        "root": root,
+    }
 
 
 def run(  # noqa: PLR0915
@@ -277,6 +315,7 @@ def run(  # noqa: PLR0915
     search_queries: tuple[str, ...] = ("loss",),
     render_timeout: float = 30.0,
     trace_allocations: bool = True,
+    record_format: RecordFormat = "versioned",
     on_measurement: Callable[[Measurement], None] | None = None,
 ) -> list[Measurement]:
     measurements: list[Measurement] = []
@@ -303,6 +342,7 @@ def run(  # noqa: PLR0915
                 graph_nodes,
                 components_per_evaluation=components_per_evaluation,
                 root_fields=root_fields,
+                record_format=record_format,
             ),
         )
         source = JsonFileSource(
@@ -587,6 +627,12 @@ def main() -> None:
     parser.add_argument("--components-per-evaluation", type=int)
     parser.add_argument("--root-fields", type=int)
     parser.add_argument(
+        "--record-format",
+        choices=("versioned", "legacy"),
+        default="versioned",
+        help="Generate versioned to_record data or legacy context summaries",
+    )
+    parser.add_argument(
         "--tracemalloc",
         action="store_true",
         help="Trace Python allocations (slower; omit for representative timings)",
@@ -608,6 +654,7 @@ def main() -> None:
         f"graph_nodes={profile.graph_nodes:,} "
         f"components_per_evaluation={profile.components_per_evaluation:,} "
         f"root_fields={profile.root_fields:,} "
+        f"record_format={args.record_format} "
         f"search_queries={len(profile.search_queries)}",
         flush=True,
     )
@@ -638,6 +685,7 @@ def main() -> None:
         search_queries=profile.search_queries,
         render_timeout=profile.render_timeout,
         trace_allocations=args.tracemalloc,
+        record_format=args.record_format,
         on_measurement=report,
     )
 

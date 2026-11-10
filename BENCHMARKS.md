@@ -15,6 +15,11 @@ Representative timings should be collected without allocation tracing:
 PYTHONPATH=src python benchmark/benchmark.py --profile standard
 ```
 
+Synthetic evaluations use the versioned `chemfit.evaluate_context` shape
+produced by `FitContext.to_record()` by default. Pass `--record-format legacy`
+to benchmark legacy context-summary input instead. The historical measurements
+below used the legacy shape; include that flag for direct comparisons with them.
+
 Use a second run for Python allocation peaks:
 
 ```bash

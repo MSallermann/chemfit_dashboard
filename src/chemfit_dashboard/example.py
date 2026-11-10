@@ -278,8 +278,9 @@ def build_failed_example_context(
 
 
 def write_example_collection(output_directory: Path) -> None:
+    writer = SaveMetaData(output_directory, use_legacy_format=False)
     for step, parameter_batch in enumerate(PARAMETER_BATCHES):
         contexts = [build_example_context(parameters) for parameters in parameter_batch]
         if step == len(PARAMETER_BATCHES) - 1:
             contexts[-1] = build_failed_example_context(parameter_batch[-1])
-        SaveMetaData(output_directory)(step, contexts)
+        writer(step, contexts)

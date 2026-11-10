@@ -266,7 +266,8 @@ class EvaluationPanel(QWidget):
             self,
             "Open ChemFit context file",
             "",
-            "JSON files (*.json);;All files (*)",
+            "ChemFit records (*.json *.jsonl);;JSON files (*.json);;"
+            "JSONL trajectories (*.jsonl);;All files (*)",
         )
 
         if path:
@@ -322,7 +323,8 @@ class EvaluationPanel(QWidget):
             self,
             "Add context files to collection",
             "",
-            "JSON files (*.json);;All files (*)",
+            "ChemFit records (*.json *.jsonl);;JSON files (*.json);;"
+            "JSONL trajectories (*.jsonl);;All files (*)",
         )
         if paths:
             self.coordinator.load_collection(paths, append=True)

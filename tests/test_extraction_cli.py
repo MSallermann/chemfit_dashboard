@@ -69,6 +69,48 @@ def test_cli_infers_jsonl_and_excludes_config_inside_input_directory(tmp_path, c
     assert "Wrote 1 row" in capsys.readouterr().out
 
 
+def test_cli_extracts_entire_chemfit_trajectory_file(tmp_path, capsys):
+    def record(output):
+        return {
+            "format": "chemfit.evaluate_context",
+            "schema_version": 1,
+            "chemfit_version": "4.0.0",
+            "root": {
+                "context_type": "fit",
+                "input": {},
+                "output": output,
+                "meta": {},
+                "status": "success",
+                "path": [],
+                "children": [],
+            },
+        }
+
+    trajectory = tmp_path / "trajectory.jsonl"
+    trajectory.write_text(
+        "\n".join(
+            json.dumps({"step": step, "slot": 0, "record": record(output)})
+            for step, output in ((3, 4.5), (4, 6.25))
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "extraction.json"
+    output = tmp_path / "values.csv"
+    _config(config)
+
+    assert main([str(trajectory), "-c", str(config), "-o", str(output)]) == 0
+
+    with output.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert [row["result@/"] for row in rows] == ["4.5", "6.25"]
+    assert [row["filename"] for row in rows] == [
+        "trajectory.jsonl:1",
+        "trajectory.jsonl:2",
+    ]
+    assert "Wrote 2 rows" in capsys.readouterr().out
+
+
 def test_cli_refuses_ambiguous_format_and_existing_output(tmp_path, capsys):
     context = tmp_path / "step.json"
     context.write_text('{"output": 4}', encoding="utf-8")
