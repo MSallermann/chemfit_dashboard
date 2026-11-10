@@ -29,6 +29,14 @@ deadline and a 10 ms event-loop heartbeat; `max_gui_stall` is the largest
 heartbeat delay beyond that interval. Extraction rows are consumed rather than
 retained solely for benchmarking.
 
+The CSV and JSONL timings below call the streaming format functions directly in
+the benchmark process. They measure traversal, parsing, and serialization, not
+GUI task submission, process-pool startup, shared-memory progress polling, or
+the final atomic rename. In the application, local JSON collections with at
+least 200 evaluations are exported by one spawned process-pool job; smaller or
+source-specific exports run in the shared background thread pool. The GUI path
+writes a temporary sibling and publishes it only after success.
+
 ## Before/after standard profile
 
 The baseline was recorded before the optimizations using the same traced
@@ -104,6 +112,11 @@ PYTHONPATH=src python benchmark/benchmark.py --profile stress \
 The full 50,000/25,000 run was not executed on this laptop; extrapolations are
 not reported as measurements.
 
+The stress harness exercises the same core streaming exporters synchronously so
+phase timings remain comparable with earlier results. It does not measure the
+dashboard's process-dispatch or activity-footer path; those are covered by
+process-export equivalence and progress regression tests.
+
 ## Library evaluations and remaining limits
 
 - RapidFuzz 3.14.6 reduced final end-to-end three-query collection search by a
@@ -121,3 +134,7 @@ not reported as measurements.
   are batched, but native Qt memory remains material.
 - Search indexes are cached for the 32 most recent documents and scoring caches
   are bounded at 16,384 entries, keeping retained memory predictable.
+- Process-backed GUI exports report progress through a fixed-size shared-memory
+  state rather than sending one pipe message per evaluation. This keeps progress
+  transport bounded independently of collection size and avoids serializing a
+  live IPC handle through the process pool.

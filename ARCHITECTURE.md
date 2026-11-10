@@ -4,7 +4,7 @@
 
 The dashboard is a Qt desktop application around one central data boundary:
 `ContextDocument`. A source discovers serialized evaluations as lightweight
-`ContextRef` objects, then loads and indexes a document only when a feature needs
+`RecordRef` objects, then loads and indexes a document only when a feature needs
 it. Feature modules consume documents directly or convert them into small,
 immutable result objects before updating Qt widgets.
 
@@ -18,7 +18,7 @@ presentation state and communicate with `MainWindow` through Qt signals.
 file / folder / remote URI
           |
           v
- JsonFileSource.discover -> ContextRef -> EvaluationListModel
+ JsonFileSource.discover -> RecordRef -> EvaluationListModel
           |                                  |
           |                           evaluation selected
           v                                  v
@@ -48,8 +48,9 @@ file / folder / remote URI
   detachable-panel controls, and interaction constants. Repeated GUI roles
   belong here rather than in feature-local widget factories.
 - `chart_style.py`: shared Qt Charts palette, axis, grid, and legend policy.
-- `workers.py`, `traversal.py`: Qt thread-pool callbacks, cooperative
-  cancellation, and consistent incremental collection loading.
+- `workers.py`, `traversal.py`: shared thread/process executors, GUI-thread
+  lifecycle callbacks, progress transport, cooperative cancellation, and
+  consistent incremental collection loading.
 
 ### Data and identity
 
@@ -83,7 +84,7 @@ file / folder / remote URI
 1. `MainWindow.add_locations` submits `ContextSource.discover` to `TaskRunner`.
    Discovery is deliberately non-recursive: a directory contributes only its
    immediate JSON files.
-2. `EvaluationListModel` receives `ContextRef` objects and builds the folder/file
+2. `EvaluationListModel` receives `RecordRef` objects and builds the folder/file
    tree. The model also owns the visible collection order.
 3. Selecting a record increments the document-load generation, clears the old
    views, and submits `JsonFileSource.load` to a worker thread.
@@ -142,32 +143,53 @@ debugging unexpected cross-view navigation.
   output columns through `column_paths_for_value`, shared by preview and CSV
   export. They never multiply evaluation rows. Preview reads at most 200 rows,
   while export streams the complete collection and does not depend on the
-  preview model.
+  preview model. GUI exports write a temporary sibling and atomically replace
+  the requested destination only after success. Local `JsonFileSource`
+  collections with at least 200 records use the spawned process pool; smaller
+  or source-specific exports use the thread pool.
 
 ## Background work and stale results
 
 Qt widgets are touched only on the GUI thread. `TaskRunner` runs ordinary Python
-callables on Qt's global thread pool and routes their result or traceback back
-through signals. `GenerationTracker` issues monotonically increasing freshness
+callables on a shared `ThreadPoolExecutor` or a lazily created, spawn-based
+`ProcessPoolExecutor`, then routes lifecycle events, results, and tracebacks back
+through Qt signals. `GenerationTracker` issues monotonically increasing freshness
 tokens for the typed request families in `_RequestKind`. A callback must still
 hold the current token before changing the UI; cancellation alone is
 insufficient because already-running work can finish after a newer request.
 
-The shared Qt thread count and the separate whole-collection search process count
-are persisted independently and exposed under **Settings > Workers**. Resizing the
-search pool replaces its persistent executor and invalidates any active search.
+The shared thread count and process count are persisted independently and exposed
+under **Settings > Workers**. Whole-collection search and large local extraction
+exports share the process executor. Resizing it replaces the persistent executor
+and invalidates any active search.
 
-`ActivityStatus` owns named `CancellationToken` objects. Reusing an operation
-name cancels its predecessor. Workers using `iter_collection` stop between
-records; search and graph layout use their own periodic checks. Closing a
-collection invalidates all observed request families and cancels outstanding
-work.
+`ActivityStatus` is presentation-only: it consumes labeled `TaskEvent` lifecycle
+updates and renders concurrent operations with indeterminate or determinate
+progress. `TaskRunner` owns task cancellation. Keyed submissions invalidate and
+cooperatively cancel their predecessor; workers using `iter_collection` stop
+between records, while search and graph layout use their own periodic checks.
+Closing a collection invalidates all observed request families and cancels the
+corresponding outstanding work.
+
+Thread tasks report progress directly through the Qt bridge. Process tasks use a
+small per-task shared-memory state containing a sequence-protected progress pair
+and cancellation flag. The GUI polls that state every 40 ms, so progress updates
+are coalesced instead of queueing one cross-process message per record. Only the
+shared-memory name is submitted with the process job; no live pipe or socket
+handle is serialized through the process pool. The state is closed and unlinked
+when the task finishes or the runner shuts down.
 
 Whole-collection search uses processes because JSON indexing and fuzzy matching
 are Python CPU work and can monopolize the GIL. The pool uses the portable
 `spawn` context, keeps at most the worker count of chunks in flight, and checks
 cancellation every 50 ms while coordinating futures. Running process calls
 cannot be forcibly interrupted; their results are ignored after cancellation.
+
+Large local exports use one job in the same pool because parsing and
+serialization would otherwise contend with the GUI under the GIL. The worker
+reconstructs a `JsonFileSource` from serializable `RecordRef` values and streams
+directly to the temporary output. Flattened/expanded CSV uses two traversals—one
+to discover columns and one to write—while ordinary CSV and JSONL use one.
 
 ## State and cache ownership
 
@@ -179,7 +201,7 @@ cannot be forcibly interrupted; their results are ignored after cancellation.
 | `ContextDocument` | Immutable node index, small lazy details LRU, active label key |
 | Feature panels | Widget-local options, selected rows/series, render state |
 | `ContextSearchCache` | Recent current-evaluation indexes |
-| Search worker process | Its own bounded document and index caches |
+| Process worker | Export-local source cache; bounded search document/index caches when serving search |
 
 State follows three rules throughout the GUI:
 
@@ -212,6 +234,9 @@ The important retained safeguards are:
 - Plot rendering samples at most 4,000 displayed points per series, while export
   still uses complete data. Extraction preview is similarly bounded and does
   not change export semantics.
+- GUI extraction export is streaming and atomic. The process path transfers
+  only record metadata/configuration plus shared progress state; extracted rows
+  are written in the worker and are never copied back into the GUI process.
 
 ## Where to make common changes
 
@@ -230,6 +255,8 @@ The important retained safeguards are:
 - Add an extraction option: extend `FieldSelector`/`ExtractionConfig` and core
   behavior in `extraction.py`, then expose it in `extraction_ui.py`. Keep the
   headless CLI on the same core path.
+- Change task lifecycle, thread/process execution, progress IPC, or cooperative
+  cancellation: `workers.py`; keep `activity.py` limited to presentation.
 - Change cross-view navigation, background task startup, saved session state, or
   collection ordering: `main_window.py`.
 

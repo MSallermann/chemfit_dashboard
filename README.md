@@ -24,7 +24,8 @@ Built with Python and PySide6, the dashboard works directly with serialized eval
 The application also supports several color themes, classic and lightweight visual
 styles, adjustable density and font sizes, keyboard navigation, and background
 processing of large collections. The expandable status footer shows concurrent
-operations and collection-search progress.
+operations and determinate progress for collection work, including large data
+exports.
 
 ## Installation
 
@@ -127,9 +128,10 @@ Search supports three modes:
 Search can be restricted to the current evaluation or applied to the entire loaded collection. Results can be selected to navigate directly to the corresponding context or value.
 
 Whole-collection search uses a persistent pool of spawned worker processes,
-defaulting to two. Its size is adjustable under **Settings > Workers**, separately
-from the shared Qt thread pool used by loading, analysis, plotting, extraction,
-and graph layout.
+defaulting to two. Large local extraction exports share this pool. Its size is
+adjustable under **Settings > Workers**, separately from the shared background
+thread pool used by loading, analysis, plotting, smaller exports, and graph
+layout.
 Workers load and search bounded batches with the same in-memory fuzzy, exact, and
 regular-expression implementation used for one evaluation, keeping CPU-intensive
 JSON parsing and ranking away from the GUI thread. Worker-local document and search
@@ -221,6 +223,25 @@ produce separate columns for these values when object flattening is enabled.
 
 The preview displays up to 200 evaluations. Exports process the entire collection.
 
+### Export execution and progress
+
+GUI exports stream results instead of building the complete table in memory.
+For a local JSON collection containing 200 or more evaluations, the dashboard
+runs the export in a spawned worker process. Smaller collections and sources
+that cannot safely be reconstructed in another process use a background thread.
+Both paths keep file parsing and serialization away from the GUI thread.
+
+The status footer shows export progress. CSV exports that flatten objects or
+expand arrays require two collection passes: the first discovers the complete
+set of output columns and the second writes the rows. The progress total covers
+both passes. CSV exports without expanded columns and all JSONL exports need one
+pass.
+
+GUI exports are published atomically. Data is first written to a temporary file
+beside the selected destination, and the destination is replaced only after the
+complete export succeeds. A failure or cancellation removes the temporary file
+and leaves an existing destination untouched.
+
 ### Headless extraction
 
 Extraction configurations saved from the GUI can also be run without Qt using the
@@ -256,6 +277,9 @@ Every evaluation still contributes exactly one CSV row.
 Both formats distinguish available values from missing fields, skipped or unexecuted components, unreadable evaluations, and recorded exceptions.
 
 Exports are processed incrementally to avoid retaining the complete extracted dataset in memory.
+The process/thread selection, activity progress, and atomic publication described
+above apply to exports started from the GUI. The headless command and Python API
+reuse the same streaming format implementation without requiring Qt.
 
 ### Saving extraction configurations
 
