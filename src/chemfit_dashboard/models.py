@@ -20,12 +20,10 @@ relationships conventionally expressed through column 0.
 
 from __future__ import annotations
 
-import os
 from bisect import bisect_left
 from dataclasses import dataclass, field
 from itertools import islice
-from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -45,8 +43,9 @@ from chemfit_dashboard.context_document import (
 )
 from chemfit_dashboard.coordinator import DashboardCoordinator
 
-# if TYPE_CHECKING:
-#     from collections.abc import Iterable
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 ModelIndex = QModelIndex | QPersistentModelIndex
 EMPTY_INDEX = QModelIndex()
@@ -79,7 +78,7 @@ class _EvaluationItem:
 
 class EvaluationListModel(QAbstractItemModel):
     """
-    Hierarchical, eagerly built folder tree of discovered evaluations.
+    Eagerly built grouping of evaluations by their immediate parent folder.
 
     Folder entries are display-only; leaf items hold RecordRef objects.
     Reordering resets the Qt model,
@@ -87,6 +86,7 @@ class EvaluationListModel(QAbstractItemModel):
     """
 
     RecordRole = Qt.ItemDataRole.UserRole.value + 1
+    FolderPathRole = Qt.ItemDataRole.UserRole.value + 2
 
     def __init__(
         self, parent: QObject | None = None, *, coordinator: DashboardCoordinator
@@ -168,6 +168,8 @@ class EvaluationListModel(QAbstractItemModel):
             return str(item.path) if item.path is not None else None
         if role == self.RecordRole:
             return item.record
+        if role == self.FolderPathRole and item.record is None:
+            return item.path
         if role == FOREGROUND_ROLE and item.record is None:
             return QColor(active_color_scheme().muted)
         return None
@@ -188,49 +190,25 @@ class EvaluationListModel(QAbstractItemModel):
         return cast("_EvaluationItem", index.internalPointer())
 
     def _build_tree(self) -> None:
-        """Build the folder hierarchy from the coordinator's ordered collection."""
+        """Group evaluations beneath only their immediate parent folders."""
 
         records = self.coordinator.collection
         if not records:
             return
 
-        # Find the common parent directory.
-        common_path = Path(
-            os.path.commonpath([str(record.path.parent) for record in records])
-        )
-
-        # Create the visible root folder.
-        root = _EvaluationItem(
-            common_path.name or str(common_path),
-            common_path,
-            None,
-            self._root,
-        )
-        self._root.children.append(root)
-        self._folders_by_path[common_path] = root
-
         # Insert records in coordinator order.
         for record in records:
-            relative = record.path.relative_to(common_path)
-            parent = root
-            folder_path = common_path
-
-            # Create intermediate folders as necessary.
-            for folder_name in relative.parts[:-1]:
-                folder_path = folder_path / folder_name
-
-                folder = self._folders_by_path.get(folder_path)
-                if folder is None:
-                    folder = _EvaluationItem(
-                        folder_name,
-                        folder_path,
-                        None,
-                        parent,
-                    )
-                    parent.children.append(folder)
-                    self._folders_by_path[folder_path] = folder
-
-                parent = folder
+            folder_path = record.path.parent
+            parent = self._folders_by_path.get(folder_path)
+            if parent is None:
+                parent = _EvaluationItem(
+                    folder_path.name or str(folder_path),
+                    folder_path,
+                    None,
+                    self._root,
+                )
+                self._root.children.append(parent)
+                self._folders_by_path[folder_path] = parent
 
             # Create the evaluation leaf.
             item = _EvaluationItem(
@@ -242,15 +220,17 @@ class EvaluationListModel(QAbstractItemModel):
             parent.children.append(item)
             self._items_by_record_id[record.id] = item
 
-        # Sort folders by name, but retain the coordinator's
-        # ordering of evaluation leaves within each folder.
-        for folder in self._folders_by_path.values():
-            folder.children.sort(
-                key=lambda item: (
-                    (0, alphanumeric_key(item.name)) if item.record is None else (1,)
-                )
+        self._root.children.sort(
+            key=lambda item: (
+                alphanumeric_key(item.name),
+                str(item.path).casefold(),
             )
+        )
+        for row, child in enumerate(self._root.children):
+            child.row_index = row
 
+        # Retain the coordinator's ordering of evaluation leaves within each folder.
+        for folder in self._folders_by_path.values():
             for row, child in enumerate(folder.children):
                 child.row_index = row
 

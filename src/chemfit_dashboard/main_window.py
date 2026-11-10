@@ -362,6 +362,37 @@ class MainWindow(QMainWindow):
         self.coordinator.close_collection()
         self.statusBar().showMessage("Closed context collection", 3000)
 
+    def dragEnterEvent(self, event) -> None:  # noqa: N802, ANN001
+        """Accept drags containing at least one local file or directory."""
+        if self._drop_locations(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802, ANN001
+        """Open or extend the collection with dropped local locations."""
+        locations = self._drop_locations(event.mimeData())
+        if not locations:
+            event.ignore()
+            return
+
+        self.coordinator.load_collection(
+            locations,
+            append=bool(self.coordinator.collection),
+        )
+        event.acceptProposedAction()
+
+    @staticmethod
+    def _drop_locations(mime_data) -> list[str]:  # noqa: ANN001
+        """Return distinct local paths from drag-and-drop MIME data."""
+        if not mime_data.hasUrls():
+            return []
+        return list(
+            dict.fromkeys(
+                url.toLocalFile() for url in mime_data.urls() if url.isLocalFile()
+            )
+        )
+
     def _show_keyboard_shortcuts(self) -> None:
         QMessageBox.information(
             self,
@@ -415,9 +446,21 @@ class MainWindow(QMainWindow):
         self.coordinator.task_runner.lifecycle_changed.connect(
             self.activity.task_changed
         )
+        self.coordinator.operation_failed.connect(self._operation_failed)
         self.coordinator.collection_changed.connect(
             lambda records: self.close_collection_action.setEnabled(bool(records))
         )
+
+    def _operation_failed(self, operation: str, details: str) -> None:
+        """Show actionable collection-loading failures in the status bar."""
+        if operation != "Collection loading":
+            return
+        summary = next(
+            (line.strip() for line in reversed(details.splitlines()) if line.strip()),
+            operation,
+        )
+        _exception, separator, message = summary.partition(": ")
+        self.statusBar().showMessage(message if separator else summary, 8000)
 
     def _center_tab_changed(self, index: int) -> None:
         """Update behavior associated with the active workspace tab."""

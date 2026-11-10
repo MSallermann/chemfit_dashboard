@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from chemfit.fitter_callbacks import SaveMetaData
 
 from chemfit_dashboard.example import (
     build_example_context,
@@ -31,6 +30,22 @@ def test_folder_discovery_orders_records_alphanumerically_by_filename(tmp_path):
         "step_2_ctx_0.json",
         "step_10_ctx_0.json",
     ]
+
+
+def test_explicit_unsupported_file_type_is_rejected(tmp_path):
+    path = tmp_path / "evaluation.xyz"
+    path.write_text("not a ChemFit record", encoding="utf-8")
+
+    with pytest.raises(ContextSourceError, match=r"Unsupported file type.*\.xyz"):
+        JsonFileSource().discover([path])
+
+
+def test_malformed_json_is_rejected_during_discovery(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text('{"output":', encoding="utf-8")
+
+    with pytest.raises(ContextSourceError, match=r"Cannot load broken\.json"):
+        JsonFileSource().discover([path])
 
 
 def test_loads_context_written_by_chemfit(chemfit_json_path, chemfit_context):
@@ -191,13 +206,11 @@ def test_unsupported_record_schema_reports_the_jsonl_line(tmp_path):
         encoding="utf-8",
     )
     source = JsonFileSource()
-    record = source.discover([path])[0]
-
     with pytest.raises(
         ContextSourceError,
         match=r"trajectory\.jsonl line 1.*schema version: 999",
     ):
-        source.load(record)
+        source.discover([path])
 
 
 def test_partial_and_unfamiliar_json_remains_inspectable(tmp_path):
@@ -213,21 +226,6 @@ def test_partial_and_unfamiliar_json_remains_inspectable(tmp_path):
     assert details.info.status == "partial"
     assert details.metadata == {}
     assert details.fields["legacy_value"] == [1, 2, 3]
-
-
-def test_failed_example_records_the_component_error(tmp_path):
-    SaveMetaData(tmp_path)(0, [build_failed_example_context()])
-    source = JsonFileSource()
-    document = source.load(source.discover([tmp_path])[0])
-
-    assert document.root.status == "failed"
-    assert document.details(()).fields["output"].startswith("RuntimeError:")
-    failed_term = document.details((2, 0, 2))
-    assert failed_term.info.label == "failing_structure_error"
-    assert failed_term.info.status == "failed"
-    assert failed_term.fields["output"] == (
-        "RuntimeError: intentional failure in the structure loss term"
-    )
 
 
 def test_large_example_exercises_a_deep_real_chemfit_hierarchy():

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import Mock
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QMimeData, QSettings, Qt, QUrl
 from PySide6.QtWidgets import QMainWindow, QSplitter, QTabWidget, QWidget
 
 from chemfit_dashboard.appearance import (
@@ -60,6 +61,84 @@ def test_main_window_preloads_extraction_configuration(tmp_path, monkeypatch):
     assert window.center_tabs.tabText(extraction_index) == "Data Extraction (1)"
 
 
+def test_main_window_accepts_local_file_drags(tmp_path, monkeypatch):
+    window = _isolated_main_window(tmp_path, monkeypatch)
+    path = tmp_path / "context.json"
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(path))])
+    event = Mock()
+    event.mimeData.return_value = mime_data
+
+    window.dragEnterEvent(event)
+
+    event.acceptProposedAction.assert_called_once_with()
+    event.ignore.assert_not_called()
+
+
+def test_main_window_drop_loads_all_distinct_local_locations(tmp_path, monkeypatch):
+    window = _isolated_main_window(tmp_path, monkeypatch)
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    mime_data = QMimeData()
+    mime_data.setUrls(
+        [
+            QUrl.fromLocalFile(str(first)),
+            QUrl("https://example.com/context.json"),
+            QUrl.fromLocalFile(str(first)),
+            QUrl.fromLocalFile(str(second)),
+        ]
+    )
+    loaded = []
+    monkeypatch.setattr(
+        window.coordinator,
+        "load_collection",
+        lambda locations, *, append=False: loaded.append((locations, append)),
+    )
+    event = Mock()
+    event.mimeData.return_value = mime_data
+
+    window.dropEvent(event)
+
+    assert loaded == [([str(first), str(second)], False)]
+    event.acceptProposedAction.assert_called_once_with()
+    event.ignore.assert_not_called()
+
+
+def test_main_window_drop_appends_to_existing_collection(tmp_path, monkeypatch):
+    window = _isolated_main_window(tmp_path, monkeypatch)
+    existing = tmp_path / "existing.json"
+    existing.write_text("{}", encoding="utf-8")
+    window.coordinator.collection.replace(JsonFileSource().discover([existing]))
+    dropped = tmp_path / "dropped.json"
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(dropped))])
+    loaded = []
+    monkeypatch.setattr(
+        window.coordinator,
+        "load_collection",
+        lambda locations, *, append=False: loaded.append((locations, append)),
+    )
+    event = Mock()
+    event.mimeData.return_value = mime_data
+
+    window.dropEvent(event)
+
+    assert loaded == [([str(dropped)], True)]
+    event.acceptProposedAction.assert_called_once_with()
+    event.ignore.assert_not_called()
+
+
+def test_main_window_shows_collection_rejection_reason(tmp_path, monkeypatch):
+    window = _isolated_main_window(tmp_path, monkeypatch)
+
+    window.coordinator.operation_failed.emit(
+        "Collection loading",
+        "chemfit_dashboard.source.ContextSourceError: Unsupported file type: bad.xyz",
+    )
+
+    assert window.statusBar().currentMessage() == "Unsupported file type: bad.xyz"
+
+
 def test_evaluation_model_uses_coordinator_order_and_folder_hierarchy(
     tmp_path, coordinator
 ):
@@ -77,6 +156,27 @@ def test_evaluation_model_uses_coordinator_order_and_folder_hierarchy(
     assert names == ["step_1.json", "step_2.json", "step_10.json"]
 
 
+def test_evaluation_model_shows_only_immediate_parent_folders(tmp_path, coordinator):
+    first_folder = tmp_path / "workspace" / "run_2"
+    second_folder = tmp_path / "archive" / "run_10"
+    first_folder.mkdir(parents=True)
+    second_folder.mkdir(parents=True)
+    first = first_folder / "first.json"
+    second = second_folder / "second.json"
+    first.write_text("{}", encoding="utf-8")
+    second.write_text("{}", encoding="utf-8")
+    coordinator.collection.replace(JsonFileSource().discover([first, second]))
+
+    model = EvaluationListModel(coordinator=coordinator)
+
+    assert model.rowCount() == 2
+    first_parent = model.index(0, 0)
+    second_parent = model.index(1, 0)
+    assert [model.data(first_parent), model.data(second_parent)] == ["run_2", "run_10"]
+    assert model.data(model.index(0, 0, first_parent)) == "first.json"
+    assert model.data(model.index(0, 0, second_parent)) == "second.json"
+
+
 def test_evaluation_panel_expands_first_folder_level(tmp_path, coordinator):
     (tmp_path / "step.json").write_text("{}", encoding="utf-8")
     coordinator.collection.replace(JsonFileSource().discover([tmp_path]))
@@ -88,10 +188,39 @@ def test_evaluation_panel_expands_first_folder_level(tmp_path, coordinator):
     assert panel.invert_order_button.property("chemfitIconName") == "reverse_order"
 
 
+def test_evaluation_panel_removes_groups_and_records(tmp_path, coordinator):
+    first_folder = tmp_path / "first"
+    second_folder = tmp_path / "second"
+    first_folder.mkdir()
+    second_folder.mkdir()
+    for path in (
+        first_folder / "one.json",
+        first_folder / "two.json",
+        second_folder / "three.json",
+    ):
+        path.write_text("{}", encoding="utf-8")
+    coordinator.collection.replace(
+        JsonFileSource().discover([first_folder, second_folder])
+    )
+    panel = EvaluationPanel(coordinator)
+
+    panel.file_list.setCurrentIndex(panel.file_proxy.index(0, 0))
+    panel._remove_shortcut.activated.emit()  # noqa: SLF001
+
+    assert [record.name for record in coordinator.collection] == ["three.json"]
+
+    parent = panel.file_proxy.index(0, 0)
+    panel.file_list.setCurrentIndex(panel.file_proxy.index(0, 0, parent))
+    panel._remove_shortcut.activated.emit()  # noqa: SLF001
+
+    assert not coordinator.collection
+
+
 def test_automatic_evaluation_sync_preserves_filter_and_focus(loaded_coordinator, qapp):
     panel = EvaluationPanel(loaded_coordinator)
     panel.show()
-    panel.search.setText("step_8")
+    query = loaded_coordinator.selected_document.record.name
+    panel.search.setText(query)
     panel.search.setFocus()
     qapp.processEvents()
 
@@ -99,7 +228,7 @@ def test_automatic_evaluation_sync_preserves_filter_and_focus(loaded_coordinator
     panel.on_selected_record_changed()
     qapp.processEvents()
 
-    assert panel.search.text() == "step_8"
+    assert panel.search.text() == query
     assert panel.search.hasFocus()
     assert not panel.file_list.hasFocus()
 
@@ -112,7 +241,8 @@ def test_automatic_evaluation_sync_clears_selection_when_record_is_filtered(
     record = JsonFileSource().discover([path])[0]
     loaded_coordinator.collection.extend((record,))
     panel = EvaluationPanel(loaded_coordinator)
-    panel.search.setText("step_8")
+    query = loaded_coordinator.selected_document.record.name
+    panel.search.setText(query)
     qapp.processEvents()
     assert panel.file_list.selectionModel().selectedIndexes()
 
@@ -128,7 +258,7 @@ def test_automatic_evaluation_sync_clears_selection_when_record_is_filtered(
 
     assert loaded_coordinator.selected_document is not None
     assert loaded_coordinator.selected_document.record.id == record.id
-    assert panel.search.text() == "step_8"
+    assert panel.search.text() == query
     assert panel.file_list.selectionModel().selectedIndexes() == []
 
 

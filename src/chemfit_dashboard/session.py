@@ -152,6 +152,10 @@ class DashboardSessionController(QObject):
             self._remember_recent(_normalized_locations(tuple(request.locations)))
             self._pending_request = None
             self._pending_locations = None
+        elif records:
+            self._locations = _normalized_locations(
+                tuple(record.path for record in records)
+            )
         elif not records:
             self._locations = []
             self._clear_saved_selection()

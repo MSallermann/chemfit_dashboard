@@ -39,6 +39,25 @@ def test_record_selection_rejects_records_outside_current_collection(
     assert coordinator.selected_document is None
 
 
+def test_remove_records_updates_membership_and_clears_removed_selection(
+    tmp_path, coordinator, qapp
+):
+    for name in ("first.json", "second.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    records = JsonFileSource().discover([tmp_path])
+    coordinator.collection.replace(records)
+    coordinator.select_record(records[0])
+    _wait_for_record(coordinator, qapp, records[0].id)
+    changed = []
+    coordinator.collection_changed.connect(changed.append)
+
+    coordinator.remove_records((records[0].id, "unknown-record"))
+
+    assert tuple(coordinator.collection) == (records[1],)
+    assert coordinator.selected_document is None
+    assert changed == [(records[1],)]
+
+
 def test_clearing_field_prevents_restoration_in_another_record(
     tmp_path, coordinator, qapp
 ):

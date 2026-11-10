@@ -126,13 +126,14 @@ class JsonFileSource(CachedContextSource):
     Discover and load evaluation contexts from JSON files or JSONL trajectories.
 
     Each JSON file represents one evaluation. Every nonblank JSONL line
-    represents one evaluation. Documents are parsed and indexed on demand,
-    with caching provided by the base class.
+    represents one evaluation. Records are validated during discovery and
+    indexed on demand, with caching provided by the base class.
     """
 
     def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
         """Discover JSON and JSONL evaluations from local files and directories."""
         paths: set[Path] = set()
+        supported_suffixes = {".json", ".jsonl"}
 
         for location in locations:
             path = Path(location).expanduser()
@@ -143,9 +144,15 @@ class JsonFileSource(CachedContextSource):
                     candidate
                     for candidate in path.iterdir()
                     if candidate.is_file()
-                    and candidate.suffix.casefold() in {".json", ".jsonl"}
+                    and candidate.suffix.casefold() in supported_suffixes
                 )
             elif path.is_file():
+                if path.suffix.casefold() not in supported_suffixes:
+                    message = (
+                        f"Unsupported file type: {path}. "
+                        "Expected a .json or .jsonl file."
+                    )
+                    raise ContextSourceError(message)
                 paths.add(path)
             else:
                 msg = f"Invalid or missing path: {path}"
@@ -168,48 +175,22 @@ class JsonFileSource(CachedContextSource):
                 records.extend(_jsonl_records(resolved, modified))
             else:
                 digest = _record_id(resolved)
-                records.append(
-                    RecordRef(
-                        id=digest,
-                        position_in_file=1,
-                        name=resolved.name,
-                        path=resolved,
-                        size=stat.st_size,
-                        modified=modified,
-                    )
+                record = RecordRef(
+                    id=digest,
+                    position_in_file=1,
+                    name=resolved.name,
+                    path=resolved,
+                    size=stat.st_size,
+                    modified=modified,
                 )
+                _read_normalized_record(record)
+                records.append(record)
 
         return records
 
     def _load(self, record: RecordRef) -> ContextDocument:
         """Read and parse a JSON or JSONL evaluation into a ContextDocument."""
-
-        try:
-            raw = (
-                _load_jsonl_record(record)
-                if record.path.suffix.casefold() == ".jsonl"
-                else _load_json_record(record)
-            )
-            raw = normalize_record(
-                raw,
-                require_versioned=record.path.suffix.casefold() == ".jsonl",
-            )
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            RecordFormatError,
-        ) as exc:
-            location = record.path.name
-            if record.path.suffix.casefold() == ".jsonl":
-                location = f"{location} line {record.position_in_file}"
-            message = f"Cannot load {location}: {exc}"
-            raise ContextSourceError(message) from exc
-
-        return ContextDocument(
-            record,
-            raw,
-        )
+        return ContextDocument(record, _read_normalized_record(record))
 
 
 def _record_id(path: Path, position: int | None = None) -> str:
@@ -229,6 +210,15 @@ def _jsonl_records(path: Path, modified: datetime) -> list[RecordRef]:
             line_number += 1
             if not line.strip():
                 continue
+            try:
+                normalize_record(json.loads(line), require_versioned=True)
+            except (
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                RecordFormatError,
+            ) as exc:
+                message = f"Cannot load {path.name} line {line_number}: {exc}"
+                raise ContextSourceError(message) from exc
             records.append(
                 RecordRef(
                     id=_record_id(path, line_number),
@@ -241,6 +231,31 @@ def _jsonl_records(path: Path, modified: datetime) -> list[RecordRef]:
                 )
             )
     return records
+
+
+def _read_normalized_record(record: RecordRef) -> Any:
+    """Read and validate one record before it enters the active collection."""
+    try:
+        raw = (
+            _load_jsonl_record(record)
+            if record.path.suffix.casefold() == ".jsonl"
+            else _load_json_record(record)
+        )
+        return normalize_record(
+            raw,
+            require_versioned=record.path.suffix.casefold() == ".jsonl",
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecordFormatError,
+    ) as exc:
+        location = record.path.name
+        if record.path.suffix.casefold() == ".jsonl":
+            location = f"{location} line {record.position_in_file}"
+        message = f"Cannot load {location}: {exc}"
+        raise ContextSourceError(message) from exc
 
 
 def _load_json_record(record: RecordRef) -> Any:

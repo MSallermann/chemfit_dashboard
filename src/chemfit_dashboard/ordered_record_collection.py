@@ -121,6 +121,28 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         self._order += tuple(added)
         self._natural_order = natural_order
 
+    def remove(self, ids: Iterable[str]) -> tuple[RecordRef, ...]:
+        """Remove known record IDs while preserving survivor ordering."""
+        remove_ids = set(ids).intersection(self._refs)
+        if not remove_ids:
+            return ()
+
+        removed = tuple(
+            self._refs[ref_id] for ref_id in self._order if ref_id in remove_ids
+        )
+        self._refs = {
+            ref_id: ref
+            for ref_id, ref in self._refs.items()
+            if ref_id not in remove_ids
+        }
+        self._natural_order = tuple(
+            ref_id for ref_id in self._natural_order if ref_id not in remove_ids
+        )
+        self._order = tuple(
+            ref_id for ref_id in self._order if ref_id not in remove_ids
+        )
+        return removed
+
     def set_order(self, ids: Sequence[str], label: str | None, ascending: bool) -> bool:
         """
         Replace the active ordering without modifying collection membership.

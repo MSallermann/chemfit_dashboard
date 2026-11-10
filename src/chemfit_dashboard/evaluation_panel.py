@@ -135,6 +135,11 @@ class EvaluationPanel(QWidget):
         self._file_explorer_shortcut.activated.connect(
             self._open_current_evaluation_folder
         )
+        self._remove_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Delete), self.file_list
+        )
+        self._remove_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._remove_shortcut.activated.connect(self._remove_selected_item)
 
         # This is displayed when no collection is loaded
         self.evaluation_empty_state = QLabel(
@@ -343,23 +348,37 @@ class EvaluationPanel(QWidget):
         source_index = self.file_proxy.mapToSource(proxy_index)
 
         record = source_index.data(EvaluationListModel.RecordRole)
+        folder_path = source_index.data(EvaluationListModel.FolderPathRole)
 
-        if record is None:
+        if record is None and folder_path is None:
             return
 
         menu = QMenu(self.file_list)
-        copy_name = menu.addAction("Copy filename")
-        copy_path = menu.addAction("Copy full path")
+        copy_name = copy_path = None
+        if record is not None:
+            copy_name = menu.addAction("Copy filename")
+            copy_path = menu.addAction("Copy full path")
         open_folder = menu.addAction("Open folder in file explorer")
+        menu.addSeparator()
+        remove = menu.addAction(
+            "Remove record from collection"
+            if record is not None
+            else "Remove group from collection"
+        )
         selected = menu.exec(self.file_list.viewport().mapToGlobal(position))
-        if selected is copy_name:
+        if selected is None:
+            return
+        if record is not None and selected is copy_name:
             QApplication.clipboard().setText(record.name)
             self.status_message.emit("Copied evaluation filename")
-        elif selected is copy_path:
+        elif record is not None and selected is copy_path:
             QApplication.clipboard().setText(str(record.path))
             self.status_message.emit("Copied evaluation path")
         elif selected is open_folder:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(record.path.parent)))
+            path = record.path.parent if record is not None else folder_path
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif selected is remove:
+            self._remove_source_index(source_index)
 
     def _evaluation_selected(
         self, selected: QItemSelection, _deselected: QItemSelection
@@ -398,6 +417,34 @@ class EvaluationPanel(QWidget):
         if document is None:
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(document.record.path.parent)))
+
+    def _remove_selected_item(self) -> None:
+        """Remove the selected record or parent group from the collection."""
+        proxy_index = self.file_list.currentIndex()
+        if proxy_index.isValid():
+            self._remove_source_index(self.file_proxy.mapToSource(proxy_index))
+
+    def _remove_source_index(self, source_index) -> None:  # noqa: ANN001
+        """Remove the collection members represented by one model index."""
+        record = source_index.data(EvaluationListModel.RecordRole)
+        if record is not None:
+            self.coordinator.remove_records((record.id,))
+            self.status_message.emit(f"Removed {record.name} from collection")
+            return
+
+        folder_path = source_index.data(EvaluationListModel.FolderPathRole)
+        if folder_path is None:
+            return
+        record_ids = tuple(
+            item.id
+            for item in self.coordinator.collection
+            if item.path.parent == folder_path
+        )
+        if record_ids:
+            self.coordinator.remove_records(record_ids)
+            count = len(record_ids)
+            noun = "record" if count == 1 else "records"
+            self.status_message.emit(f"Removed {count} {noun} from {folder_path.name}")
 
     def _focus_selected_record(self, *, interactive: bool = True) -> None:
         """Reveal the selected record, optionally clearing filters and focusing it."""

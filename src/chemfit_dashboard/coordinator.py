@@ -264,6 +264,19 @@ class DashboardCoordinator(QObject):
         self.collection_changed.emit(())
         self.collection_order_changed.emit()
 
+    def remove_records(self, record_ids: Iterable[str]) -> None:
+        """Remove records from the active collection without deleting files."""
+        self._task_runner.invalidate("order_records_by_field")
+        removed = self._collection.remove(record_ids)
+        if not removed:
+            return
+
+        removed_ids = {record.id for record in removed}
+        selected = self._selected_document
+        if selected is not None and selected.record.id in removed_ids:
+            self.select_record(None)
+        self.collection_changed.emit(tuple(self.collection))
+
     def select_record(self, record: RecordRef | None) -> None:
         """Select a record while preserving the preferred in-record location."""
         self._select_record(RecordSelectionRequest(ref=record))

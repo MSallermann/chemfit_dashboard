@@ -89,14 +89,19 @@ def test_spawn_process_search_exactly_matches_serial(tmp_path, options):
     assert actual == expected
 
 
-def test_batch_search_counts_unreadable_files_and_empty_collection(tmp_path):
-    source, records = _write_collection(tmp_path, 2)
-    broken = tmp_path / "step_broken.json"
-    broken.write_text("{", encoding="utf-8")
-    records = source.discover([tmp_path])
+def test_batch_search_counts_files_that_become_unreadable(tmp_path):
+    _source, records = _write_collection(tmp_path, 2)
+    records[0].path.write_text("{", encoding="utf-8")
     options = SearchOptions("output")
 
     batch = search_record_batch(tuple(records), options, "name")
+
+    assert batch.failed_records == 1
+    assert batch.hits
+
+
+def test_collection_search_handles_an_empty_collection():
+    options = SearchOptions("output")
     with ThreadPoolExecutor(max_workers=2) as pool:
         empty = search_collection(
             pool,
@@ -106,8 +111,6 @@ def test_batch_search_counts_unreadable_files_and_empty_collection(tmp_path):
             worker_count=2,
         )
 
-    assert batch.failed_records == 1
-    assert batch.hits
     assert empty == CollectionSearchResult([], 0)
 
 

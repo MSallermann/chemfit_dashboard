@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -5,7 +6,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from chemfit import EvaluateContext, component, pipeline
-from chemfit.fitter_callbacks import SaveMetaData
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
@@ -37,8 +37,9 @@ def chemfit_context():
 
 @pytest.fixture
 def chemfit_json_path(tmp_path, chemfit_context):
-    SaveMetaData(tmp_path)(8, [chemfit_context])
-    return tmp_path / "step_8_ctx_0.json"
+    path = tmp_path / "context.json"
+    path.write_text(json.dumps(chemfit_context.to_record()), encoding="utf-8")
+    return path
 
 
 @pytest.fixture
