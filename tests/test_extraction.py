@@ -232,6 +232,168 @@ def test_wildcard_selector_expands_union_of_sibling_paths(tmp_path):
     assert payload["status"]["output.energy@/0/2"] == "missing_component"
 
 
+def test_wildcard_flattening_aligns_heterogeneous_sibling_columns(tmp_path):
+    payloads = {
+        "first.json": {
+            "children": [
+                {
+                    "output": {
+                        "energy": 1,
+                        "metadata": {"label": "A"},
+                        "samples": [10, 11],
+                    }
+                },
+                {"output": {"pressure": 2}},
+            ]
+        },
+        "second.json": {
+            "children": [
+                {
+                    "output": {
+                        "energy": 3,
+                        "metadata": {"units": "eV"},
+                        "samples": [12],
+                    }
+                },
+                {"output": {"pressure": 4, "samples": [20, 21, 22]}},
+                {"output": {"energy": 5}},
+            ]
+        },
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    source = JsonFileSource()
+    records = source.discover([tmp_path])
+    config = ExtractionConfig(
+        (
+            _field(
+                ("*",),
+                ("output",),
+                flatten=True,
+                array_expansion_depth=1,
+            ),
+        )
+    )
+    csv_path = tmp_path / "heterogeneous.csv"
+    jsonl_path = tmp_path / "heterogeneous.jsonl"
+
+    assert export_csv(csv_path, source, records, config) == 2
+    assert export_jsonl(jsonl_path, source, records, config) == 2
+
+    rows = list(csv.DictReader(csv_path.open(encoding="utf-8", newline="")))
+    columns = [
+        "output.energy@/0",
+        "output.metadata.label@/0",
+        "output.metadata.units@/0",
+        "output.samples[0]@/0",
+        "output.samples[1]@/0",
+        "output.pressure@/1",
+        "output.samples[0]@/1",
+        "output.samples[1]@/1",
+        "output.samples[2]@/1",
+        "output.energy@/2",
+    ]
+    assert list(rows[0])[3:] == columns
+    assert [rows[0][column] for column in columns] == [
+        "1",
+        "A",
+        "",
+        "10",
+        "11",
+        "2",
+        "",
+        "",
+        "",
+        "",
+    ]
+    assert [rows[1][column] for column in columns] == [
+        "3",
+        "",
+        "eV",
+        "12",
+        "",
+        "4",
+        "20",
+        "21",
+        "22",
+        "5",
+    ]
+
+    jsonl_rows = [
+        json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert (
+        jsonl_rows[0]["values"]["output@/0"]
+        == payloads["first.json"]["children"][0]["output"]
+    )
+    assert jsonl_rows[0]["values"]["output@/2"] is None
+    assert jsonl_rows[0]["status"]["output@/2"] == "missing_component"
+
+
+def test_selector_with_multiple_wildcards_expands_each_hierarchy_level(tmp_path):
+    payloads = {
+        "first.json": {
+            "children": [
+                {
+                    "children": [
+                        {
+                            "children": [
+                                {"output": {"energy": 1}},
+                                {"output": {"energy": 2}},
+                            ]
+                        }
+                    ]
+                },
+                {"children": [{"children": [{"output": {"energy": 3}}]}]},
+            ]
+        },
+        "second.json": {
+            "children": [
+                {"children": [{"children": [{"output": {"energy": 4}}]}]},
+                {
+                    "children": [
+                        {
+                            "children": [
+                                {"output": {"energy": 5}},
+                                {"output": {"energy": 6}},
+                                {"output": {"energy": 7}},
+                            ]
+                        }
+                    ]
+                },
+            ]
+        },
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    source = JsonFileSource()
+    records = source.discover([tmp_path])
+    config = ExtractionConfig((_field(("*", 0, "*"), ("output", "energy")),))
+    csv_path = tmp_path / "multiple-wildcards.csv"
+    jsonl_path = tmp_path / "multiple-wildcards.jsonl"
+
+    assert export_csv(csv_path, source, records, config) == 2
+    assert export_jsonl(jsonl_path, source, records, config) == 2
+
+    columns = [
+        "output.energy@/0/0/0",
+        "output.energy@/0/0/1",
+        "output.energy@/1/0/0",
+        "output.energy@/1/0/1",
+        "output.energy@/1/0/2",
+    ]
+    rows = list(csv.DictReader(csv_path.open(encoding="utf-8", newline="")))
+    assert list(rows[0])[3:] == columns
+    assert [rows[0][column] for column in columns] == ["1", "2", "3", "", ""]
+    assert [rows[1][column] for column in columns] == ["4", "", "5", "6", "7"]
+
+    jsonl_rows = [
+        json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert jsonl_rows[0]["status"]["output.energy@/1/0/1"] == "missing_component"
+    assert jsonl_rows[1]["status"]["output.energy@/0/0/1"] == "missing_component"
+
+
 def test_array_expansion_keeps_one_row_per_evaluation(tmp_path):
     (tmp_path / "step.json").write_text(
         json.dumps({"positions": [[1, 2], [3, 4]]}),
