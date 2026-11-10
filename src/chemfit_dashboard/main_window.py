@@ -197,6 +197,8 @@ class MainWindow(QMainWindow):
         #########################
 
         self.center_tabs = QTabWidget()
+        self.center_tabs.setObjectName("workspaceTabs")
+        self.center_tabs.tabBar().setObjectName("workspaceTabBar")
         self.center_tabs.addTab(self.context_tree_panel, "Context Hierarchy")
         data_flow_tab_index = self.center_tabs.addTab(self.data_flow_panel, "Data Flow")
         self.center_tabs.addTab(self.search_panel, "Context Search")

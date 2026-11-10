@@ -85,6 +85,7 @@ def test_evaluation_panel_expands_first_folder_level(tmp_path, coordinator):
     panel.on_collection_changed()
 
     assert panel.file_list.isExpanded(panel.file_proxy.index(0, 0))
+    assert panel.invert_order_button.property("chemfitIconName") == "reverse_order"
 
 
 def test_automatic_evaluation_sync_preserves_filter_and_focus(loaded_coordinator, qapp):
@@ -215,6 +216,8 @@ def test_main_window_exposes_six_feature_workspaces_and_navigation_shortcuts(
 ):
     window = _isolated_main_window(tmp_path, monkeypatch)
 
+    assert window.center_tabs.objectName() == "workspaceTabs"
+    assert window.center_tabs.tabBar().objectName() == "workspaceTabBar"
     assert [window.center_tabs.tabText(index) for index in range(6)] == [
         "Context Hierarchy",
         "Data Flow",

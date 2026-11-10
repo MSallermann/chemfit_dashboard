@@ -220,14 +220,13 @@ class EvaluationPanel(QWidget):
         self.invert_order_button = QPushButton("Invert order")
         make_icon_only(
             self.invert_order_button,
-            "sort_up",
-            "Sort the collection in reverse order",
+            "reverse_order",
+            "Reverse the current collection order",
         )
         self.invert_order_button.setEnabled(False)
         self.invert_order_button.clicked.connect(
             lambda: self.coordinator.invert_order_records()
         )
-        self.invert_order_button.setToolTip("Invert the order of records")
         order_controls.addWidget(self.invert_order_button)
 
         self.reset_order_button = QPushButton("Filename order")
