@@ -301,14 +301,14 @@ class EvaluationPanel(QWidget):
         self.reset_order_button.setEnabled(len(self.coordinator.collection) > 1)
 
         self.file_list.expandToDepth(0)
-        self._focus_selected_record()
+        self._focus_selected_record(interactive=False)
 
     def on_selected_record_changed(self) -> None:
         selected_document = self.coordinator.selected_document
 
         if selected_document is not None:
             self.evaluation_path.setText(str(selected_document.path))
-            self._focus_selected_record()
+            self._focus_selected_record(interactive=False)
         else:
             self.evaluation_path.clear()
 
@@ -375,6 +375,10 @@ class EvaluationPanel(QWidget):
         if record is None:
             return  # Folder selected, not a record
 
+        document = self.coordinator.selected_document
+        if document is not None and record.id == document.record.id:
+            return
+
         self.coordinator.select_record(record)
 
     def _copy_current_evaluation(self) -> None:
@@ -396,8 +400,8 @@ class EvaluationPanel(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(document.record.path.parent)))
 
-    def _focus_selected_record(self) -> None:
-        """Reveal and focus the currently selected record."""
+    def _focus_selected_record(self, *, interactive: bool = True) -> None:
+        """Reveal the selected record, optionally clearing filters and focusing it."""
 
         document = self.coordinator.selected_document
         if document is None:
@@ -408,7 +412,8 @@ class EvaluationPanel(QWidget):
         if not source_index.isValid():
             return
 
-        self.search.clear()
+        if interactive:
+            self.search.clear()
 
         proxy_index = self.file_proxy.mapFromSource(source_index)
         if not proxy_index.isValid():
@@ -424,4 +429,5 @@ class EvaluationPanel(QWidget):
             proxy_index,
             QAbstractItemView.ScrollHint.PositionAtCenter,
         )
-        self.file_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        if interactive:
+            self.file_list.setFocus(Qt.FocusReason.ShortcutFocusReason)

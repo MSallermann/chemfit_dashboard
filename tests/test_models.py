@@ -86,6 +86,74 @@ def test_evaluation_panel_expands_first_folder_level(tmp_path, coordinator):
     assert panel.file_list.isExpanded(panel.file_proxy.index(0, 0))
 
 
+def test_automatic_evaluation_sync_preserves_filter_and_focus(loaded_coordinator, qapp):
+    panel = EvaluationPanel(loaded_coordinator)
+    panel.show()
+    panel.search.setText("step_8")
+    panel.search.setFocus()
+    qapp.processEvents()
+
+    panel.on_collection_order_changed()
+    panel.on_selected_record_changed()
+    qapp.processEvents()
+
+    assert panel.search.text() == "step_8"
+    assert panel.search.hasFocus()
+    assert not panel.file_list.hasFocus()
+
+
+def test_interactive_evaluation_focus_clears_filter_and_focuses_tree(
+    loaded_coordinator, qapp
+):
+    panel = EvaluationPanel(loaded_coordinator)
+    panel.show()
+    panel.search.setText("does-not-match")
+    panel.search.setFocus()
+    qapp.processEvents()
+
+    panel.focus_selected_button.click()
+    qapp.processEvents()
+
+    assert panel.search.text() == ""
+    assert panel.file_list.hasFocus()
+
+
+def test_programmatic_evaluation_sync_is_idempotent(loaded_coordinator, monkeypatch):
+    panel = EvaluationPanel(loaded_coordinator)
+    panel.file_list.selectionModel().clear()
+    selected = []
+    monkeypatch.setattr(
+        loaded_coordinator,
+        "select_record",
+        selected.append,
+    )
+
+    panel._focus_selected_record(interactive=False)  # noqa: SLF001
+
+    assert selected == []
+
+
+def test_evaluation_selection_still_forwards_a_different_record(
+    tmp_path, loaded_coordinator, monkeypatch
+):
+    path = tmp_path / "other.json"
+    path.write_text("{}", encoding="utf-8")
+    record = JsonFileSource().discover([path])[0]
+    loaded_coordinator.collection.extend((record,))
+    panel = EvaluationPanel(loaded_coordinator)
+    selected = []
+    monkeypatch.setattr(
+        loaded_coordinator,
+        "select_record",
+        selected.append,
+    )
+
+    source_index = panel.file_model.index_for_record_id(record.id)
+    panel.file_list.setCurrentIndex(panel.file_proxy.mapFromSource(source_index))
+
+    assert selected == [record]
+
+
 def test_context_tree_model_fetches_children_lazily(tmp_path):
     children = [{"output": index} for index in range(450)]
     path = tmp_path / "large.json"

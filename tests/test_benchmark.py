@@ -59,6 +59,43 @@ def test_collection_generator_defaults_to_versioned_format(tmp_path):
     assert payload["root"]["context_type"] == "fit"
 
 
+def test_collection_generator_writes_jsonl_trajectory(tmp_path):
+    path = create_collection(
+        tmp_path / "collection",
+        3,
+        5,
+        components_per_evaluation=2,
+        root_fields=4,
+        input_format="jsonl",
+    )
+
+    payloads = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    source = JsonFileSource()
+    records = source.discover([path])
+
+    assert path.name == "trajectory.jsonl"
+    assert [payload["step"] for payload in payloads] == [0, 1, 2]
+    assert [payload["slot"] for payload in payloads] == [0, 0, 0]
+    assert {payload["record"]["format"] for payload in payloads} == {
+        "chemfit.evaluate_context"
+    }
+    assert [record.position_in_file for record in records] == [1, 2, 3]
+    assert [source.load(record).node_count for record in records] == [6, 3, 3]
+
+
+def test_jsonl_collection_rejects_legacy_records(tmp_path):
+    with pytest.raises(ValueError, match="require versioned records"):
+        create_collection(
+            tmp_path,
+            1,
+            1,
+            record_format="legacy",
+            input_format="jsonl",
+        )
+
+
 def test_profile_overrides_are_validated():
     assert STRESS_PROFILE.evaluations >= 50_000
     assert STRESS_PROFILE.graph_nodes >= 25_000

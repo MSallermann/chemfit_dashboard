@@ -56,6 +56,7 @@ from chemfit_dashboard.source import JsonFileSource
 from chemfit_dashboard.traversal import iter_collection
 
 RecordFormat = Literal["versioned", "legacy"]
+InputFormat = Literal["json", "jsonl"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,9 +211,16 @@ def create_collection(
     components_per_evaluation: int = 0,
     root_fields: int = 0,
     record_format: RecordFormat = "versioned",
+    input_format: InputFormat = "json",
 ) -> Path:
     if record_format not in {"versioned", "legacy"}:
         message = f"unsupported record format: {record_format!r}"
+        raise ValueError(message)
+    if input_format not in {"json", "jsonl"}:
+        message = f"unsupported input format: {input_format!r}"
+        raise ValueError(message)
+    if input_format == "jsonl" and record_format != "versioned":
+        message = "JSONL trajectories require versioned records"
         raise ValueError(message)
     directory.mkdir(parents=True, exist_ok=True)
     structure = {
@@ -239,44 +247,60 @@ def create_collection(
             else [{"kind": "parent_input"}]
         ),
     }
-    for index in range(count):
-        child_count = graph_nodes if index == 0 else components_per_evaluation
-        context = {
-            "input": {"parameters": [index, index + 1]},
-            "output": {"loss": index / max(1, count), "tags": ["synthetic", index]},
-            "metrics": {
-                f"metric_{field}": ((index + 1) * (field + 3)) % 100_003
-                for field in range(root_fields)
-            },
-            "meta": {
-                "chemfit.structure": structure if index == 0 else {},
-                "tag": f"evaluation_{index % 128}",
-            },
-            "children": [
-                {
-                    "input": {"value": index + child},
-                    "output": {
-                        "value": index * max(1, child_count) + child,
-                        "residual": (index - child) / max(1, child_count),
-                    },
-                    "meta": {
-                        "name": f"component_{child}",
-                        "tag": f"tag_{child % 16}",
-                        "stage": child % 8,
-                    },
-                }
-                for child in range(child_count)
-            ],
-        }
-        value = (
-            _to_versioned_record(context, index=index)
-            if record_format == "versioned"
-            else context
-        )
-        (directory / f"step_{index}_ctx_0.json").write_text(
-            json.dumps(value, separators=(",", ":")), encoding="utf-8"
-        )
-    return directory
+    trajectory_path = directory / "trajectory.jsonl"
+    trajectory = (
+        trajectory_path.open("w", encoding="utf-8") if input_format == "jsonl" else None
+    )
+    try:
+        for index in range(count):
+            child_count = graph_nodes if index == 0 else components_per_evaluation
+            context = {
+                "input": {"parameters": [index, index + 1]},
+                "output": {
+                    "loss": index / max(1, count),
+                    "tags": ["synthetic", index],
+                },
+                "metrics": {
+                    f"metric_{field}": ((index + 1) * (field + 3)) % 100_003
+                    for field in range(root_fields)
+                },
+                "meta": {
+                    "chemfit.structure": structure if index == 0 else {},
+                    "tag": f"evaluation_{index % 128}",
+                },
+                "children": [
+                    {
+                        "input": {"value": index + child},
+                        "output": {
+                            "value": index * max(1, child_count) + child,
+                            "residual": (index - child) / max(1, child_count),
+                        },
+                        "meta": {
+                            "name": f"component_{child}",
+                            "tag": f"tag_{child % 16}",
+                            "stage": child % 8,
+                        },
+                    }
+                    for child in range(child_count)
+                ],
+            }
+            value = (
+                _to_versioned_record(context, index=index)
+                if record_format == "versioned"
+                else context
+            )
+            if trajectory is not None:
+                envelope = {"step": index, "slot": 0, "record": value}
+                trajectory.write(json.dumps(envelope, separators=(",", ":")))
+                trajectory.write("\n")
+            else:
+                (directory / f"step_{index}_ctx_0.json").write_text(
+                    json.dumps(value, separators=(",", ":")), encoding="utf-8"
+                )
+    finally:
+        if trajectory is not None:
+            trajectory.close()
+    return trajectory_path if input_format == "jsonl" else directory
 
 
 def _to_versioned_record(context: dict[str, Any], *, index: int) -> dict[str, Any]:
@@ -316,6 +340,7 @@ def run(  # noqa: PLR0915
     render_timeout: float = 30.0,
     trace_allocations: bool = True,
     record_format: RecordFormat = "versioned",
+    input_format: InputFormat = "json",
     on_measurement: Callable[[Measurement], None] | None = None,
 ) -> list[Measurement]:
     measurements: list[Measurement] = []
@@ -333,17 +358,24 @@ def run(  # noqa: PLR0915
     with tempfile.TemporaryDirectory(
         prefix="chemfit-dashboard-benchmark-"
     ) as temporary:
-        root = Path(temporary) / "collection"
-        record(
-            "dataset generation",
-            lambda: create_collection(
+        root = Path("benchmark_collection")
+        input_path = root
+
+        def generate_dataset() -> None:
+            nonlocal input_path
+            input_path = create_collection(
                 root,
                 count,
                 graph_nodes,
                 components_per_evaluation=components_per_evaluation,
                 root_fields=root_fields,
                 record_format=record_format,
-            ),
+                input_format=input_format,
+            )
+
+        record(
+            "dataset generation",
+            generate_dataset,
         )
         source = JsonFileSource(
             cache_capacity=32, cache_memory_budget=128 * 1024 * 1024
@@ -352,7 +384,7 @@ def run(  # noqa: PLR0915
 
         def discover() -> None:
             nonlocal records
-            records = source.discover([root])
+            records = source.discover([input_path])
 
         record("directory discovery", discover)
         record(
@@ -633,6 +665,12 @@ def main() -> None:
         help="Generate versioned to_record data or legacy context summaries",
     )
     parser.add_argument(
+        "--input-format",
+        choices=("json", "jsonl"),
+        default="json",
+        help="Store evaluations as individual JSON files or one JSONL trajectory",
+    )
+    parser.add_argument(
         "--tracemalloc",
         action="store_true",
         help="Trace Python allocations (slower; omit for representative timings)",
@@ -648,6 +686,8 @@ def main() -> None:
         )
     except ValueError as error:
         parser.error(str(error))
+    if args.input_format == "jsonl" and args.record_format != "versioned":
+        parser.error("JSONL trajectories require --record-format versioned")
 
     print(
         f"profile={args.profile} evaluations={profile.evaluations:,} "
@@ -655,6 +695,7 @@ def main() -> None:
         f"components_per_evaluation={profile.components_per_evaluation:,} "
         f"root_fields={profile.root_fields:,} "
         f"record_format={args.record_format} "
+        f"input_format={args.input_format} "
         f"search_queries={len(profile.search_queries)}",
         flush=True,
     )
@@ -686,6 +727,7 @@ def main() -> None:
         render_timeout=profile.render_timeout,
         trace_allocations=args.tracemalloc,
         record_format=args.record_format,
+        input_format=args.input_format,
         on_measurement=report,
     )
 
