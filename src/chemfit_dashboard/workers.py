@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import struct
 import traceback
 from collections.abc import Hashable
 from concurrent.futures import (
@@ -14,7 +15,8 @@ from concurrent.futures import (
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
-from multiprocessing import Pipe, get_context
+from multiprocessing import get_context
+from multiprocessing.shared_memory import SharedMemory
 from threading import Event
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
@@ -22,12 +24,14 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from multiprocessing.connection import Connection
     from typing import Any
 
 GenerationKey = TypeVar("GenerationKey", bound=Hashable)
 TaskBackend = Literal["thread", "process"]
-_CANCEL = "cancel"
+_PROCESS_PROGRESS = struct.Struct("<QQ")
+_PROCESS_SEQUENCE = struct.Struct("<Q")
+_PROCESS_CANCEL_OFFSET = _PROCESS_SEQUENCE.size + _PROCESS_PROGRESS.size
+_PROCESS_STATE_SIZE = _PROCESS_CANCEL_OFFSET + 1
 
 
 @dataclass(slots=True)
@@ -107,35 +111,47 @@ class TaskContext:
 
 
 class _ProcessContext(TaskContext):
-    def __init__(self, connection: Connection) -> None:
-        self._connection = connection
-        self._cancelled = False
+    def __init__(self, shared_memory_name: str) -> None:
+        self._memory = SharedMemory(name=shared_memory_name)
+        self._sequence = 0
         super().__init__(self._send_progress, self._is_cancelled)
 
     def _send_progress(self, value: int, total: int) -> None:
-        with suppress(BrokenPipeError, EOFError, OSError):
-            self._connection.send((value, total))
+        # A tiny seqlock keeps the GUI from observing a partly written pair.
+        self._sequence += 1
+        _PROCESS_SEQUENCE.pack_into(self._memory.buf, 0, self._sequence)
+        _PROCESS_PROGRESS.pack_into(
+            self._memory.buf,
+            _PROCESS_SEQUENCE.size,
+            max(0, value),
+            max(1, total),
+        )
+        self._sequence += 1
+        _PROCESS_SEQUENCE.pack_into(self._memory.buf, 0, self._sequence)
 
     def _is_cancelled(self) -> bool:
-        with suppress(EOFError, OSError):
-            if not self._cancelled and self._connection.poll():
-                self._cancelled = self._connection.recv() == _CANCEL
-        return self._cancelled
+        return bool(self._memory.buf[_PROCESS_CANCEL_OFFSET])
+
+    def close(self) -> None:
+        self._memory.close()
 
 
 def _run_process(
     function: Callable[..., Any],
     args: tuple[Any, ...],
-    connection: Connection | None,
+    shared_memory_name: str | None,
 ) -> Any:
     """Serializable process-pool entry point."""
+    context = (
+        _ProcessContext(shared_memory_name) if shared_memory_name is not None else None
+    )
     try:
-        if connection is None:
+        if context is None:
             return function(*args)
-        return function(*args, task_context=_ProcessContext(connection))
+        return function(*args, task_context=context)
     finally:
-        if connection is not None:
-            connection.close()
+        if context is not None:
+            context.close()
 
 
 class _Bridge(QObject):
@@ -151,8 +167,8 @@ class _TaskRecord:
     on_error: Callable[[str], None]
     cancellation: Event | None = None
     future: Future[Any] | None = None
-    parent_connection: Connection | None = None
-    child_connection: Connection | None = None
+    process_state: SharedMemory | None = None
+    process_sequence: int = 0
     invalidated: bool = False
 
 
@@ -347,14 +363,15 @@ class TaskRunner(QObject):
         args: tuple[Any, ...],
         with_context: bool,
     ) -> None:
-        connection = None
+        shared_memory_name = None
         if with_context:
-            record.parent_connection, connection = Pipe()
-            record.child_connection = connection
+            record.process_state = SharedMemory(create=True, size=_PROCESS_STATE_SIZE)
+            record.process_state.buf[:] = bytes(_PROCESS_STATE_SIZE)
+            shared_memory_name = record.process_state.name
             self._progress_timer.start()
         try:
             future = self.process_executor.submit(
-                _run_process, function, args, connection
+                _run_process, function, args, shared_memory_name
             )
         except Exception:
             self._worker_event(record.info.id, TaskState.FAILED, traceback.format_exc())
@@ -421,9 +438,8 @@ class TaskRunner(QObject):
             return
         if record.cancellation is not None:
             record.cancellation.set()
-        if record.parent_connection is not None:
-            with suppress(BrokenPipeError, EOFError, OSError):
-                record.parent_connection.send(_CANCEL)
+        if record.process_state is not None:
+            record.process_state.buf[_PROCESS_CANCEL_OFFSET] = 1
         if record.future is not None:
             record.future.cancel()
 
@@ -437,14 +453,13 @@ class TaskRunner(QObject):
         self._cancel(record.info.id)
 
     def _poll_progress(self) -> None:
-        has_connections = False
+        has_process_state = False
         for task_id, record in tuple(self._tasks.items()):
-            connection = record.parent_connection
-            if connection is None:
+            if record.process_state is None:
                 continue
-            has_connections = True
+            has_process_state = True
             self._poll_one(task_id, record)
-        if not has_connections:
+        if not has_process_state:
             self._progress_timer.stop()
 
     def _finish(
@@ -460,24 +475,36 @@ class TaskRunner(QObject):
         self._tasks.pop(task_id, None)
         if record.info.key is not None and self._latest.get(record.info.key) == task_id:
             self._latest.pop(record.info.key, None)
-        self._close_connections(record)
+        self._close_process_state(record)
         self._emit(record, state, error=error)
         return record
 
     def _poll_one(self, task_id: int, record: _TaskRecord) -> None:
-        connection = record.parent_connection
-        if connection is None:
+        memory = record.process_state
+        if memory is None:
             return
-        with suppress(EOFError, OSError):
-            while connection.poll():
-                value, total = connection.recv()
-                self._worker_event(task_id, TaskState.PROGRESS, (value, total))
+        sequence_before = _PROCESS_SEQUENCE.unpack_from(memory.buf, 0)[0]
+        if sequence_before == 0 or sequence_before % 2:
+            return
+        value, total = _PROCESS_PROGRESS.unpack_from(memory.buf, _PROCESS_SEQUENCE.size)
+        sequence_after = _PROCESS_SEQUENCE.unpack_from(memory.buf, 0)[0]
+        if (
+            sequence_before != sequence_after
+            or sequence_after == record.process_sequence
+        ):
+            return
+        record.process_sequence = sequence_after
+        self._worker_event(task_id, TaskState.PROGRESS, (value, total))
 
     @staticmethod
-    def _close_connections(record: _TaskRecord) -> None:
-        for connection in (record.parent_connection, record.child_connection):
-            if connection is not None:
-                connection.close()
+    def _close_process_state(record: _TaskRecord) -> None:
+        memory = record.process_state
+        if memory is None:
+            return
+        record.process_state = None
+        memory.close()
+        with suppress(FileNotFoundError):
+            memory.unlink()
 
     def _emit(
         self,
@@ -496,7 +523,7 @@ class TaskRunner(QObject):
         self._closed = True
         self._progress_timer.stop()
         for record in self._tasks.values():
-            self._close_connections(record)
+            self._close_process_state(record)
         self._tasks.clear()
         self._latest.clear()
         self._thread_pool.shutdown(wait=False, cancel_futures=True)

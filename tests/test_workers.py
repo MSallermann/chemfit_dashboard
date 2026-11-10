@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QMainWindow
 from chemfit_dashboard.activity import ActivityStatus
 from chemfit_dashboard.workers import (
     GenerationTracker,
+    TaskContext,
     TaskRunner,
     TaskState,
 )
@@ -28,6 +29,11 @@ def _fail_task() -> None:
 def _slow_value(value: int, delay: float) -> int:
     time.sleep(delay)
     return value
+
+
+def _report_process_progress(*, task_context: TaskContext) -> int:
+    task_context.report_progress(3, 7)
+    return 42
 
 
 def _wait_for(qapp, predicate, timeout: float = 5.0) -> None:
@@ -107,6 +113,28 @@ def test_task_runner_reports_failures(qapp):
 
     _wait_for(qapp, lambda: bool(errors))
     assert "expected worker failure" in errors[0]
+    runner.shutdown(wait_for_processes=True)
+
+
+def test_process_task_reports_progress(qapp):
+    runner = TaskRunner(process_workers=1)
+    results = []
+    events = []
+    runner.lifecycle_changed.connect(events.append)
+    runner.submit(
+        function=_report_process_progress,
+        on_success=results.append,
+        on_error=pytest.fail,
+        backend="process",
+        with_context=True,
+    )
+
+    _wait_for(qapp, lambda: bool(results))
+    assert results == [42]
+    assert any(
+        event.state == TaskState.PROGRESS and event.progress == (3, 7)
+        for event in events
+    )
     runner.shutdown(wait_for_processes=True)
 
 

@@ -14,18 +14,7 @@ from chemfit_dashboard.extraction import (
     export_jsonl,
 )
 from chemfit_dashboard.source import JsonFileSource
-from chemfit_dashboard.workers import TaskContext, TaskRunner
-
-
-def _export_without_progress(path, format_name, records, config):
-    context = TaskContext(lambda _value, _total: None, lambda: False)
-    return export_json_file_process(
-        path,
-        format_name,
-        records,
-        config,
-        task_context=context,
-    )
+from chemfit_dashboard.workers import TaskRunner, TaskState
 
 
 def _wait_for(qapp, predicate, timeout: float = 8.0) -> None:
@@ -61,18 +50,22 @@ def test_process_export_matches_existing_export(tmp_path, qapp, format_name):
     runner = TaskRunner(process_workers=1)
     results = []
     errors = []
+    events = []
+    runner.lifecycle_changed.connect(events.append)
     runner.submit(
-        function=_export_without_progress,
+        function=export_json_file_process,
         on_success=results.append,
         on_error=errors.append,
         backend="process",
         args=(str(actual), format_name, records, config),
+        with_context=True,
     )
 
     _wait_for(qapp, lambda: bool(results or errors))
     assert not errors
     assert results == [3]
     assert actual.read_bytes() == expected.read_bytes()
+    assert any(event.state == TaskState.PROGRESS for event in events)
     runner.shutdown(wait_for_processes=True)
 
 
@@ -82,11 +75,12 @@ def test_failed_process_export_does_not_replace_destination(tmp_path, qapp):
     runner = TaskRunner(process_workers=1)
     errors = []
     runner.submit(
-        function=_export_without_progress,
+        function=export_json_file_process,
         on_success=lambda _count: pytest.fail("invalid export unexpectedly succeeded"),
         on_error=errors.append,
         backend="process",
         args=(str(destination), "invalid", (), ExtractionConfig(())),
+        with_context=True,
     )
 
     _wait_for(qapp, lambda: bool(errors))
