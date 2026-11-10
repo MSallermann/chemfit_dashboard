@@ -32,7 +32,23 @@ exports.
 
 ## Installation
 
-ChemFit Dashboard requires Python 3.10 or newer.
+### Desktop application
+
+Download the installer for your platform from the
+[latest GitHub release](https://github.com/MSallermann/chemfit_dashboard/releases/latest):
+
+- **Windows:** run the `.exe` installer. ChemFit Dashboard is added to the Start
+  menu and can optionally get a desktop shortcut.
+- **macOS:** open the `.dmg` and drag ChemFit Dashboard into Applications.
+- **Linux:** download the `.AppImage`, make it executable, and open it.
+
+These bundles include Python, Qt, and the dashboard's other dependencies. A
+separate Python or ChemFit installation is not required.
+
+### Python installation
+
+ChemFit Dashboard requires Python 3.10 or newer when installed from source.
+This remains useful for development or headless extraction.
 
 Clone the repository:
 
@@ -441,6 +457,33 @@ Lint and type-check the source:
 ruff check src tests benchmark
 pyright
 ```
+
+### Building the desktop application locally
+
+Install the GUI and packaging dependencies:
+
+```bash
+python -m pip install -e ".[gui,package]"
+```
+
+Build a runnable PyInstaller bundle for the current operating system:
+
+```bash
+python scripts/build_desktop.py --bundle-only
+```
+
+The result is written to `dist/` and can be launched directly for testing.
+Build the final installer with:
+
+```bash
+python scripts/build_desktop.py
+```
+
+This produces the same platform-specific artifact as release CI in `release/`:
+an AppImage on Linux, a DMG on macOS, or a Windows `.exe` installer. Linux downloads
+`appimagetool` on first use. Windows additionally requires Inno Setup 6; set
+`ISCC` if its compiler is not installed in the standard location. Pass
+`--skip-bundle` to rebuild only the installer around an existing bundle.
 
 ### Performance benchmarks
 

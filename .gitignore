@@ -6,6 +6,6 @@ __pycache__/
 .pyright/
 build/
 dist/
+release/
 *.json
 *.xyz
-

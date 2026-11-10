@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ChemFit Dashboard
+Comment=Explore, visualize, and extract ChemFit evaluation data
+Exec=chemfit-dashboard %F
+Icon=chemfit-dashboard
+Terminal=false
+Categories=Science;Utility;
+StartupNotify=true

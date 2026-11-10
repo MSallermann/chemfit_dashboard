@@ -1,0 +1,101 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-release.yml"
+      - "ChemFitDashboard.spec"
+      - "packaging/**"
+      - "scripts/build_desktop.py"
+      - "pyproject.toml"
+      - "res/chemfit_dashboard*"
+      - "src/**"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86-64 AppImage
+            os: ubuntu-22.04
+            kind: linux
+            asset: ChemFit-Dashboard-Linux-x86_64.AppImage
+          - label: Windows x86-64 installer
+            os: windows-2022
+            kind: windows
+            asset: ChemFit-Dashboard-Windows-x86_64.exe
+          - label: macOS Apple Silicon DMG
+            os: macos-15
+            kind: macos
+            architecture: arm64
+            asset: ChemFit-Dashboard-macOS-arm64.dmg
+          - label: macOS Intel DMG
+            os: macos-15-intel
+            kind: macos
+            architecture: x86_64
+            asset: ChemFit-Dashboard-macOS-x86_64.dmg
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install application and packager
+        run: python -m pip install ".[gui,package]"
+
+      - name: Install Inno Setup
+        if: matrix.kind == 'windows'
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build application and installer
+        run: python scripts/build_desktop.py
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: release/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* --verify-tag --generate-notes
+          fi
