@@ -204,6 +204,7 @@ class OrderedRecordCollection(Sequence[RecordRef]):
         """
         self._order = self._natural_order
         self._order_label = self._natural_order_label
+        self._order_ascending = True
 
     def invert_order(self) -> None:
         """Inverts the current order."""

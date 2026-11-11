@@ -88,7 +88,7 @@ class CachedContextSource(ContextSource):
     def load(self, record: RecordRef) -> ContextDocument:
         with self._lock:
             cached = self._cache.get(record.id)
-            if cached is not None:
+            if cached is not None and _same_record_version(record, cached[1].record):
                 self._cache.move_to_end(record.id)
                 return cached[1]
 
@@ -99,9 +99,13 @@ class CachedContextSource(ContextSource):
         with self._lock:
             # Another thread may have loaded it in the meantime.
             cached = self._cache.get(record.id)
-            if cached is not None:
+            if cached is not None and _same_record_version(record, cached[1].record):
                 self._cache.move_to_end(record.id)
                 return cached[1]
+
+            if cached is not None:
+                cached_cost, _ = self._cache.pop(record.id)
+                self._cache_bytes -= cached_cost
 
             if (
                 self.cache_capacity > 0
@@ -121,13 +125,17 @@ class CachedContextSource(ContextSource):
         return document
 
 
+def _same_record_version(first: RecordRef, second: RecordRef) -> bool:
+    return first.modified == second.modified and first.size == second.size
+
+
 class JsonFileSource(CachedContextSource):
     """
     Discover and load evaluation contexts from JSON files or JSONL trajectories.
 
     Each JSON file represents one evaluation. Every nonblank JSONL line
-    represents one evaluation. Records are validated during discovery and
-    indexed on demand, with caching provided by the base class.
+    represents one evaluation. Records are validated and indexed on demand,
+    with caching provided by the base class.
     """
 
     def discover(self, locations: Iterable[str | Path]) -> list[RecordRef]:
@@ -183,7 +191,6 @@ class JsonFileSource(CachedContextSource):
                     size=stat.st_size,
                     modified=modified,
                 )
-                _read_normalized_record(record)
                 records.append(record)
 
         return records
@@ -210,15 +217,6 @@ def _jsonl_records(path: Path, modified: datetime) -> list[RecordRef]:
             line_number += 1
             if not line.strip():
                 continue
-            try:
-                normalize_record(json.loads(line), require_versioned=True)
-            except (
-                UnicodeDecodeError,
-                json.JSONDecodeError,
-                RecordFormatError,
-            ) as exc:
-                message = f"Cannot load {path.name} line {line_number}: {exc}"
-                raise ContextSourceError(message) from exc
             records.append(
                 RecordRef(
                     id=_record_id(path, line_number),
@@ -234,7 +232,7 @@ def _jsonl_records(path: Path, modified: datetime) -> list[RecordRef]:
 
 
 def _read_normalized_record(record: RecordRef) -> Any:
-    """Read and validate one record before it enters the active collection."""
+    """Read and validate one record when its contents are requested."""
     try:
         raw = (
             _load_jsonl_record(record)

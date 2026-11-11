@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -40,12 +41,16 @@ def test_explicit_unsupported_file_type_is_rejected(tmp_path):
         JsonFileSource().discover([path])
 
 
-def test_malformed_json_is_rejected_during_discovery(tmp_path):
+def test_malformed_json_is_discovered_and_rejected_during_load(tmp_path):
     path = tmp_path / "broken.json"
     path.write_text('{"output":', encoding="utf-8")
+    source = JsonFileSource()
 
+    records = source.discover([path])
+
+    assert [record.name for record in records] == ["broken.json"]
     with pytest.raises(ContextSourceError, match=r"Cannot load broken\.json"):
-        JsonFileSource().discover([path])
+        source.load(records[0])
 
 
 def test_loads_context_written_by_chemfit(chemfit_json_path, chemfit_context):
@@ -124,6 +129,42 @@ def test_jsonl_trajectory_is_discovered_as_one_collection(tmp_path, chemfit_cont
     assert [document.details(()).fields["slot"] for document in documents] == [0, 1]
 
 
+def test_jsonl_discovery_preserves_invalid_records_offsets_and_valid_access(
+    tmp_path, chemfit_context
+):
+    path = tmp_path / "trajectory.jsonl"
+    valid_first = json.dumps(
+        {"step": 4, "slot": 0, "record": chemfit_context.to_record()}
+    ).encode()
+    invalid = b'{"record": invalid}\n'
+    valid_second = json.dumps(
+        {"step": 5, "slot": 1, "record": chemfit_context.to_record()}
+    ).encode()
+    path.write_bytes(valid_first + b"\n\n" + invalid + valid_second + b"\n")
+    source = JsonFileSource()
+
+    records = source.discover([path])
+
+    assert [record.position_in_file for record in records] == [1, 3, 4]
+    assert [record.byte_offset for record in records] == [
+        0,
+        len(valid_first) + 2,
+        len(valid_first) + 2 + len(invalid),
+    ]
+    assert [record.size for record in records] == [
+        len(valid_first) + 1,
+        len(invalid),
+        len(valid_second) + 1,
+    ]
+    assert source.load(records[0]).details(()).fields["step"] == 4
+    with pytest.raises(
+        ContextSourceError,
+        match=r"Cannot load trajectory\.jsonl line 3",
+    ):
+        source.load(records[1])
+    assert source.load(records[2]).details(()).fields["step"] == 5
+
+
 def test_versioned_exception_and_unrecorded_children_keep_their_semantics(tmp_path):
     context = build_failed_example_context()
     path = tmp_path / "failed.json"
@@ -187,7 +228,7 @@ def test_versioned_unrecorded_child_remains_declared_but_unexecuted(tmp_path):
     assert not child.recorded
 
 
-def test_unsupported_record_schema_reports_the_jsonl_line(tmp_path):
+def test_unsupported_record_schema_reports_the_jsonl_line_during_load(tmp_path):
     path = tmp_path / "trajectory.jsonl"
     path.write_text(
         json.dumps(
@@ -206,11 +247,13 @@ def test_unsupported_record_schema_reports_the_jsonl_line(tmp_path):
         encoding="utf-8",
     )
     source = JsonFileSource()
+    record = source.discover([path])[0]
+
     with pytest.raises(
         ContextSourceError,
         match=r"trajectory\.jsonl line 1.*schema version: 999",
     ):
-        source.discover([path])
+        source.load(record)
 
 
 def test_partial_and_unfamiliar_json_remains_inspectable(tmp_path):
@@ -259,6 +302,45 @@ def test_bounded_lru_cache_evicts_without_invalidating_live_document(tmp_path):
     assert source.cache_info[0] == 2
     assert first.details(()).fields["output"] == 0
     assert source.load(records[0]) is not first
+
+
+def test_rediscovery_replaces_stale_cached_document(tmp_path):
+    path = tmp_path / "evaluation.json"
+    path.write_text(json.dumps({"output": "old"}), encoding="utf-8")
+    source = JsonFileSource()
+    original_record = source.discover([path])[0]
+    original_document = source.load(original_record)
+
+    original_stat = path.stat()
+    path.write_text(json.dumps({"output": "new"}), encoding="utf-8")
+    os.utime(
+        path,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 1_000_000_000),
+    )
+    refreshed_record = source.discover([path])[0]
+    refreshed_document = source.load(refreshed_record)
+
+    assert refreshed_record.id == original_record.id
+    assert refreshed_record.size == original_record.size
+    assert refreshed_record.modified != original_record.modified
+    assert refreshed_document is not original_document
+    assert refreshed_document.details(()).fields["output"] == "new"
+    assert source.load(refreshed_record) is refreshed_document
+
+    refreshed_stat = path.stat()
+    path.write_text(json.dumps({"output": "new value"}), encoding="utf-8")
+    os.utime(
+        path,
+        ns=(refreshed_stat.st_atime_ns, refreshed_stat.st_mtime_ns),
+    )
+    resized_record = source.discover([path])[0]
+    resized_document = source.load(resized_record)
+
+    assert resized_record.modified == refreshed_record.modified
+    assert resized_record.size != refreshed_record.size
+    assert resized_document is not refreshed_document
+    assert resized_document.details(()).fields["output"] == "new value"
+    assert source.cache_info[0] == 1
 
 
 def test_cache_does_not_retain_document_larger_than_budget(tmp_path):
