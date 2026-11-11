@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
+from benchmark import benchmark
 from benchmark.benchmark import STRESS_PROFILE, create_collection, resolve_profile
 from chemfit_dashboard.source import JsonFileSource
 
@@ -94,6 +96,34 @@ def test_jsonl_collection_rejects_legacy_records(tmp_path):
             record_format="legacy",
             input_format="jsonl",
         )
+
+
+def test_benchmark_cli_forwards_persistent_collection_directory(tmp_path, monkeypatch):
+    collection_directory = tmp_path / "interactive-collection"
+    captured = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(benchmark, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark.py",
+            "--evaluations",
+            "1",
+            "--graph-nodes",
+            "0",
+            "--collection-directory",
+            str(collection_directory),
+        ],
+    )
+
+    benchmark.main()
+
+    assert captured["collection_directory"] == collection_directory
 
 
 def test_profile_overrides_are_validated():

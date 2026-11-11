@@ -461,6 +461,18 @@ JSON files, use:
 PYTHONPATH=src python benchmark/benchmark.py --profile standard --input-format jsonl
 ```
 
+By default, the generated collection is removed after the benchmark. To retain
+it for interactive use, provide an empty or nonexistent directory:
+
+```bash
+PYTHONPATH=src python benchmark/benchmark.py --profile standard \
+  --collection-directory ./benchmark_collection
+chemfit-dashboard ./benchmark_collection
+```
+
+With `--input-format jsonl`, open
+`./benchmark_collection/trajectory.jsonl` instead.
+
 A larger stress profile tests scaling to 50,000 evaluation files, millions of recorded component contexts, wide exports, and a 25,000-node graph layout:
 
 ```bash

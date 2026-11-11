@@ -341,6 +341,7 @@ def run(  # noqa: PLR0915
     trace_allocations: bool = True,
     record_format: RecordFormat = "versioned",
     input_format: InputFormat = "json",
+    collection_directory: Path | None = None,
     on_measurement: Callable[[Measurement], None] | None = None,
 ) -> list[Measurement]:
     measurements: list[Measurement] = []
@@ -358,7 +359,18 @@ def run(  # noqa: PLR0915
     with tempfile.TemporaryDirectory(
         prefix="chemfit-dashboard-benchmark-"
     ) as temporary:
-        root = Path("benchmark_collection")
+        root = (
+            Path(temporary) / "benchmark_collection"
+            if collection_directory is None
+            else collection_directory.expanduser().resolve()
+        )
+        if collection_directory is not None and root.exists():
+            if not root.is_dir():
+                message = f"collection directory is not a directory: {root}"
+                raise ValueError(message)
+            if any(root.iterdir()):
+                message = f"collection directory must be empty: {root}"
+                raise ValueError(message)
         input_path = root
 
         def generate_dataset() -> None:
@@ -671,6 +683,14 @@ def main() -> None:
         help="Store evaluations as individual JSON files or one JSONL trajectory",
     )
     parser.add_argument(
+        "--collection-directory",
+        type=Path,
+        help=(
+            "Retain the generated collection in this directory instead of using "
+            "temporary storage; the directory must be empty or not yet exist"
+        ),
+    )
+    parser.add_argument(
         "--tracemalloc",
         action="store_true",
         help="Trace Python allocations (slower; omit for representative timings)",
@@ -718,18 +738,22 @@ def main() -> None:
             flush=True,
         )
 
-    run(
-        profile.evaluations,
-        profile.graph_nodes,
-        components_per_evaluation=profile.components_per_evaluation,
-        root_fields=profile.root_fields,
-        search_queries=profile.search_queries,
-        render_timeout=profile.render_timeout,
-        trace_allocations=args.tracemalloc,
-        record_format=args.record_format,
-        input_format=args.input_format,
-        on_measurement=report,
-    )
+    try:
+        run(
+            profile.evaluations,
+            profile.graph_nodes,
+            components_per_evaluation=profile.components_per_evaluation,
+            root_fields=profile.root_fields,
+            search_queries=profile.search_queries,
+            render_timeout=profile.render_timeout,
+            trace_allocations=args.tracemalloc,
+            record_format=args.record_format,
+            input_format=args.input_format,
+            collection_directory=args.collection_directory,
+            on_measurement=report,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":
