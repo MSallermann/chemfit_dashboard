@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 from copy import deepcopy
 from dataclasses import dataclass
 from itertools import islice
@@ -52,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.extraction import (
+    NODE_WILDCARD,
     ExtractionConfig,
     ExtractionRow,
     ExtractionStatus,
@@ -83,6 +85,8 @@ _ACTIONS_COLUMN_MIN_WIDTH = 320
 _PREVIEW_MISSING = object()
 CONFIG_DIRECTORY_SETTING = "paths/extraction_config"
 EXPORT_DIRECTORY_SETTING = "paths/extraction_export"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,6 +597,25 @@ class DataExtractionPanel(QWidget):
         # so we dont modify the callers object
         output = deepcopy(output)
 
+        # Treat a default wildcard selection as a widening of an existing exact
+        # selection, not as a second copy of the same output column. This is the
+        # natural result of clicking "+ Field" and then "+ Sibling Fields".
+        if output == OutputDescriptor():
+            for existing_selector, existing_output in self._fields:
+                if existing_output == OutputDescriptor() and _selector_covers(
+                    existing_selector, selector
+                ):
+                    self.status_message.emit(
+                        f"{selector.format()} is already included in the extraction"
+                    )
+                    return
+            self._fields = [
+                (existing_selector, existing_output)
+                for existing_selector, existing_output in self._fields
+                if existing_output != OutputDescriptor()
+                or not _selector_covers(selector, existing_selector)
+            ]
+
         self._preview_state.pending_selection_column = None
         if output.column is not None:
             output.column = output.column.strip() or None
@@ -645,7 +668,9 @@ class DataExtractionPanel(QWidget):
             on_success=lambda count: self.status_message.emit(
                 f"Exported {count:,} evaluations to {path}"
             ),
-            on_error=self.show_error,
+            on_error=lambda details: self._show_background_error(
+                "Could not export data", details
+            ),
             backend="process" if process_safe else "thread",
             label=f"Exporting {format_name.upper()}",
             args=args,
@@ -728,6 +753,7 @@ class DataExtractionPanel(QWidget):
                     PREVIEW_LIMIT,
                 )
             )
+            _validate_preview_column_names(fields, rows)
             return fields, rows
 
         def install_preview(
@@ -740,13 +766,20 @@ class DataExtractionPanel(QWidget):
             key="extraction_preview",
             function=task,
             on_success=install_preview,
-            on_error=self.show_error,
+            on_error=lambda details: self._show_background_error(
+                "Could not build extraction preview", details
+            ),
             label="Building extraction preview",
         )
 
     def show_error(self, message: str) -> None:
         """Replace preview status with a user-facing extraction error."""
         self.status.setText(message)
+
+    def _show_background_error(self, action: str, details: str) -> None:
+        """Log worker diagnostics while showing only the exception message."""
+        logger.error("%s\n%s", action, details)
+        self.show_error(f"{action}: {_exception_summary(details)}")
 
     def clear_collection_sort(self) -> None:
         """Remove the header marker after collection order changes elsewhere."""
@@ -1674,6 +1707,54 @@ def _preview_columns(
                 )
             )
     return tuple(result)
+
+
+def _validate_preview_column_names(
+    fields: tuple[ResolvedField, ...], rows: tuple[ExtractionRow, ...]
+) -> None:
+    """Reject ambiguous preview columns before they reach the table model."""
+    labels = [column.label for column in _preview_columns(fields, rows)]
+    folded = [label.casefold() for label in labels]
+    if len(folded) == len(set(folded)):
+        return
+    duplicate = next(
+        label
+        for index, label in enumerate(labels)
+        if label.casefold() in folded[:index]
+    )
+    message = (
+        f"Extraction produces the duplicate column {duplicate!r}. Remove overlapping "
+        "fields, enable node paths for sibling fields, or rename one of the fields."
+    )
+    raise ValueError(message)
+
+
+def _selector_covers(covering: FieldSelector, candidate: FieldSelector) -> bool:
+    """Return whether one selector includes every path selected by another."""
+    return (
+        covering.value_path == candidate.value_path
+        and len(covering.node_path) == len(candidate.node_path)
+        and all(
+            left in (NODE_WILDCARD, right)
+            for left, right in zip(
+                covering.node_path,
+                candidate.node_path,
+                strict=True,
+            )
+        )
+    )
+
+
+def _exception_summary(details: str) -> str:
+    """Extract a safe one-line exception message from worker traceback text."""
+    lines = [line.strip() for line in details.splitlines() if line.strip()]
+    for line in reversed(lines):
+        exception_type, separator, message = line.partition(": ")
+        if separator and exception_type.rsplit(".", 1)[-1].endswith(
+            ("Error", "Exception")
+        ):
+            return message
+    return lines[-1] if lines else "Unknown extraction error"
 
 
 def _nested_preview_value(value: Any, path: JsonPath) -> Any:

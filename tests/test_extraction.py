@@ -515,6 +515,31 @@ def test_extraction_panel_manages_unique_columns_and_clipboard(coordinator, qapp
     assert not panel.include_node_paths_checkbox.isChecked()
 
 
+def test_sibling_field_selection_widens_overlapping_default_field(coordinator):
+    panel = DataExtractionPanel(coordinator=coordinator)
+    exact = FieldSelector((2, 1), ("output", "energy"))
+    siblings = FieldSelector((2, "*"), ("output", "energy"))
+
+    panel.add_selector(exact, OutputDescriptor())
+    panel.add_selector(siblings, OutputDescriptor())
+    panel.add_selector(exact, OutputDescriptor())
+
+    assert panel.selectors == (siblings,)
+
+
+def test_background_extraction_error_hides_worker_traceback(coordinator):
+    panel = DataExtractionPanel(coordinator=coordinator)
+
+    panel._show_background_error(  # noqa: SLF001
+        "Could not build extraction preview",
+        "Traceback (most recent call last):\nValueError: column names are not unique",
+    )
+
+    assert panel.status.text() == (
+        "Could not build extraction preview: column names are not unique"
+    )
+
+
 def test_extraction_dialog_directories_are_persisted(
     tmp_path, coordinator, monkeypatch
 ):
