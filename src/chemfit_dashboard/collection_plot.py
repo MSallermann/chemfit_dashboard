@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import math
 import statistics
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCharts import (
     QBarCategoryAxis,
@@ -84,6 +85,9 @@ from chemfit_dashboard.util import format_combined_path
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from chemfit_dashboard.traversal import CancellationToken
+    from chemfit_dashboard.workers import TaskContext
+
 JsonPath = tuple[str | int, ...]
 RASTER_EXPORT_DPI = 300
 SCREEN_DPI = 96
@@ -121,6 +125,19 @@ class _PresentedSeries:
 
     index: int
     data: CollectionSeries
+
+
+@dataclass(slots=True)
+class _AdaptiveSeries:
+    """Qt series and full points used for visible-window resampling."""
+
+    data: CollectionSeries
+    points: tuple[SeriesPoint, ...]
+    indexes: tuple[int, ...]
+    run_by_index: dict[int, int]
+    markers: QScatterSeries
+    color: QColor
+    lines: list[QLineSeries] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -315,6 +332,9 @@ class CollectionPlotPanel(QWidget):
         self._selected_record_id: str | None = None
         self._selection_series: QScatterSeries | None = None
         self._point_lookup = _RenderedPointLookup()
+        self._adaptive_series: tuple[_AdaptiveSeries, ...] = ()
+        self._line_x_axis: QValueAxis | None = None
+        self._updating_line_window = False
         self._hidden_selectors: set[FieldSelector] = set()
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
@@ -384,11 +404,19 @@ class CollectionPlotPanel(QWidget):
             self.clear()
             return
 
-        def task():
+        def task(*, task_context: TaskContext):
             labels = []
             record_ids = []
             points = [[] for _ in selectors]
-            for row in extract_fields(self.coordinator.source, records, selectors):
+            for row in extract_fields(
+                self.coordinator.source,
+                records,
+                selectors,
+                cancellation=cast("CancellationToken", task_context),
+                progress=lambda completed, _record: task_context.report_progress(
+                    completed, len(records)
+                ),
+            ):
                 labels.append(row.filename)
                 record_ids.append(row.record_id)
 
@@ -425,6 +453,7 @@ class CollectionPlotPanel(QWidget):
             remaining = tuple(series for series in data if series.selector in requested)
 
             if remaining:
+                self.status.setText("Rendering collection plot…")
                 self.set_series_collection(remaining)
 
         def on_error(details: str):
@@ -437,7 +466,8 @@ class CollectionPlotPanel(QWidget):
             function=task,
             on_success=on_success,
             on_error=on_error,
-            label="Extracting collection plot data",
+            label="Building collection plot",
+            with_context=True,
         )
 
     def set_series_collection(self, data: tuple[CollectionSeries, ...]) -> None:
@@ -469,6 +499,8 @@ class CollectionPlotPanel(QWidget):
         visible_series = self._visible_series()
         mode = self.plot_mode.currentData()
         self._apply_mode_controls(mode)
+        self._adaptive_series = ()
+        self._line_x_axis = None
         self.selection_label.setText(
             f"Currently plotting: {data.selector.format()}"
             if len(data_collection) == 1
@@ -488,6 +520,7 @@ class CollectionPlotPanel(QWidget):
         axis_data = visible_collection[0]
         chart = create_chart("Values across context collection", self._scheme)
         all_points: list[SeriesPoint] = []
+        adaptive_series: list[_AdaptiveSeries] = []
         nonpositive = 0
         self._point_lookup.clear()
         for presented in visible_series:
@@ -501,23 +534,12 @@ class CollectionPlotPanel(QWidget):
             )
             nonpositive += len(transformed) - len(visible)
             all_points.extend(visible)
-            rendered = _sample_points(visible, MAX_RENDERED_POINTS_PER_SERIES)
             color = series_color(self._scheme, data_index)
             markers = QScatterSeries()
             markers.setName(series_data.selector.format())
             markers.setMarkerSize(9.0)
             markers.setColor(color)
             markers.setBorderColor(color.lighter(145))
-            marker_points = [QPointF(point.index, point.value) for point in rendered]
-            markers.replace(marker_points)
-            for point in rendered:
-                self._point_lookup.add(
-                    point,
-                    QPointF(point.index, point.value),
-                    series_data.selector,
-                )
-            lines: list[QLineSeries] = []
-            contiguous: list[SeriesPoint] = []
             run_by_index: dict[int, int] = {}
             run = 0
             previous_index: int | None = None
@@ -526,15 +548,6 @@ class CollectionPlotPanel(QWidget):
                     run += 1
                 run_by_index[point.index] = run
                 previous_index = point.index
-            for point in rendered:
-                if (
-                    contiguous
-                    and run_by_index[point.index] != run_by_index[contiguous[-1].index]
-                ):
-                    _append_line(chart, lines, contiguous, color)
-                    contiguous = []
-                contiguous.append(point)
-            _append_line(chart, lines, contiguous, color)
             label = series_data.selector.format()
             markers.hovered.connect(
                 lambda point,
@@ -548,10 +561,16 @@ class CollectionPlotPanel(QWidget):
                 )
             )
             chart.addSeries(markers)
-            for line in lines:
-                legend_markers = chart.legend().markers(line)
-                if legend_markers:
-                    legend_markers[0].setVisible(False)
+            adaptive_series.append(
+                _AdaptiveSeries(
+                    data=series_data,
+                    points=visible,
+                    indexes=tuple(point.index for point in visible),
+                    run_by_index=run_by_index,
+                    markers=markers,
+                    color=color,
+                )
+            )
 
         x_axis = QValueAxis()
         x_axis.setTitleText("Context index (hover a point for its file)")
@@ -595,9 +614,16 @@ class CollectionPlotPanel(QWidget):
             self._scheme,
             legend_entries=len(visible_series),
         )
+        self._adaptive_series = tuple(adaptive_series)
+        self._line_x_axis = x_axis
         self.chart_view.setChart(chart)
         self._selection_series = None
-        self._update_selection_marker()
+        self._refresh_line_window(x_axis, x_axis.min(), x_axis.max())
+        x_axis.rangeChanged.connect(
+            lambda minimum, maximum, axis=x_axis: self._refresh_line_window(
+                axis, minimum, maximum
+            )
+        )
 
         missing = sum(series.missing_count for series in visible_collection)
         notes = []
@@ -606,12 +632,14 @@ class CollectionPlotPanel(QWidget):
         if nonpositive:
             notes.append(f"{nonpositive:,} nonpositive omitted for log scale")
         suffix = f" · {' · '.join(notes)}" if notes else ""
-        rendered_count = sum(
-            min(len(series.points), MAX_RENDERED_POINTS_PER_SERIES)
-            for series in visible_collection
-        )
-        if rendered_count < len(all_points):
-            suffix += f" · {rendered_count:,} representative points rendered"
+        if any(
+            len(series.points) > MAX_RENDERED_POINTS_PER_SERIES
+            for series in adaptive_series
+        ):
+            suffix += (
+                " · adaptive rendering of up to "
+                f"{MAX_RENDERED_POINTS_PER_SERIES:,} visible points per series"
+            )
         self.status.setText(
             f"{len(all_points):,} points across {len(data.labels):,} contexts{suffix}"
             if len(visible_collection) > 1
@@ -802,6 +830,82 @@ class CollectionPlotPanel(QWidget):
     def _reset_zoom(self) -> None:
         self.chart_view.chart().zoomReset()
 
+    def _refresh_line_window(
+        self,
+        axis: QValueAxis,
+        minimum: float,
+        maximum: float,
+    ) -> None:
+        """Render a representative subset of the current horizontal window."""
+        if (
+            axis is not self._line_x_axis
+            or not self._adaptive_series
+            or self._updating_line_window
+        ):
+            return
+        self._updating_line_window = True
+        try:
+            chart = self.chart_view.chart()
+            horizontal = chart.axes(Qt.Orientation.Horizontal)
+            vertical = chart.axes(Qt.Orientation.Vertical)
+            if not horizontal or not vertical:
+                return
+            x_axis = horizontal[0]
+            y_axis = vertical[0]
+            self._point_lookup.clear()
+            for adaptive in self._adaptive_series:
+                for line in adaptive.lines:
+                    chart.removeSeries(line)
+                adaptive.lines.clear()
+
+                window = _points_in_x_range(
+                    adaptive.points,
+                    adaptive.indexes,
+                    minimum,
+                    maximum,
+                )
+                rendered = _sample_points(window, MAX_RENDERED_POINTS_PER_SERIES)
+                adaptive.markers.replace(
+                    [QPointF(point.index, point.value) for point in rendered]
+                )
+                for point in rendered:
+                    self._point_lookup.add(
+                        point,
+                        QPointF(point.index, point.value),
+                        adaptive.data.selector,
+                    )
+
+                contiguous: list[SeriesPoint] = []
+                for point in rendered:
+                    if (
+                        contiguous
+                        and adaptive.run_by_index[point.index]
+                        != adaptive.run_by_index[contiguous[-1].index]
+                    ):
+                        _append_line(
+                            chart,
+                            adaptive.lines,
+                            contiguous,
+                            adaptive.color,
+                        )
+                        contiguous = []
+                    contiguous.append(point)
+                _append_line(
+                    chart,
+                    adaptive.lines,
+                    contiguous,
+                    adaptive.color,
+                )
+                for line in adaptive.lines:
+                    line.attachAxis(x_axis)
+                    line.attachAxis(y_axis)
+                    legend_markers = chart.legend().markers(line)
+                    if legend_markers:
+                        legend_markers[0].setVisible(False)
+            self._update_selection_marker()
+        finally:
+            self._updating_line_window = False
+
     def _series_row(self, index: int, series: CollectionSeries) -> ActionRow:
         row = ActionRow(margins=(5, 2, 3, 2), spacing=7)
         swatch = QLabel()
@@ -948,6 +1052,8 @@ class CollectionPlotPanel(QWidget):
     def _set_empty_chart(self, title: str) -> None:
         self._labels = ()
         self._point_lookup.clear()
+        self._adaptive_series = ()
+        self._line_x_axis = None
         self._selection_series = None
         self.cursor_coordinates.setText("Cursor: —")
         self.chart_view.setChart(create_chart(title, self._scheme))
@@ -1243,6 +1349,19 @@ def _sample_points(
         for index in removable[: len(indexes) - maximum]:
             indexes.remove(index)
     return tuple(points[index] for index in sorted(indexes))
+
+
+def _points_in_x_range(
+    points: tuple[SeriesPoint, ...],
+    indexes: tuple[int, ...],
+    minimum: float,
+    maximum: float,
+) -> tuple[SeriesPoint, ...]:
+    """Return every available point inside the current horizontal window."""
+    lower, upper = sorted((minimum, maximum))
+    start = bisect_left(indexes, lower)
+    stop = bisect_right(indexes, upper)
+    return points[start:stop]
 
 
 def _append_line(

@@ -421,8 +421,22 @@ class TaskRunner(QObject):
             return
 
         details = str(payload) if state == TaskState.FAILED else None
-        record = self._finish(task_id, state, details)
-        if record is None or record.invalidated:
+        # Applying a successful result can include substantial GUI-thread work
+        # (for example constructing a Qt chart). Keep the operation visible
+        # until that callback has finished, while removing its internal task
+        # record first so callbacks may safely submit a replacement task.
+        defer_lifecycle_event = state == TaskState.COMPLETED
+        record = self._finish(
+            task_id,
+            state,
+            details,
+            emit_event=not defer_lifecycle_event,
+        )
+        if record is None:
+            return
+        if record.invalidated:
+            if defer_lifecycle_event:
+                self._emit(record, state, error=details)
             return
         if state == TaskState.FAILED:
             record.on_error(details or "Unknown task failure")
@@ -431,6 +445,8 @@ class TaskRunner(QObject):
                 record.on_success(payload)
             except Exception:
                 record.on_error(traceback.format_exc())
+            finally:
+                self._emit(record, TaskState.COMPLETED)
 
     def _cancel(self, task_id: int) -> None:
         record = self._tasks.get(task_id)
@@ -467,6 +483,8 @@ class TaskRunner(QObject):
         task_id: int,
         state: TaskState,
         error: str | None = None,
+        *,
+        emit_event: bool = True,
     ) -> _TaskRecord | None:
         record = self._tasks.get(task_id)
         if record is None:
@@ -476,7 +494,8 @@ class TaskRunner(QObject):
         if record.info.key is not None and self._latest.get(record.info.key) == task_id:
             self._latest.pop(record.info.key, None)
         self._close_process_state(record)
-        self._emit(record, state, error=error)
+        if emit_event:
+            self._emit(record, state, error=error)
         return record
 
     def _poll_one(self, task_id: int, record: _TaskRecord) -> None:

@@ -12,6 +12,8 @@ from chemfit_dashboard.activity import ActivityStatus
 from chemfit_dashboard.workers import (
     GenerationTracker,
     TaskContext,
+    TaskEvent,
+    TaskInfo,
     TaskRunner,
     TaskState,
 )
@@ -194,4 +196,49 @@ def test_activity_status_tracks_labeled_runner_task(qapp):
     _wait_for(qapp, lambda: completed == [True])
     _wait_for(qapp, lambda: not activity.labels)
     runner.shutdown()
+    window.close()
+
+
+def test_task_stays_active_while_success_callback_applies_result(qapp):
+    runner = TaskRunner()
+    window = QMainWindow()
+    activity = ActivityStatus(window)
+    runner.lifecycle_changed.connect(activity.task_changed)
+    active_during_callback = []
+    completed = []
+
+    def apply_result(result):
+        active_during_callback.append(tuple(activity.labels.values()))
+        completed.append(result)
+
+    runner.submit(
+        function=lambda: 42,
+        on_success=apply_result,
+        on_error=pytest.fail,
+        label="Applying result",
+    )
+
+    _wait_for(qapp, lambda: completed == [42])
+    assert active_during_callback == [("Applying result",)]
+    _wait_for(qapp, lambda: not activity.labels)
+    runner.shutdown()
+    window.close()
+
+
+def test_activity_progress_does_not_flicker_between_concurrent_tasks():
+    window = QMainWindow()
+    activity = ActivityStatus(window)
+    first = TaskInfo(1, None, "First task", "thread", 0)
+    second = TaskInfo(2, None, "Second task", "thread", 0)
+    activity.task_changed(TaskEvent(first, TaskState.SUBMITTED))
+    activity.task_changed(TaskEvent(second, TaskState.SUBMITTED))
+    assert activity.active_progress_name == "task:2"
+
+    activity.task_changed(TaskEvent(first, TaskState.PROGRESS, (1, 10)))
+    assert activity.active_progress_name == "task:2"
+    assert activity.status.text() == "● Working: Second task (+1)"
+
+    activity.task_changed(TaskEvent(second, TaskState.COMPLETED))
+    assert activity.active_progress_name == "task:1"
+    assert activity.status.text() == "● Working: First task"
     window.close()

@@ -719,6 +719,11 @@ def main() -> None:
         f"search_queries={len(profile.search_queries)}",
         flush=True,
     )
+    if args.collection_directory is not None:
+        collection_path = args.collection_directory.expanduser().resolve()
+        if args.input_format == "jsonl":
+            collection_path /= "trajectory.jsonl"
+        print(f"retained_collection={collection_path}", flush=True)
 
     def report(result: Measurement) -> None:
         traced_peak = (

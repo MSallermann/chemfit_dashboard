@@ -98,6 +98,31 @@ def test_jsonl_collection_rejects_legacy_records(tmp_path):
         )
 
 
+def test_benchmark_run_retains_requested_collection(tmp_path):
+    collection_directory = tmp_path / "interactive-collection"
+
+    class StopAfterGeneration(Exception):
+        pass
+
+    def stop_after_generation(measurement):
+        if measurement.name == "dataset generation":
+            raise StopAfterGeneration
+
+    with pytest.raises(StopAfterGeneration):
+        benchmark.run(
+            2,
+            0,
+            trace_allocations=False,
+            collection_directory=collection_directory,
+            on_measurement=stop_after_generation,
+        )
+
+    assert sorted(path.name for path in collection_directory.iterdir()) == [
+        "step_0_ctx_0.json",
+        "step_1_ctx_0.json",
+    ]
+
+
 def test_benchmark_cli_forwards_persistent_collection_directory(tmp_path, monkeypatch):
     collection_directory = tmp_path / "interactive-collection"
     captured = {}

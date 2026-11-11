@@ -133,7 +133,11 @@ class ActivityStatus:
         self.progress_values[name] = (value, max(1, total))
         if name not in self.labels:
             return
-        self.active_progress_name = name
+        # Do not let concurrent workers steal the compact progress bar from one
+        # another on every update. The most recently shown task remains active
+        # until it finishes; all task rows still update in the expanded panel.
+        if self.active_progress_name not in self.labels:
+            self.active_progress_name = name
         self._update()
 
     def set_expanded(self, expanded: bool) -> None:

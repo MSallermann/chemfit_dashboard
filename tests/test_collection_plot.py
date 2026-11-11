@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCharts import QBarSeries, QLogValueAxis
+import time
+
+from PySide6.QtCharts import QBarSeries, QLogValueAxis, QScatterSeries
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QToolButton
 
@@ -13,6 +15,17 @@ from chemfit_dashboard.collection_plot import (
 from chemfit_dashboard.extraction import FieldSelector
 from chemfit_dashboard.inspector import Inspector
 from chemfit_dashboard.ui_components import ActionRow
+from chemfit_dashboard.workers import TaskState
+
+
+def _wait_for(qapp, predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        qapp.processEvents()
+        if time.monotonic() >= deadline:
+            message = "Timed out waiting for collection plot"
+            raise AssertionError(message)
+        time.sleep(0.005)
 
 
 def _series(
@@ -43,6 +56,22 @@ def test_plot_renders_series_and_log_axis(coordinator):
     panel.log_y.setChecked(True)
     axis = panel.chart_view.chart().axes(Qt.Orientation.Vertical)[0]
     assert isinstance(axis, QLogValueAxis)
+
+
+def test_plot_build_reports_collection_progress(loaded_coordinator, qapp):
+    panel = CollectionPlotPanel(coordinator=loaded_coordinator)
+    events = []
+    loaded_coordinator.task_runner.lifecycle_changed.connect(events.append)
+
+    panel.build_series((FieldSelector((1,), ("output",)),))
+
+    _wait_for(qapp, lambda: bool(panel._data))  # noqa: SLF001
+    plot_events = [event for event in events if event.task.key == "collection_plot"]
+    assert any(
+        event.state == TaskState.PROGRESS and event.progress == (1, 1)
+        for event in plot_events
+    )
+    assert plot_events[-1].state == TaskState.COMPLETED
 
 
 def test_plot_supports_multiple_series_histograms_and_statistics(coordinator):
@@ -110,6 +139,23 @@ def test_plot_bounds_rendered_points_for_large_series(coordinator):
         key=lambda item: item.count(),
     )
     assert markers.count() <= MAX_RENDERED_POINTS_PER_SERIES
+
+
+def test_plot_zoom_renders_every_point_in_small_visible_window(coordinator):
+    count = MAX_RENDERED_POINTS_PER_SERIES * 2
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    panel.set_series_collection((_series(values=tuple(map(float, range(count)))),))
+    chart = panel.chart_view.chart()
+    markers = next(
+        series for series in chart.series() if isinstance(series, QScatterSeries)
+    )
+    initial_indexes = {round(point.x()) for point in markers.points()}
+    assert 1 not in initial_indexes
+
+    x_axis = chart.axes(Qt.Orientation.Horizontal)[0]
+    x_axis.setRange(0, 10)
+
+    assert {round(point.x()) for point in markers.points()} == set(range(11))
 
 
 def test_plot_exports_png(coordinator, tmp_path):
