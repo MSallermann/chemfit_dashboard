@@ -21,6 +21,7 @@ from typing import Any, cast
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QEvent,
     QItemSelectionModel,
     QModelIndex,
     QPersistentModelIndex,
@@ -28,6 +29,7 @@ from PySide6.QtCore import (
     QRect,
     QSettings,
     Qt,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QKeySequence, QPainter, QPalette, QPen, QPolygon, QShortcut
@@ -443,7 +445,9 @@ class DataExtractionPanel(QWidget):
         layout.addWidget(self.selections)
 
         controls = QHBoxLayout()
-        self.include_node_paths_checkbox = QCheckBox("Include node paths")
+        self.include_node_paths_checkbox = QCheckBox(
+            "Include context paths in column names"
+        )
         self.include_node_paths_checkbox.setChecked(True)
         self.include_node_paths_checkbox.setToolTip(
             "Prefix every output name with its concrete context path"
@@ -827,6 +831,7 @@ class DataExtractionPanel(QWidget):
 
     def _resize_field_actions_column(self) -> None:
         required = _ACTIONS_COLUMN_MIN_WIDTH
+        row_header = self.selections.verticalHeader()
         for row in range(self.selections.rowCount()):
             actions = self.selections.cellWidget(row, 2)
             if actions is None:
@@ -835,12 +840,38 @@ class DataExtractionPanel(QWidget):
             if actions_layout is not None:
                 actions_layout.invalidate()
                 actions_layout.activate()
-            required = max(required, actions.minimumSizeHint().width() + 8)
+            required_size = actions.sizeHint().expandedTo(actions.minimumSizeHint())
+            cell_rect = self.selections.visualRect(
+                self.selections.model().index(row, 2)
+            )
+            horizontal_inset = max(0, cell_rect.width() - actions.width())
+            vertical_inset = max(0, cell_rect.height() - actions.height())
+            gridline = 1
+            required = max(
+                required,
+                required_size.width() + horizontal_inset + gridline,
+            )
+            self.selections.setRowHeight(
+                row,
+                max(
+                    row_header.defaultSectionSize(),
+                    required_size.height() + vertical_inset + gridline,
+                ),
+            )
         header = self.selections.horizontalHeader()
         current = header.sectionSize(2)
         if current == self._automatic_actions_column_width or required > current:
             header.resizeSection(2, required)
         self._automatic_actions_column_width = required
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        """Refit embedded action cells after application appearance changes."""
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.FontChange,
+            QEvent.Type.StyleChange,
+        ) and hasattr(self, "selections"):
+            QTimer.singleShot(0, self._resize_field_actions_column)
 
     def _field_actions(
         self,
@@ -922,6 +953,12 @@ class DataExtractionPanel(QWidget):
         expand_arrays.toggled.connect(
             lambda checked, target=row, control=array_depth: (
                 self._set_array_expansion_enabled(target, checked, control)
+            )
+        )
+        expand_arrays.toggled.connect(
+            lambda _checked: QTimer.singleShot(
+                0,
+                self._resize_field_actions_column,
             )
         )
         array_depth.valueChanged.connect(
@@ -1131,7 +1168,7 @@ class DataExtractionPanel(QWidget):
         self.preview.setCurrentIndex(index)
         menu = QMenu(self.preview)
         copy_cell = menu.addAction("Copy cell")
-        copy_column = menu.addAction("Copy column as CSV")
+        copy_column = menu.addAction("Copy preview column as CSV")
         copy_row = menu.addAction("Copy row as CSV")
         copy_row_json = menu.addAction("Copy row as JSON")
         menu.addSeparator()
@@ -1178,7 +1215,7 @@ class DataExtractionPanel(QWidget):
             return
         preview_column = self.preview_model.extraction_column(column)
         menu = QMenu(header)
-        copy_column = menu.addAction("Copy column as CSV")
+        copy_column = menu.addAction("Copy preview column as CSV")
         toggle_sort = sort_ascending = sort_descending = None
         rename_column = remove_column = None
         selected_columns = self._selected_preview_columns(column)
@@ -1534,7 +1571,7 @@ class DataExtractionPanel(QWidget):
             )
             for row in range(self.preview_model.rowCount())
         )
-        self._copy_text(_csv_text(rows), f"Copied {header} column as CSV")
+        self._copy_text(_csv_text(rows), f"Copied preview column {header} as CSV")
 
     def _copy_preview_row(self, row: int, *, as_json: bool = False) -> None:
         values = self.preview_model.row_mapping(row)
@@ -1722,10 +1759,13 @@ def _validate_preview_column_names(
         for index, label in enumerate(labels)
         if label.casefold() in folded[:index]
     )
-    message = (
-        f"Extraction produces the duplicate column {duplicate!r}. Remove overlapping "
-        "fields, enable node paths for sibling fields, or rename one of the fields."
+    advice = (
+        "Turn on 'Include context paths in column names' below the field list, "
+        "remove overlapping fields, or rename one of the fields."
+        if fields and not fields[0].include_node_path
+        else "Remove overlapping fields or rename one of the fields."
     )
+    message = f"Extraction produces the duplicate column {duplicate!r}. {advice}"
     raise ValueError(message)
 
 

@@ -9,7 +9,7 @@ this module coordinates navigation and synchronization between views.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFrame,
@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self.settings = DashboardSettingsController(
             coordinator=self.coordinator, parent=self
         )
+        self.settings.appearance_changed.connect(self._schedule_minimum_size_update)
         self.navigation_history = ContextNavigationHistory(
             coordinator=self.coordinator, parent=self
         )
@@ -79,9 +80,9 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.setWindowTitle("ChemFit Context Inspector")
         self.resize(1460, 860)
-        self.setMinimumSize(980, 620)
 
         self.build_ui()
+        self._update_minimum_size()
         self.session = DashboardSessionController(
             coordinator=self.coordinator,
             settings=self.settings.store,
@@ -96,6 +97,32 @@ class MainWindow(QMainWindow):
         if extraction_config is not None:
             self.extraction_panel.set_config(extraction_config)
         self._center_tab_changed(self.center_tabs.currentIndex())
+
+    def _update_minimum_size(self) -> None:
+        """Derive the window floor from the active widgets and appearance."""
+        if self.centralWidget() is None:
+            return
+        layout = self.centralWidget().layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        minimum = self.minimumSizeHint().expandedTo(QSize(0, 0))
+        if minimum != self.minimumSize():
+            self.setMinimumSize(minimum)
+
+    def _schedule_minimum_size_update(self) -> None:
+        """Update the window floor after Qt processes pending style geometry."""
+        QTimer.singleShot(0, self._update_minimum_size)
+
+    def event(self, event: QEvent) -> bool:
+        """Follow dynamic child layout changes without hard-coded dimensions."""
+        handled = super().event(event)
+        if (
+            event.type() == QEvent.Type.LayoutRequest
+            and self.centralWidget() is not None
+        ):
+            self._schedule_minimum_size_update()
+        return handled
 
     def build_ui(self):  # noqa: PLR0915
         """Build the main UI."""

@@ -14,7 +14,7 @@ import re
 from html import escape
 from typing import cast
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -591,6 +591,33 @@ class ContextSearchPanel(QWidget):
             f"{scope_details} · {_mode_label(mode)} · {' + '.join(dimensions)}"
             f"{failure_suffix}"
         )
+
+    def _resize_result_rows(self) -> None:
+        """Refit embedded result labels after font or style changes."""
+        for row in range(self.results.topLevelItemCount()):
+            item = self.results.topLevelItem(row)
+            if item is None:
+                continue
+            labels = (
+                self.results.itemWidget(item, column)
+                for column in range(self.results.columnCount())
+            )
+            row_height = max(
+                42,
+                *(label.sizeHint().height() + 10 for label in labels if label),
+            )
+            for column in range(self.results.columnCount()):
+                item.setSizeHint(column, QSize(0, row_height))
+        self.results.doItemsLayout()
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        """Keep embedded search-result labels fitted to the active appearance."""
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.FontChange,
+            QEvent.Type.StyleChange,
+        ) and hasattr(self, "results"):
+            QTimer.singleShot(0, self._resize_result_rows)
 
     def _set_result_label(
         self,

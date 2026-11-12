@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QObject, QSize, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -53,10 +54,46 @@ class ActionRow(QWidget):
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(*margins)
         self._layout.setSpacing(spacing)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
 
     def add_widget(self, widget: QWidget, stretch: int = 0) -> None:
         """Append non-action content using the row's shared spacing policy."""
         self._layout.addWidget(widget, stretch)
+
+    def _children_size_hint(self, *, minimum: bool) -> QSize:
+        widgets = [
+            item.widget()
+            for index in range(self._layout.count())
+            if (item := self._layout.itemAt(index)).widget() is not None
+            and not item.widget().isHidden()
+        ]
+        if not widgets:
+            return QSize()
+        hints = [
+            widget.minimumSizeHint() if minimum else widget.sizeHint()
+            for widget in widgets
+        ]
+        margins = self._layout.contentsMargins()
+        return QSize(
+            sum(hint.width() for hint in hints)
+            + self._layout.spacing() * (len(hints) - 1)
+            + margins.left()
+            + margins.right(),
+            max(hint.height() for hint in hints) + margins.top() + margins.bottom(),
+        )
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        """Include every visible control and the row's own margins."""
+        return super().sizeHint().expandedTo(self._children_size_hint(minimum=False))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        """Keep compact containers from clipping their visible controls."""
+        return (
+            super().minimumSizeHint().expandedTo(self._children_size_hint(minimum=True))
+        )
 
     def add_action(
         self,
@@ -87,9 +124,16 @@ class ActionRow(QWidget):
             else:
                 set_themed_icon(button, icon_name, role=icon_role)
         if compact:
-            button.setFixedWidth(28)
+            button.setMinimumSize(28, 28)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed,
+            )
         else:
-            button.setMinimumWidth(button.fontMetrics().horizontalAdvance(text) + 22)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Minimum,
+                QSizePolicy.Policy.Fixed,
+            )
         self._layout.addWidget(button)
         return button
 

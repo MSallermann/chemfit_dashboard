@@ -28,7 +28,7 @@ from PySide6.QtCharts import (
     QScatterSeries,
     QValueAxis,
 )
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -213,6 +213,7 @@ class CollectionPlotPanel(QWidget):
         )
         layout.addWidget(self.status)
         self.series_list = QListWidget()
+        self.series_list.setObjectName("plotSeriesList")
         self.series_list.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
@@ -482,7 +483,9 @@ class CollectionPlotPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, series.selector)
             self.series_list.addItem(item)
             row = self._series_row(index, series)
-            item.setSizeHint(row.sizeHint())
+            required_size = row.sizeHint().expandedTo(row.minimumSizeHint())
+            row.setMinimumHeight(required_size.height())
+            item.setSizeHint(required_size)
             self.series_list.setItemWidget(item, row)
         self.series_list.blockSignals(False)  # noqa: FBT003
         self.series_list.setVisible(bool(data))
@@ -490,6 +493,28 @@ class CollectionPlotPanel(QWidget):
         self.clear_button.setEnabled(enabled)
         self.export_button.setEnabled(enabled)
         self._render_series()
+
+    def _resize_series_rows(self) -> None:
+        """Fit list rows to their embedded controls after appearance changes."""
+        for index in range(self.series_list.count()):
+            item = self.series_list.item(index)
+            row = self.series_list.itemWidget(item)
+            if row is not None:
+                row.setMinimumHeight(0)
+                row.updateGeometry()
+                required_size = row.sizeHint().expandedTo(row.minimumSizeHint())
+                row.setMinimumHeight(required_size.height())
+                item.setSizeHint(required_size)
+        self.series_list.doItemsLayout()
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        """Keep embedded series controls unclipped across font and style changes."""
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.FontChange,
+            QEvent.Type.StyleChange,
+        ) and hasattr(self, "series_list"):
+            QTimer.singleShot(0, self._resize_series_rows)
 
     def _render_series(self) -> None:  # noqa: PLR0912, PLR0915
         data_collection = self._data
@@ -907,7 +932,7 @@ class CollectionPlotPanel(QWidget):
             self._updating_line_window = False
 
     def _series_row(self, index: int, series: CollectionSeries) -> ActionRow:
-        row = ActionRow(margins=(5, 2, 3, 2), spacing=7)
+        row = ActionRow(margins=(5, 4, 3, 4), spacing=7)
         swatch = QLabel()
         swatch.setObjectName("seriesColorSwatch")
         swatch.setFixedSize(20, 20)

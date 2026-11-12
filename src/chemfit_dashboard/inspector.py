@@ -427,7 +427,7 @@ class Inspector(QWidget):
         self.extract_sibling_fields_button.clicked.connect(
             self._request_sibling_fields_extraction
         )
-        action_layout.addWidget(self.extract_sibling_fields_button, 3, 3)
+        action_layout.addWidget(self.extract_sibling_fields_button, 4, 1)
 
         self.extract_sibling_components_button = QPushButton("+ Sibling Components")
         self.extract_sibling_components_button.setProperty("extractAction", "true")
@@ -438,7 +438,7 @@ class Inspector(QWidget):
         self.extract_sibling_components_button.clicked.connect(
             self._request_sibling_components_extraction
         )
-        action_layout.addWidget(self.extract_sibling_components_button, 3, 4)
+        action_layout.addWidget(self.extract_sibling_components_button, 4, 2)
         action_layout.setColumnStretch(6, 1)
         layout.addWidget(actions)
 

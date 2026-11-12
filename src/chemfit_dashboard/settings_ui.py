@@ -58,6 +58,7 @@ class DashboardSettingsController(QObject):
     """Own persisted display/performance settings and apply them globally."""
 
     status_message = Signal(str)
+    appearance_changed = Signal()
 
     def __init__(
         self,
@@ -352,6 +353,7 @@ class DashboardSettingsController(QObject):
                 )
             )
         self._refresh_custom_views(font_changed=font_changed)
+        self.appearance_changed.emit()
 
     def _refresh_custom_views(self, *, font_changed: bool) -> None:
         scheme = color_scheme(self._scheme_key)

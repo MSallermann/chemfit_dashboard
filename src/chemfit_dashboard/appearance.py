@@ -431,6 +431,7 @@ QListView, QTreeView, QTableView {{
     selection-background-color: {scheme.selection}; selection-color: {scheme.text_strong};
 }}
 QListView::item {{ padding: 9px 7px; border-bottom: 1px solid {scheme.border}; }}
+QListWidget#plotSeriesList::item {{ padding: 0; }}
 QTreeView::item, QTableView::item {{ padding: 4px; }}
 QTableWidget#extractionSelections QLineEdit {{
     background: {scheme.input}; border: 1px solid {scheme.accent}; border-radius: 2px;
