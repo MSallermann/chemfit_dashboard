@@ -10,13 +10,16 @@ if TYPE_CHECKING:
 
 RECORD_FORMAT = "chemfit.evaluate_context"
 SUPPORTED_SCHEMA_VERSION = 1
-_CONTEXT_STATUSES = {
-    "success",
-    "exception",
-    "skipped",
-    "no_output",
-    "not_recorded",
-}
+CONTEXT_STATUSES = frozenset(
+    {
+        "success",
+        "exception",
+        "skipped",
+        "no_output",
+        "not_recorded",
+    }
+)
+RECORDED_CONTEXT_STATUSES = CONTEXT_STATUSES - {"not_recorded"}
 
 
 class RecordFormatError(ValueError):
@@ -80,7 +83,7 @@ def _normalize_context(
         _invalid("ChemFit context record must be an object")
 
     status = value.get("status")
-    if status not in _CONTEXT_STATUSES:
+    if status not in CONTEXT_STATUSES:
         message = f"Invalid ChemFit context status: {status!r}"
         _invalid(message)
 

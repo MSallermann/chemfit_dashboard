@@ -617,7 +617,7 @@ class ContextSearchPanel(QWidget):
             QEvent.Type.FontChange,
             QEvent.Type.StyleChange,
         ) and hasattr(self, "results"):
-            QTimer.singleShot(0, self._resize_result_rows)
+            QTimer.singleShot(0, self, self._resize_result_rows)
 
     def _set_result_label(
         self,

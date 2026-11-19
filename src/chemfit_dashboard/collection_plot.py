@@ -514,7 +514,7 @@ class CollectionPlotPanel(QWidget):
             QEvent.Type.FontChange,
             QEvent.Type.StyleChange,
         ) and hasattr(self, "series_list"):
-            QTimer.singleShot(0, self._resize_series_rows)
+            QTimer.singleShot(0, self, self._resize_series_rows)
 
     def _render_series(self) -> None:  # noqa: PLR0912, PLR0915
         data_collection = self._data

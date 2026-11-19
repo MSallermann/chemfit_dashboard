@@ -37,7 +37,11 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
-from chemfit_dashboard.appearance import ColorScheme, active_color_scheme
+from chemfit_dashboard.appearance import (
+    ColorScheme,
+    active_color_scheme,
+    context_status_color,
+)
 from chemfit_dashboard.context_document import NodePath
 from chemfit_dashboard.coordinator import DashboardCoordinator
 from chemfit_dashboard.data_flow import DataFlowGraph, DataFlowNode, build_data_flow
@@ -517,7 +521,7 @@ class DataFlowView(QGraphicsView):
     def _add_node(self, node: DataFlowNode, position: QPointF) -> _FlowNodeItem:
         boundary = node.kind != "child"
         shape = _flow_node_shape(node)
-        status_color = QColor(_status_color(node, self._scheme))
+        status_color = QColor(_node_status_color(node, self._scheme))
         detail_text = ""
         if node.kind == "child":
             detail_text = " · ".join(
@@ -815,16 +819,12 @@ class DataFlowPanel(QWidget):
         return document.component_label(path)
 
 
-def _status_color(node: DataFlowNode, scheme: ColorScheme) -> str:
+def _node_status_color(node: DataFlowNode, scheme: ColorScheme) -> str:
     if node.kind != "child":
         return scheme.accent
     if not node.recorded:
         return scheme.status_missing
-    return {
-        "complete": scheme.status_complete,
-        "failed": scheme.danger,
-        "skipped": scheme.status_skipped,
-    }.get(node.status, scheme.status_missing)
+    return context_status_color(node.status, scheme, fallback=scheme.status_missing)
 
 
 def _declared_component_count_hint(document: ContextDocument, path: NodePath) -> int:

@@ -6,6 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from chemfit_dashboard.record_format import RECORDED_CONTEXT_STATUSES
 from chemfit_dashboard.util import format_node_path
 
 if TYPE_CHECKING:
@@ -384,22 +385,12 @@ class ContextDocument:
     @staticmethod
     def _status(value: Any, recorded: bool) -> str:  # noqa: PLR0911
         if not recorded:
-            return "not recorded"
+            return "not_recorded"
         if not isinstance(value, dict):
             return "value"
         record_status = value.get("status")
-        if record_status in {
-            "success",
-            "exception",
-            "skipped",
-            "no_output",
-        }:
-            return {
-                "success": "complete",
-                "exception": "failed",
-                "skipped": "skipped",
-                "no_output": "no output",
-            }[record_status]
+        if record_status in RECORDED_CONTEXT_STATUSES:
+            return record_status
         if (
             isinstance(value.get("output"), dict)
             and value["output"].get("skipped") is True
@@ -407,10 +398,10 @@ class ContextDocument:
             return "skipped"
         if "output" in value:
             if _is_serialized_exception(value["output"]):
-                return "failed"
-            return "no output" if value["output"] is None else "complete"
+                return "exception"
+            return "no_output" if value["output"] is None else "success"
         if any(key in value for key in ("loss", "quantities")):
-            return "complete"
+            return "success"
         return "partial"
 
     @staticmethod

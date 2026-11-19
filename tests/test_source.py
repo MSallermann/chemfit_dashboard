@@ -77,7 +77,7 @@ def test_loads_versioned_context_record(tmp_path, chemfit_context):
     document = source.load(source.discover([path])[0])
 
     assert document.node_count == 3
-    assert document.root.status == "complete"
+    assert document.root.status == "success"
     assert document.details(()).fields["context_type"] == "generic"
     assert document.details(()).fields["input"] == chemfit_context.input
     assert document.details(()).fields["output"] == chemfit_context.output
@@ -173,10 +173,10 @@ def test_versioned_exception_and_unrecorded_children_keep_their_semantics(tmp_pa
 
     document = source.load(source.discover([path])[0])
 
-    assert document.root.status == "failed"
+    assert document.root.status == "exception"
     assert document.details(()).fields["output"].startswith("RuntimeError:")
     failed_term = document.details((2, 0, 2))
-    assert failed_term.info.status == "failed"
+    assert failed_term.info.status == "exception"
     assert failed_term.fields["output"] == (
         "RuntimeError: intentional failure in the structure loss term"
     )
@@ -224,7 +224,7 @@ def test_versioned_unrecorded_child_remains_declared_but_unexecuted(tmp_path):
 
     child = document.children(())[0]
     assert child.label == "pending_term"
-    assert child.status == "not recorded"
+    assert child.status == "not_recorded"
     assert not child.recorded
 
 

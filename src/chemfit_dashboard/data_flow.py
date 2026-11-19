@@ -118,7 +118,7 @@ def build_data_flow(  # noqa: PLR0912
                 label=label,
                 path=child_path,
                 component_type=component_type,
-                status=info.status if info is not None else "not recorded",
+                status=info.status if info is not None else "not_recorded",
                 recorded=bool(info and info.recorded),
                 nested=nested,
             )

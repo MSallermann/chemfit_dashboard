@@ -61,10 +61,6 @@ class ColorScheme:
     danger: str
     danger_border: str
     node: str
-    node_complete: str
-    node_skipped: str
-    node_partial: str
-    node_missing: str
     node_border: str
     status_complete: str
     status_skipped: str
@@ -102,10 +98,6 @@ COLOR_SCHEMES = (
         "#ff4d5f",
         "#fff2f4",
         "#1d3039",
-        "#17443f",
-        "#4b3c22",
-        "#4a2d2a",
-        "#252d33",
         "#55707d",
         "#67d7b4",
         "#f2bd67",
@@ -141,10 +133,6 @@ COLOR_SCHEMES = (
         "#c6283e",
         "#ffffff",
         "#e4edf1",
-        "#ccebe4",
-        "#f7e7bd",
-        "#f6d7d2",
-        "#e4e8eb",
         "#79909c",
         "#087f6d",
         "#9a6200",
@@ -180,10 +168,6 @@ COLOR_SCHEMES = (
         "#bf616a",
         "#fff2f4",
         "#3b4656",
-        "#365b57",
-        "#65583c",
-        "#62464b",
-        "#3a414e",
         "#718096",
         "#8fbcbb",
         "#ebcb8b",
@@ -219,10 +203,6 @@ COLOR_SCHEMES = (
         "#ff4055",
         "#ffffff",
         "#101820",
-        "#003f3f",
-        "#4a3a00",
-        "#4a1010",
-        "#202020",
         "#ffffff",
         "#00ffff",
         "#ffff00",
@@ -243,6 +223,25 @@ def color_scheme(key: str | None) -> ColorScheme:
 
 def active_color_scheme() -> ColorScheme:
     return _active_scheme
+
+
+def context_status_color(
+    status: str,
+    scheme: ColorScheme | None = None,
+    *,
+    fallback: str | None = None,
+) -> str:
+    """Return the theme color for a context status."""
+    scheme = scheme or active_color_scheme()
+    colors = {
+        "success": scheme.status_complete,
+        "exception": scheme.danger,
+        "skipped": scheme.status_skipped,
+        "no_output": scheme.status_missing,
+        "not_recorded": scheme.status_missing,
+        "partial": scheme.status_partial,
+    }
+    return colors.get(status, scheme.text if fallback is None else fallback)
 
 
 def set_active_color_scheme(key: str | None) -> ColorScheme:

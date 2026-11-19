@@ -98,7 +98,7 @@ def test_static_children_survive_failed_and_missing_runtime_contexts(tmp_path):
         node for node in build_data_flow(document).nodes if node.kind == "child"
     ]
 
-    assert [node.status for node in children] == ["failed", "not recorded"]
+    assert [node.status for node in children] == ["exception", "not_recorded"]
     assert not children[1].recorded
 
 

@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
 
     def _schedule_minimum_size_update(self) -> None:
         """Update the window floor after Qt processes pending style geometry."""
-        QTimer.singleShot(0, self._update_minimum_size)
+        QTimer.singleShot(0, self, self._update_minimum_size)
 
     def event(self, event: QEvent) -> bool:
         """Follow dynamic child layout changes without hard-coded dimensions."""

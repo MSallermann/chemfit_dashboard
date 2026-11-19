@@ -871,7 +871,7 @@ class DataExtractionPanel(QWidget):
             QEvent.Type.FontChange,
             QEvent.Type.StyleChange,
         ) and hasattr(self, "selections"):
-            QTimer.singleShot(0, self._resize_field_actions_column)
+            QTimer.singleShot(0, self, self._resize_field_actions_column)
 
     def _field_actions(
         self,

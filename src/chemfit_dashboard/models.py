@@ -34,7 +34,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor
 
-from chemfit_dashboard.appearance import active_color_scheme
+from chemfit_dashboard.appearance import active_color_scheme, context_status_color
 from chemfit_dashboard.context_document import (
     ContextDocument,
     NodeInfo,
@@ -349,10 +349,8 @@ class ContextTreeModel(QAbstractItemModel):
             return (label, info.status, info.output_preview)[index.column()]
         if role == TOOLTIP_ROLE:
             return f"{info.kind} · {info.path_text}"
-        if role == FOREGROUND_ROLE and not info.recorded:
-            return QColor(active_color_scheme().status_missing)
-        if role == FOREGROUND_ROLE and index.column() == 1:
-            return QColor(_status_color(info.status))
+        if role == FOREGROUND_ROLE and (not info.recorded or index.column() == 1):
+            return QColor(context_status_color(info.status))
         return None
 
     def headerData(  # noqa: N802
@@ -664,16 +662,6 @@ def _format_size(size: int) -> str:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
     return f"{size} B"
-
-
-def _status_color(status: str) -> str:
-    scheme = active_color_scheme()
-    return {
-        "complete": scheme.status_complete,
-        "skipped": scheme.status_skipped,
-        "not recorded": scheme.status_missing,
-        "partial": scheme.status_partial,
-    }.get(status, scheme.text)
 
 
 def _json_summary(value: Any) -> str:

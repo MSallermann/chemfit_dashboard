@@ -65,7 +65,7 @@ def test_value_search_can_be_disabled():
 
 def test_top_k_results_are_bounded_and_deterministic():
     hits = [
-        SearchHit((), "root", "complete", "fields", (str(index),), str(index), "", 0.5)
+        SearchHit((), "root", "success", "fields", (str(index),), str(index), "", 0.5)
         for index in range(10)
     ]
     collector = TopKSearchHits(3)
@@ -104,7 +104,7 @@ def test_search_panel_renders_context_and_copies_canonical_path(coordinator, qap
     hit = SearchHit(
         node_path=(1, 0),
         breadcrumb="Evaluation root / optimizer",
-        context_status="complete",
+        context_status="success",
         section="fields",
         value_path=("output", 0),
         field_label="output[0]",

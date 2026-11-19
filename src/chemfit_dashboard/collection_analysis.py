@@ -137,10 +137,10 @@ def analyze_collection(  # noqa: PLR0912
         readable += 1
         nodes = document.nodes
         node_count += len(nodes)
-        failed_nodes = [node for node in nodes if node.status == "failed"]
+        failed_nodes = [node for node in nodes if node.status == "exception"]
         if failed_nodes:
             failed += 1
-        elif document.root.status == "complete":
+        elif document.root.status == "success":
             successful += 1
         else:
             partial += 1
