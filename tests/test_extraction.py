@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
@@ -527,17 +527,27 @@ def test_sibling_field_selection_widens_overlapping_default_field(coordinator):
     assert panel.selectors == (siblings,)
 
 
-def test_background_extraction_error_hides_worker_traceback(coordinator):
+def test_background_extraction_error_is_shown_once(coordinator, monkeypatch):
     panel = DataExtractionPanel(coordinator=coordinator)
-
-    panel._show_background_error(  # noqa: SLF001
-        "Could not build extraction preview",
-        "Traceback (most recent call last):\nValueError: column names are not unique",
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
     )
 
-    assert panel.status.text() == (
-        "Could not build extraction preview: column names are not unique"
-    )
+    for _ in range(2):
+        panel._show_background_error(  # noqa: SLF001
+            "Could not build extraction preview",
+            "Traceback (most recent call last):\n"
+            "ValueError: Extraction produces the duplicate column 'energy'",
+            deduplicate=True,
+        )
+
+    assert "duplicate column 'energy'" in panel.status.text()
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Extraction naming conflict"
+    assert "Traceback" not in warnings[0][1]
 
 
 def test_extraction_dialog_directories_are_persisted(

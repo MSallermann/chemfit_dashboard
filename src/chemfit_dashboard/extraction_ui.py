@@ -44,8 +44,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
@@ -487,6 +489,7 @@ class DataExtractionPanel(QWidget):
         # Preview columns rebuild asynchronously after selector edits. This
         # state carries only interaction continuity across that rebuild.
         self._preview_state = _PreviewInteractionState()
+        self._last_preview_error: str | None = None
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview.customContextMenuRequested.connect(self._show_preview_context_menu)
         self._preview_copy_shortcut = QShortcut(
@@ -519,7 +522,13 @@ class DataExtractionPanel(QWidget):
         self._preview_rename_shortcut.activated.connect(
             self._rename_selected_preview_column
         )
-        layout.addWidget(self.preview, 1)
+        self.preview_error = muted_label(word_wrap=True)
+        self.preview_error.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_error.setTextFormat(Qt.TextFormat.PlainText)
+        self.preview_stack = QStackedWidget()
+        self.preview_stack.addWidget(self.preview)
+        self.preview_stack.addWidget(self.preview_error)
+        layout.addWidget(self.preview_stack, 1)
 
         actions = QHBoxLayout()
         self.save_button = QPushButton("Save config")
@@ -712,7 +721,9 @@ class DataExtractionPanel(QWidget):
         total: int,
     ) -> None:
         """Install preview rows while retaining the collection's full count."""
+        self._last_preview_error = None
         self.preview_model.set_data(fields, rows)
+        self.preview_stack.setCurrentWidget(self.preview)
         pending_column = self._preview_state.pending_selection_column
         self._preview_state.pending_selection_column = None
         if pending_column is not None and self.preview_model.columnCount() > 3:
@@ -770,9 +781,7 @@ class DataExtractionPanel(QWidget):
             key="extraction_preview",
             function=task,
             on_success=install_preview,
-            on_error=lambda details: self._show_background_error(
-                "Could not build extraction preview", details
-            ),
+            on_error=self._show_preview_error,
             label="Building extraction preview",
         )
 
@@ -780,10 +789,46 @@ class DataExtractionPanel(QWidget):
         """Replace preview status with a user-facing extraction error."""
         self.status.setText(message)
 
-    def _show_background_error(self, action: str, details: str) -> None:
-        """Log worker diagnostics while showing only the exception message."""
-        logger.error("%s\n%s", action, details)
-        self.show_error(f"{action}: {_exception_summary(details)}")
+    def _show_preview_error(self, details: str) -> None:
+        """Replace an invalid preview with its actionable failure reason."""
+        summary = _exception_summary(details)
+        self.preview_model.set_data((), ())
+        self.preview_error.setText(f"Preview unavailable\n\n{summary}")
+        self.preview_stack.setCurrentWidget(self.preview_error)
+        self._show_background_error(
+            "Could not build extraction preview",
+            details,
+            deduplicate=True,
+        )
+
+    def _show_background_error(
+        self,
+        action: str,
+        details: str,
+        *,
+        deduplicate: bool = False,
+    ) -> None:
+        """Show a concise worker failure without repeatedly interrupting users."""
+        summary = _exception_summary(details)
+        message = f"{action}: {summary}"
+        repeated = deduplicate and message == self._last_preview_error
+
+        self.show_error(message)
+        if repeated:
+            logger.debug("Repeated extraction error: %s", message)
+            return
+
+        logger.error("%s", message)
+        logger.debug("%s\n%s", action, details)
+        if deduplicate:
+            self._last_preview_error = message
+
+        title = (
+            "Extraction naming conflict"
+            if "duplicate column" in summary.casefold()
+            else "Extraction error"
+        )
+        QMessageBox.warning(self, title, f"{action}.\n\n{summary}")
 
     def clear_collection_sort(self) -> None:
         """Remove the header marker after collection order changes elsewhere."""
