@@ -225,25 +225,38 @@ class MainWindow(QMainWindow):
 
         self.center_tabs = QTabWidget()
         self.center_tabs.setObjectName("workspaceTabs")
-        self.center_tabs.tabBar().setObjectName("workspaceTabBar")
-        self.center_tabs.addTab(self.context_tree_panel, "Context Hierarchy")
-        data_flow_tab_index = self.center_tabs.addTab(self.data_flow_panel, "Data Flow")
-        self.center_tabs.addTab(self.search_panel, "Context Search")
-        self.center_tabs.addTab(self.extraction_panel, "Data Extraction")
-        plot_tab_index = self.center_tabs.addTab(
-            self.collection_plot, "Collection Plot"
+        tab_bar = self.center_tabs.tabBar()
+        tab_bar.setObjectName("workspaceTabBar")
+        tab_bar.setExpanding(False)
+        tab_bar.setUsesScrollButtons(True)
+        tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
+        workspace_tabs = (
+            (self.context_tree_panel, "Hierarchy", "Context Hierarchy"),
+            (self.data_flow_panel, "Flow", "Data Flow"),
+            (self.search_panel, "Search", "Context Search"),
+            (self.extraction_panel, "Extract", "Data Extraction"),
+            (self.collection_plot, "Plot", "Collection Plot"),
+            (self.collection_analysis, "Overview", "Collection Overview"),
         )
-        self.center_tabs.addTab(self.collection_analysis, "Collection Overview")
+        tab_indexes: dict[QWidget, int] = {}
+        for panel, label, tooltip in workspace_tabs:
+            index = self.center_tabs.addTab(panel, label)
+            self.center_tabs.setTabToolTip(index, tooltip)
+            tab_indexes[panel] = index
+        data_flow_tab_index = tab_indexes[self.data_flow_panel]
+        plot_tab_index = tab_indexes[self.collection_plot]
         self._extraction_badge = TabCountBadgeController(
             self.center_tabs,
             self.extraction_panel,
-            label="Data Extraction",
+            label="Extract",
+            tooltip_label="Data Extraction",
             item_name="field",
         )
         self._plot_badge = TabCountBadgeController(
             self.center_tabs,
             self.collection_plot,
-            label="Collection Plot",
+            label="Plot",
+            tooltip_label="Collection Plot",
             item_name="series",
             plural_item_name="series",
         )
@@ -251,7 +264,7 @@ class MainWindow(QMainWindow):
             self,
             self.center_tabs,
             self.data_flow_panel,
-            tab_label="Data Flow",
+            tab_label="Flow",
             window_title="ChemFit Data Flow",
             object_prefix="dataFlow",
             tab_index=data_flow_tab_index,
@@ -262,7 +275,7 @@ class MainWindow(QMainWindow):
             self,
             self.center_tabs,
             self.collection_plot,
-            tab_label="Collection Plot",
+            tab_label="Plot",
             window_title="ChemFit Collection Plot",
             object_prefix="plot",
             tab_index=plot_tab_index,

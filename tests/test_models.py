@@ -58,7 +58,7 @@ def test_main_window_preloads_extraction_configuration(tmp_path, monkeypatch):
 
     assert window.extraction_panel.config == config
     extraction_index = window.center_tabs.indexOf(window.extraction_panel)
-    assert window.center_tabs.tabText(extraction_index) == "Data Extraction (1)"
+    assert window.center_tabs.tabText(extraction_index) == "Extract (1)"
 
 
 def test_main_window_accepts_local_file_drags(tmp_path, monkeypatch):
@@ -349,12 +349,12 @@ def test_main_window_exposes_six_feature_workspaces_and_navigation_shortcuts(
     assert window.center_tabs.objectName() == "workspaceTabs"
     assert window.center_tabs.tabBar().objectName() == "workspaceTabBar"
     assert [window.center_tabs.tabText(index) for index in range(6)] == [
-        "Context Hierarchy",
-        "Data Flow",
-        "Context Search",
-        "Data Extraction",
-        "Collection Plot",
-        "Collection Overview",
+        "Hierarchy",
+        "Flow",
+        "Search",
+        "Extract",
+        "Plot",
+        "Overview",
     ]
     shortcuts = {
         shortcut.toString()
@@ -375,8 +375,8 @@ def test_workspace_tab_badges_track_extraction_fields_and_plot_series(
     )
     window.collection_plot.series_count_changed.emit(2)
 
-    assert window.center_tabs.tabText(3) == "Data Extraction (1)"
-    assert window.center_tabs.tabText(4) == "Collection Plot (2)"
+    assert window.center_tabs.tabText(3) == "Extract (1)"
+    assert window.center_tabs.tabText(4) == "Plot (2)"
 
 
 def test_data_flow_and_plot_can_detach_and_restore(tmp_path, monkeypatch):

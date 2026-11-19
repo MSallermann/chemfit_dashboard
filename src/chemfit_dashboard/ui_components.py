@@ -305,6 +305,7 @@ class TabCountBadgeController:
         panel: QWidget,
         *,
         label: str,
+        tooltip_label: str | None = None,
         item_name: str,
         plural_item_name: str | None = None,
         alternate_panel: Callable[[], QWidget | None] | None = None,
@@ -313,6 +314,7 @@ class TabCountBadgeController:
         self._tabs = tabs
         self._panel = panel
         self._label = label
+        self._tooltip_label = tooltip_label or label
         self._item_name = item_name
         self._plural_item_name = plural_item_name or f"{item_name}s"
         self._alternate_panel = alternate_panel
@@ -329,12 +331,12 @@ class TabCountBadgeController:
         label = f"{self._label} ({count_label})" if count else self._label
         self._tabs.setTabText(index, label)
         item_name = self._item_name if count == 1 else self._plural_item_name
-        tooltip = (
+        count_tooltip = (
             f"{count:,} {item_name} queued"
             if count
             else f"No {self._item_name}s queued"
         )
-        self._tabs.setTabToolTip(index, tooltip)
+        self._tabs.setTabToolTip(index, f"{self._tooltip_label} · {count_tooltip}")
 
 
 def muted_label(

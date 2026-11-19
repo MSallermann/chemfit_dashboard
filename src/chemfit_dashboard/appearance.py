@@ -473,8 +473,8 @@ QTabBar#workspaceTabBar::tab {{
     background: {scheme.panel}; color: {scheme.text};
     border: 1px solid {scheme.border_strong}; border-bottom: none;
     border-top-left-radius: 6px; border-top-right-radius: 6px;
-    font-size: 14px; font-weight: 700; min-width: 150px;
-    padding: 12px 20px; margin-right: 4px;
+    font-size: 13px; font-weight: 700;
+    padding: 9px 12px; margin-right: 2px;
 }}
 QTabBar#workspaceTabBar::tab:hover {{
     background: {scheme.input}; color: {scheme.text_strong}; border-color: {scheme.accent};
@@ -482,7 +482,7 @@ QTabBar#workspaceTabBar::tab:hover {{
 QTabBar#workspaceTabBar::tab:selected {{
     background: {scheme.accent_soft}; color: {scheme.accent};
     border: 2px solid {scheme.accent}; border-bottom: none;
-    padding-top: 13px;
+    padding-top: 10px;
 }}
 QSplitter::handle {{ background: {scheme.border}; width: 1px; }}
 QFrame[frameShape="4"], QFrame[frameShape="5"] {{ color: {scheme.border}; }}
@@ -507,8 +507,8 @@ QTabBar::tab { padding: 12px 18px; }
 QPushButton {{ background: transparent; color: {scheme.text_strong}; border-color: {scheme.border}; font-weight: 500; }}
 QPushButton:hover {{ background: {scheme.input}; border-color: {scheme.border_strong}; }}
 QTabWidget#workspaceTabs::pane {{ border: none; border-top: 1px solid {scheme.border}; }}
-QTabBar#workspaceTabBar::tab {{ min-width: 120px; font-size: 13px; font-weight: 500; padding: 9px 14px; border: none; }}
-QTabBar#workspaceTabBar::tab:selected {{ background: transparent; border: none; border-bottom: 2px solid {scheme.accent}; padding-top: 9px; }}
+QTabBar#workspaceTabBar::tab {{ font-size: 13px; font-weight: 500; padding: 7px 10px; border: none; }}
+QTabBar#workspaceTabBar::tab:selected {{ background: transparent; border: none; border-bottom: 2px solid {scheme.accent}; padding-top: 7px; }}
 #hierarchySearchControls, #inspectorActions {{ border-color: {scheme.border}; border-radius: 3px; }}
 QListView, QTreeView, QTableView {{ border-color: {scheme.border}; border-radius: 2px; }}
 """
