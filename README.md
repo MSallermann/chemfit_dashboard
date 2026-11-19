@@ -4,6 +4,8 @@
 
 # ChemFit Dashboard
 
+[![PyPI](https://img.shields.io/pypi/v/chemfit-dashboard)](https://pypi.org/project/chemfit-dashboard/)
+
 A desktop application for exploring, visualizing, and extracting evaluation data from [ChemFit](https://github.com/MSallermann/chemfit).
 
 ChemFit records inputs, outputs, metadata, intermediate results, and errors in structured evaluation contexts. ChemFit Dashboard makes this information accessible without having to inspect JSON files manually.
@@ -34,18 +36,19 @@ exports.
 
 ChemFit Dashboard requires Python 3.10 or newer.
 
-Install the dashboard and its GUI dependencies from PyPI:
+### Install from PyPI
+
+Install the published [ChemFit Dashboard package](https://pypi.org/project/chemfit-dashboard/)
+with its GUI dependencies:
 
 ```bash
 python -m pip install "chemfit-dashboard[gui]"
 ```
 
-Alternatively, install the current source checkout:
+To upgrade an existing installation:
 
 ```bash
-git clone https://github.com/MSallermann/chemfit_dashboard.git
-cd chemfit_dashboard
-python -m pip install ".[gui]"
+python -m pip install --upgrade "chemfit-dashboard[gui]"
 ```
 
 ChemFit itself is not required to inspect previously saved evaluation contexts.
@@ -54,6 +57,16 @@ For headless extraction only, Qt is not required:
 
 ```bash
 python -m pip install chemfit-dashboard
+```
+
+### Install from source
+
+To use the current development version instead of the published release:
+
+```bash
+git clone https://github.com/MSallermann/chemfit_dashboard.git
+cd chemfit_dashboard
+python -m pip install ".[gui]"
 ```
 
 ## Getting started
