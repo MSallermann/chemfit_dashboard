@@ -1322,7 +1322,7 @@ class DataExtractionPanel(QWidget):
             selection.setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
 
         menu = QMenu(header)
-        open_evaluation = menu.addAction("Open evaluation in Context Inspector")
+        open_evaluation = menu.addAction("Open evaluation in ChemFit Dashboard")
         menu.addSeparator()
         copy_row = menu.addAction("Copy row as CSV")
         copy_row_json = menu.addAction("Copy row as JSON")

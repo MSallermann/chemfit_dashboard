@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install development dependencies
+        run: python -m pip install ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests benchmark
+
+      - name: Check formatting
+        run: ruff format --check src tests benchmark
+
+      - name: Type-check
+        run: pyright
+
+      - name: Test
+        run: pytest
+
+  package:
+    name: Build source distribution
+    needs: checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build tools
+        run: python -m pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Validate package metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Smoke-test wheel commands
+        run: |
+          python -m pip install --force-reinstall dist/*.whl
+          chemfit-dashboard --help
+          chemfit-extract --help
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/*
+          if-no-files-found: error

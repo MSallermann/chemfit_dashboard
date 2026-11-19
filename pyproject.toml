@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,12 +7,43 @@ name = "chemfit-dashboard"
 version = "0.1.0"
 description = "Native viewer for serialized ChemFit evaluation contexts"
 readme = "README.md"
+authors = [{ name = "Moritz Sallermann" }]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+keywords = ["chemfit", "data-analysis", "scientific-computing", "visualization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = ["pydictnest>=0.3.0"]
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.7", "rapidfuzz>=3.10"]
 test = ["chemfit>=4.0.0", "pytest>=8", "PySide6>=6.7", "rapidfuzz>=3.10"]
+dev = [
+    "build>=1.2",
+    "chemfit>=4.0.0",
+    "PySide6>=6.7",
+    "pyright>=1.1.403",
+    "pytest>=8",
+    "rapidfuzz>=3.10",
+    "ruff>=0.12",
+    "twine>=6",
+]
+
+[project.urls]
+Homepage = "https://github.com/MSallermann/chemfit_dashboard"
+Repository = "https://github.com/MSallermann/chemfit_dashboard"
+Issues = "https://github.com/MSallermann/chemfit_dashboard/issues"
+Changelog = "https://github.com/MSallermann/chemfit_dashboard/blob/main/CHANGELOG.md"
 
 [project.scripts]
 chemfit-dashboard = "chemfit_dashboard.cli:main"

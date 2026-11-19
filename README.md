@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="res/chemfit_logo_portable.svg" alt="ChemFit logo" width="500">
+  <img src="https://raw.githubusercontent.com/MSallermann/chemfit_dashboard/main/res/chemfit_logo_portable.svg" alt="ChemFit logo" width="500">
 </p>
 
 # ChemFit Dashboard
@@ -13,7 +13,7 @@ context summaries and the versioned `chemfit.evaluate_context` record format.
 It runs locally, does not modify the original data, and can be used independently
 of ChemFit and the simulation software that produced the results.
 
-![ChemFit Dashboard screenshot](res/screenshot.png)
+![ChemFit Dashboard screenshot](https://raw.githubusercontent.com/MSallermann/chemfit_dashboard/main/res/screenshot.png)
 
 ## Features
 
@@ -34,17 +34,18 @@ exports.
 
 ChemFit Dashboard requires Python 3.10 or newer.
 
-Clone the repository:
+Install the dashboard and its GUI dependencies from PyPI:
+
+```bash
+python -m pip install "chemfit-dashboard[gui]"
+```
+
+Alternatively, install the current source checkout:
 
 ```bash
 git clone https://github.com/MSallermann/chemfit_dashboard.git
 cd chemfit_dashboard
-```
-
-Install the dashboard with its GUI dependencies:
-
-```bash
-python -m pip install -e ".[gui]"
+python -m pip install ".[gui]"
 ```
 
 ChemFit itself is not required to inspect previously saved evaluation contexts.
@@ -52,7 +53,7 @@ ChemFit itself is not required to inspect previously saved evaluation contexts.
 For headless extraction only, Qt is not required:
 
 ```bash
-python -m pip install -e .
+python -m pip install chemfit-dashboard
 ```
 
 ## Getting started
@@ -420,13 +421,13 @@ The extraction API does not require Pandas or NumPy.
 
 ## Development
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) for the runtime data flow, module map,
+Read [ARCHITECTURE.md](https://github.com/MSallermann/chemfit_dashboard/blob/main/ARCHITECTURE.md) for the runtime data flow, module map,
 state and cache ownership, background-task rules, and pointers for common changes.
 
-Install the test dependencies:
+Install the development dependencies:
 
 ```bash
-python -m pip install -e ".[test]"
+python -m pip install -e ".[dev]"
 ```
 
 Run the tests:
@@ -439,8 +440,12 @@ Lint and type-check the source:
 
 ```bash
 ruff check src tests benchmark
+ruff format --check src tests benchmark
 pyright
 ```
+
+The complete source-release procedure and manual smoke-test checklist are in
+[RELEASING.md](https://github.com/MSallermann/chemfit_dashboard/blob/main/RELEASING.md).
 
 ### Performance benchmarks
 
@@ -489,7 +494,7 @@ PYTHONPATH=src python benchmark/benchmark.py --profile stress \
   --components-per-evaluation 20 --root-fields 40
 ```
 
-See [BENCHMARKS.md](BENCHMARKS.md) for methodology, recorded results, and known performance limitations.
+See [BENCHMARKS.md](https://github.com/MSallermann/chemfit_dashboard/blob/main/BENCHMARKS.md) for methodology, recorded results, and known performance limitations.
 
 ## Related projects
 
@@ -499,3 +504,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for methodology, recorded results, and known 
 ## Issues and feedback
 
 Bug reports, feature requests, and suggestions are welcome through the [GitHub issue tracker](https://github.com/MSallermann/chemfit_dashboard/issues).
+
+## License
+
+ChemFit Dashboard is distributed under the [MIT License](https://github.com/MSallermann/chemfit_dashboard/blob/main/LICENSE).

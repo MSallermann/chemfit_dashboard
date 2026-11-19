@@ -1,5 +1,7 @@
 """Native dashboard for inspecting serialized ChemFit contexts."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 from chemfit_dashboard.extraction import (
     ExtractionConfig,
     ExtractionRow,
@@ -34,4 +36,7 @@ __all__ = [
     "save_config",
 ]
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("chemfit-dashboard")
+except PackageNotFoundError:
+    __version__ = "0+unknown"

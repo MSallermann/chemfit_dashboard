@@ -34,7 +34,8 @@ def run(
     application = (
         instance if isinstance(instance, QApplication) else QApplication(sys.argv)
     )
-    application.setApplicationName("ChemFit Context Inspector")
+    application.setApplicationDisplayName("ChemFit Dashboard")
+    application.setApplicationName("ChemFit Dashboard")
     application.setOrganizationName("ChemFit")
     window = MainWindow(extraction_config=extraction_config)
     if paths:

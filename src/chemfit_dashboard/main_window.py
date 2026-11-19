@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
 
         # some basic settings
         self.setAcceptDrops(True)
-        self.setWindowTitle("ChemFit Context Inspector")
+        self.setWindowTitle("ChemFit Dashboard")
         self.resize(1460, 860)
 
         self.build_ui()
