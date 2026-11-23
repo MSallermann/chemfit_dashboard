@@ -100,9 +100,10 @@ class MainWindow(QMainWindow):
 
     def _update_minimum_size(self) -> None:
         """Derive the window floor from the active widgets and appearance."""
-        if self.centralWidget() is None:
+        central_widget = self.centralWidget()
+        if central_widget is None:
             return
-        layout = self.centralWidget().layout()
+        layout = central_widget.layout()
         if layout is not None:
             layout.invalidate()
             layout.activate()

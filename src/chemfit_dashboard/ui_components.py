@@ -64,12 +64,14 @@ class ActionRow(QWidget):
         self._layout.addWidget(widget, stretch)
 
     def _children_size_hint(self, *, minimum: bool) -> QSize:
-        widgets = [
-            item.widget()
-            for index in range(self._layout.count())
-            if (item := self._layout.itemAt(index)).widget() is not None
-            and not item.widget().isHidden()
-        ]
+        widgets = []
+        for index in range(self._layout.count()):
+            item = self._layout.itemAt(index)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None and not widget.isHidden():
+                widgets.append(widget)
         if not widgets:
             return QSize()
         hints = [

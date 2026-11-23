@@ -792,6 +792,8 @@ class DataFlowPanel(QWidget):
     def _update_breadcrumbs(self, path: NodePath) -> None:
         while self.breadcrumbs.count():
             item = self.breadcrumbs.takeAt(0)
+            if item is None:
+                continue
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
