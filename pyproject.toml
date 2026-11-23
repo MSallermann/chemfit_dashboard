@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chemfit-dashboard"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native viewer for serialized ChemFit evaluation contexts"
 readme = "README.md"
 authors = [{ name = "Moritz Sallermann" }]

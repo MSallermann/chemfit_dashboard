@@ -13,3 +13,7 @@ Initial public release.
 - Extract arbitrary fields and components to CSV or JSONL from the GUI or CLI.
 - Save and reuse extraction configurations with wildcard component selection.
 - Customize themes, density, font sizing, and workspace layout.
+
+## 0.1.1 — 2026-11-23
+
+- Fix segfault when zooming into plots.
