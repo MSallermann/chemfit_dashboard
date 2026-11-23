@@ -336,6 +336,9 @@ class CollectionPlotPanel(QWidget):
         self._adaptive_series: tuple[_AdaptiveSeries, ...] = ()
         self._line_x_axis: QValueAxis | None = None
         self._updating_line_window = False
+        self._line_window_timer = QTimer(self)
+        self._line_window_timer.setSingleShot(True)
+        self._line_window_timer.timeout.connect(self._refresh_current_line_window)
         self._hidden_selectors: set[FieldSelector] = set()
         self._scheme = active_color_scheme()
         self._set_empty_chart("Collection plot")
@@ -524,6 +527,7 @@ class CollectionPlotPanel(QWidget):
         visible_series = self._visible_series()
         mode = self.plot_mode.currentData()
         self._apply_mode_controls(mode)
+        self._line_window_timer.stop()
         self._adaptive_series = ()
         self._line_x_axis = None
         self.selection_label.setText(
@@ -645,9 +649,7 @@ class CollectionPlotPanel(QWidget):
         self._selection_series = None
         self._refresh_line_window(x_axis, x_axis.min(), x_axis.max())
         x_axis.rangeChanged.connect(
-            lambda minimum, maximum, axis=x_axis: self._refresh_line_window(
-                axis, minimum, maximum
-            )
+            lambda _minimum, _maximum, axis=x_axis: self._schedule_line_window(axis)
         )
 
         missing = sum(series.missing_count for series in visible_collection)
@@ -855,6 +857,23 @@ class CollectionPlotPanel(QWidget):
     def _reset_zoom(self) -> None:
         self.chart_view.chart().zoomReset()
 
+    def _schedule_line_window(self, axis: QValueAxis) -> None:
+        """Defer series mutations until Qt finishes its axis/domain updates."""
+        # Qt emits rangeChanged while its zoom code is still iterating series
+        # domains. Resampling removes line series and invalidates those domains,
+        # so doing it inside that signal handler can segfault when Qt resumes.
+        # A zero-interval timer defers the work to the event loop; it is not a
+        # timed delay. Restarting this single-shot timer coalesces range changes,
+        # and the callback reads the latest axis limits when it runs.
+        if axis is self._line_x_axis and not self._updating_line_window:
+            self._line_window_timer.start(0)
+
+    def _refresh_current_line_window(self) -> None:
+        """Resample the latest range after coalescing pending range changes."""
+        axis = self._line_x_axis
+        if axis is not None:
+            self._refresh_line_window(axis, axis.min(), axis.max())
+
     def _refresh_line_window(
         self,
         axis: QValueAxis,
@@ -890,10 +909,13 @@ class CollectionPlotPanel(QWidget):
                     maximum,
                 )
                 rendered = _sample_points(window, MAX_RENDERED_POINTS_PER_SERIES)
-                adaptive.markers.replace(
-                    [QPointF(point.index, point.value) for point in rendered]
+                visible = tuple(
+                    point for point in rendered if minimum <= point.index <= maximum
                 )
-                for point in rendered:
+                adaptive.markers.replace(
+                    [QPointF(point.index, point.value) for point in visible]
+                )
+                for point in visible:
                     self._point_lookup.add(
                         point,
                         QPointF(point.index, point.value),
@@ -1075,6 +1097,7 @@ class CollectionPlotPanel(QWidget):
         )
 
     def _set_empty_chart(self, title: str) -> None:
+        self._line_window_timer.stop()
         self._labels = ()
         self._point_lookup.clear()
         self._adaptive_series = ()
@@ -1382,11 +1405,13 @@ def _points_in_x_range(
     minimum: float,
     maximum: float,
 ) -> tuple[SeriesPoint, ...]:
-    """Return every available point inside the current horizontal window."""
+    """Return the horizontal window plus its nearest available neighbor on each side."""
     lower, upper = sorted((minimum, maximum))
     start = bisect_left(indexes, lower)
     stop = bisect_right(indexes, upper)
-    return points[start:stop]
+    # Keep boundary-crossing line segments for Qt to clip at the plot edges,
+    # including when the whole window falls between two adjacent data points.
+    return points[max(0, start - 1) : stop + 1]
 
 
 def _append_line(

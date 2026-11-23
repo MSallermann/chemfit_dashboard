@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCharts import QBarSeries, QLogValueAxis, QScatterSeries
-from PySide6.QtCore import Qt
+import pytest
+from PySide6.QtCharts import QBarSeries, QLineSeries, QLogValueAxis, QScatterSeries
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QCheckBox, QToolButton
 
 from chemfit_dashboard.collection_plot import (
@@ -128,20 +130,29 @@ def test_plot_copies_canonical_series_path(coordinator, qapp):
     assert messages == ["Copied plot series field path"]
 
 
-def test_plot_bounds_rendered_points_for_large_series(coordinator):
+def test_plot_bounds_rendered_points_for_large_series(coordinator, qapp):
     count = MAX_RENDERED_POINTS_PER_SERIES * 2
     panel = CollectionPlotPanel(coordinator=coordinator)
 
     panel.set_series_collection((_series(values=tuple(map(float, range(count)))),))
+    chart = panel.chart_view.chart()
 
     markers = max(
-        panel.chart_view.chart().series(),
+        chart.series(),
         key=lambda item: item.count(),
     )
     assert markers.count() <= MAX_RENDERED_POINTS_PER_SERIES
 
+    chart.axes(Qt.Orientation.Horizontal)[0].setRange(10.5, count - 10.5)
+    qapp.processEvents()
 
-def test_plot_zoom_renders_every_point_in_small_visible_window(coordinator):
+    line = next(series for series in chart.series() if isinstance(series, QLineSeries))
+    assert line.count() <= MAX_RENDERED_POINTS_PER_SERIES
+    assert line.points()[0].x() == 10
+    assert line.points()[-1].x() == count - 10
+
+
+def test_plot_zoom_renders_every_point_in_small_visible_window(coordinator, qapp):
     count = MAX_RENDERED_POINTS_PER_SERIES * 2
     panel = CollectionPlotPanel(coordinator=coordinator)
     panel.set_series_collection((_series(values=tuple(map(float, range(count)))),))
@@ -153,9 +164,141 @@ def test_plot_zoom_renders_every_point_in_small_visible_window(coordinator):
     assert 1 not in initial_indexes
 
     x_axis = chart.axes(Qt.Orientation.Horizontal)[0]
+    x_axis.setRange(100, 200)
     x_axis.setRange(0, 10)
 
+    assert {round(point.x()) for point in markers.points()} == initial_indexes
+    qapp.processEvents()
     assert {round(point.x()) for point in markers.points()} == set(range(11))
+
+
+def test_plot_drag_zoom_and_reset_preserve_chart(coordinator, qapp):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    panel.resize(900, 700)
+    panel.set_series_collection((_series(),))
+    panel.show()
+    qapp.processEvents()
+    view = panel.chart_view
+    chart = view.chart()
+    markers = next(
+        series for series in chart.series() if isinstance(series, QScatterSeries)
+    )
+    try:
+        for _iteration in range(5):
+            plot = chart.plotArea()
+            rectangle = QRectF(
+                plot.left() + plot.width() * 0.2,
+                plot.top() + plot.height() * 0.2,
+                plot.width() * 0.5,
+                plot.height() * 0.5,
+            )
+            start = view.mapFromScene(chart.mapToScene(rectangle.topLeft()))
+            end = view.mapFromScene(chart.mapToScene(rectangle.bottomRight()))
+            QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            QTest.mouseMove(view.viewport(), end)
+            QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+            qapp.processEvents()
+            assert markers.count() == 0
+            lines = [
+                series for series in chart.series() if isinstance(series, QLineSeries)
+            ]
+            assert len(lines) == 1
+            assert [point.x() for point in lines[0].points()] == [0, 1]
+
+            panel.reset_zoom_button.click()
+            qapp.processEvents()
+            assert markers.count() == 2
+            assert len(chart.series()) == 2
+    finally:
+        panel.close()
+        panel.deleteLater()
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "expected_line_indexes"),
+    [
+        (1.2, 3.8, [1, 2, 3, 4]),
+        (2.0, 3.0, [1, 2, 3, 4]),
+        (-1.0, 0.5, [0, 1]),
+        (4.5, 6.0, [4, 5]),
+        (-2.0, -1.0, []),
+        (6.0, 7.0, []),
+    ],
+)
+def test_plot_lines_extend_to_neighbors_outside_window(
+    coordinator, qapp, minimum, maximum, expected_line_indexes
+):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    panel.set_series_collection((_series(values=tuple(map(float, range(6)))),))
+    chart = panel.chart_view.chart()
+
+    chart.axes(Qt.Orientation.Horizontal)[0].setRange(minimum, maximum)
+    qapp.processEvents()
+
+    lines = [series for series in chart.series() if isinstance(series, QLineSeries)]
+    assert [
+        point.x() for line in lines for point in line.points()
+    ] == expected_line_indexes
+    markers = next(
+        series for series in chart.series() if isinstance(series, QScatterSeries)
+    )
+    assert [point.x() for point in markers.points()] == [
+        index for index in range(6) if minimum <= index <= maximum
+    ]
+
+
+def test_plot_boundary_neighbors_preserve_missing_data_gaps(coordinator, qapp):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    data = _series(values=tuple(map(float, range(6))))
+    data = CollectionSeries(
+        data.selector,
+        data.labels,
+        tuple(point for point in data.points if point.index != 2),
+    )
+    panel.set_series_collection((data,))
+    chart = panel.chart_view.chart()
+    axis = chart.axes(Qt.Orientation.Horizontal)[0]
+
+    axis.setRange(0.5, 3.5)
+    qapp.processEvents()
+
+    lines = [series for series in chart.series() if isinstance(series, QLineSeries)]
+    assert [[point.x() for point in line.points()] for line in lines] == [
+        [0, 1],
+        [3, 4],
+    ]
+
+    axis.setRange(1.5, 2.5)
+    qapp.processEvents()
+    assert not any(isinstance(series, QLineSeries) for series in chart.series())
+
+
+@pytest.mark.parametrize("replacement", ["clear", "line", "histogram", "statistics"])
+def test_plot_pending_zoom_refresh_handles_chart_replacement(
+    coordinator, qapp, replacement
+):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    panel.set_series_collection((_series(),))
+    old_chart = panel.chart_view.chart()
+    old_axis = old_chart.axes(Qt.Orientation.Horizontal)[0]
+    old_axis.setRange(0.2, 0.7)
+
+    if replacement == "clear":
+        panel.clear()
+    elif replacement == "line":
+        panel.set_series_collection((_series(values=(10.0, 20.0, 30.0)),))
+    else:
+        panel.plot_mode.setCurrentIndex(panel.plot_mode.findData(replacement))
+    expected_series = panel.chart_view.chart().series()
+    old_axis.setRange(0.3, 0.6)
+    qapp.processEvents()
+
+    assert panel.chart_view.chart().series() == expected_series
+    if replacement == "line":
+        markers = next(
+            series for series in expected_series if isinstance(series, QScatterSeries)
+        )
+        assert [point.y() for point in markers.points()] == [10.0, 20.0, 30.0]
 
 
 def test_plot_exports_png(coordinator, tmp_path):
