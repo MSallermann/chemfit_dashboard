@@ -31,8 +31,8 @@ jobs:
 
       - name: Install development dependencies
         run: |
-          # Versioned context records are not part of the ChemFit 4.0 release yet.
-          python -m pip install "chemfit @ git+https://github.com/MSallermann/chemfit.git@9d9d07fa702cca539da3863b24af7d4b731794d6"
+          # Versioned context records are currently provided by ChemFit's next branch.
+          python -m pip install "chemfit @ git+https://github.com/MSallermann/chemfit.git@next"
           python -m pip install ".[dev]"
 
       - name: Lint
