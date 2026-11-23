@@ -707,7 +707,12 @@ class DataFlowPanel(QWidget):
         layout.addWidget(hint)
 
         self.view.context_selected.connect(self._select_context)
-        self.view.navigate_requested.connect(self._enter)
+        # Navigating rebuilds the scene and destroys the item that emitted the
+        # double-click. Queue it so Qt can finish dispatching that item's event.
+        self.view.navigate_requested.connect(
+            self._enter,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.view.level_changed.connect(self._update_breadcrumbs)
         self.view.render_finished.connect(self._render_finished)
         self.back_button.clicked.connect(self._back)

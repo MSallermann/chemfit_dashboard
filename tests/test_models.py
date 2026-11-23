@@ -17,6 +17,7 @@ from chemfit_dashboard.extraction import (
     FieldSelector,
     OutputDescriptor,
 )
+from chemfit_dashboard.graph_view import DataFlowPanel
 from chemfit_dashboard.main_window import MainWindow
 from chemfit_dashboard.models import (
     ContextTreeModel,
@@ -31,6 +32,22 @@ from chemfit_dashboard.settings_ui import (
     DashboardSettingsController,
 )
 from chemfit_dashboard.source import JsonFileSource
+
+
+def test_data_flow_navigation_is_queued(coordinator, qapp, monkeypatch):
+    entered = []
+    monkeypatch.setattr(
+        DataFlowPanel,
+        "_enter",
+        lambda _panel, path: entered.append(path),
+    )
+    panel = DataFlowPanel(coordinator=coordinator)
+
+    panel.view.navigate_requested.emit((1,))
+
+    assert entered == []
+    qapp.processEvents()
+    assert entered == [(1,)]
 
 
 def _isolated_main_window(tmp_path, monkeypatch, **kwargs):

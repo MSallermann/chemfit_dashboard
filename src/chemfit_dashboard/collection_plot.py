@@ -1201,42 +1201,44 @@ class CollectionPlotPanel(QWidget):
 
     def _update_selection_marker(self) -> None:
         chart = self.chart_view.chart()
-        if self._selection_series is not None:
-            chart.removeSeries(self._selection_series)
-            self._selection_series = None
-        if self._selected_record_id is None or not self._data:
-            return
-        record_ids = self._data[0].record_ids
-        try:
-            index = record_ids.index(self._selected_record_id)
-        except ValueError:
-            return
-        points = self._point_lookup.points_by_index.get(index, [])
-        if not points or not chart.axes():
-            return
-        selection = QScatterSeries()
-        selection.setName("Selected context")
-        selection.setMarkerSize(15.0)
-        selection.setColor(QColor(self._scheme.danger))
-        selection.setBorderColor(QColor(self._scheme.danger_border))
-        selection.replace(points)
-        selection.hovered.connect(
-            lambda point, state, marker_series=selection: self._selection_point_hovered(
-                marker_series, point, state
+        selection = self._selection_series
+        points: list[QPointF] = []
+        if self._selected_record_id is not None and self._data:
+            record_ids = self._data[0].record_ids
+            try:
+                index = record_ids.index(self._selected_record_id)
+            except ValueError:
+                pass
+            else:
+                points = self._point_lookup.points_by_index.get(index, [])
+        if selection is None:
+            if not points or not chart.axes():
+                return
+            # Keep this series attached and replace its points thereafter.
+            # A point click can synchronously update the selected record; removing
+            # the emitting series in that callback would destroy a Qt object while
+            # Qt is still dispatching its click event.
+            selection = QScatterSeries()
+            selection.setName("Selected context")
+            selection.setMarkerSize(15.0)
+            selection.setColor(QColor(self._scheme.danger))
+            selection.setBorderColor(QColor(self._scheme.danger_border))
+            selection.hovered.connect(
+                lambda point, state, marker_series=selection: (
+                    self._selection_point_hovered(marker_series, point, state)
+                )
             )
-        )
-        selection.clicked.connect(self._selection_point_clicked)
-        chart.addSeries(selection)
-        horizontal = chart.axes(Qt.Orientation.Horizontal)
-        vertical = chart.axes(Qt.Orientation.Vertical)
-        if horizontal:
-            selection.attachAxis(horizontal[0])
-        if vertical:
-            selection.attachAxis(vertical[0])
-        markers = chart.legend().markers(selection)
-        if markers:
-            markers[0].setVisible(False)
-        self._selection_series = selection
+            selection.clicked.connect(self._selection_point_clicked)
+            chart.addSeries(selection)
+            for axis in chart.axes(Qt.Orientation.Horizontal):
+                selection.attachAxis(axis)
+            for axis in chart.axes(Qt.Orientation.Vertical):
+                selection.attachAxis(axis)
+            markers = chart.legend().markers(selection)
+            if markers:
+                markers[0].setVisible(False)
+            self._selection_series = selection
+        selection.replace(points)
 
     def _selection_point_clicked(self, point: QPointF) -> None:
         if not self._data:

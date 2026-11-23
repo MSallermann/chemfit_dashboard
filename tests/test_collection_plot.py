@@ -4,7 +4,7 @@ import time
 
 import pytest
 from PySide6.QtCharts import QBarSeries, QLineSeries, QLogValueAxis, QScatterSeries
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QCheckBox, QToolButton
 
@@ -170,6 +170,26 @@ def test_plot_zoom_renders_every_point_in_small_visible_window(coordinator, qapp
     assert {round(point.x()) for point in markers.points()} == initial_indexes
     qapp.processEvents()
     assert {round(point.x()) for point in markers.points()} == set(range(11))
+
+
+def test_plot_selection_marker_is_reused_during_its_click(coordinator):
+    panel = CollectionPlotPanel(coordinator=coordinator)
+    panel.set_series_collection((_series(),))
+    panel.select_record("record-0")
+    selection = panel._selection_series  # noqa: SLF001
+    assert selection is not None
+    chart = panel.chart_view.chart()
+    observed = []
+    selection.clicked.connect(lambda _point: panel.select_record("record-0"))
+    selection.clicked.connect(
+        lambda _point: observed.append(
+            panel._selection_series is selection and selection.chart() is chart  # noqa: SLF001
+        )
+    )
+
+    selection.clicked.emit(QPointF(0, 2))
+
+    assert observed == [True]
 
 
 def test_plot_drag_zoom_and_reset_preserve_chart(coordinator, qapp):
