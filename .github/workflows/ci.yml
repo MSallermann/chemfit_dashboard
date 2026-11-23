@@ -29,6 +29,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1
+
       - name: Install development dependencies
         run: |
           # Versioned context records are currently provided by ChemFit's next branch.
